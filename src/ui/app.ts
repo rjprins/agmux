@@ -1,3 +1,6 @@
+import { Terminal } from "xterm";
+import { FitAddon } from "@xterm/addon-fit";
+
 type PtySummary = {
   id: string;
   name: string;
@@ -22,13 +25,122 @@ const $ = (id: string) => document.getElementById(id)!;
 
 const listEl = $("pty-list");
 const terminalEl = $("terminal");
-const inputEl = $("input") as HTMLInputElement;
-const activeTitleEl = $("active-title");
 const eventsEl = $("events");
-const btnKill = $("btn-kill") as HTMLButtonElement;
 
 let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
+const ptyTitles = new Map<string, string>();
+
+const btnNew = $("btn-new") as HTMLButtonElement;
+
+type TermState = {
+  ptyId: string;
+  container: HTMLDivElement;
+  term: Terminal;
+  fit: FitAddon;
+  lastResize: { cols: number; rows: number } | null;
+};
+
+const terms = new Map<string, TermState>();
+const subscribed = new Set<string>();
+
+const placeholderEl = document.createElement("div");
+placeholderEl.className = "terminal-placeholder";
+placeholderEl.textContent = "select a PTY";
+terminalEl.appendChild(placeholderEl);
+
+function startAssetReloadPoller(): void {
+  const urls = ["/app.js", "/styles.css", "/index.html", "/xterm.css"];
+  const last = new Map<string, string>();
+
+  async function headEtag(url: string): Promise<string> {
+    try {
+      const res = await fetch(url, { method: "HEAD", cache: "no-store" });
+      if (!res.ok) return "";
+      return res.headers.get("etag") ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  async function tick(): Promise<void> {
+    for (const url of urls) {
+      const etag = await headEtag(url);
+      if (!etag) continue;
+      const prev = last.get(url);
+      if (prev && prev !== etag) {
+        location.reload();
+        return;
+      }
+      last.set(url, etag);
+    }
+  }
+
+  // Cheap fallback when the supervisor isn't running (or ports don't match).
+  setInterval(() => void tick(), 1500);
+  void tick();
+}
+
+function createTermState(ptyId: string): TermState {
+  const container = document.createElement("div");
+  container.className = "term-pane hidden";
+  container.dataset.ptyId = ptyId;
+  terminalEl.appendChild(container);
+
+  const term = new Terminal({
+    convertEol: true,
+    cursorBlink: true,
+    fontSize: 13,
+    fontFamily:
+      'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+    theme: {
+      background: "#0b0e14",
+      foreground: "#e7ecff",
+      cursor: "#ffcc66",
+      selectionBackground: "rgba(255, 204, 102, 0.25)",
+    },
+    scrollback: 5000,
+  });
+  const fit = new FitAddon();
+  term.loadAddon(fit);
+  term.open(container);
+
+  term.onData((data) => {
+    if (activePtyId !== ptyId) return;
+    ws.send(JSON.stringify({ type: "input", ptyId, data }));
+  });
+
+  term.onTitleChange((title) => {
+    const t = title.trim();
+    if (!t) return;
+    if (ptyTitles.get(ptyId) === t) return;
+    ptyTitles.set(ptyId, t);
+    renderList();
+  });
+
+  return { ptyId, container, term, fit, lastResize: null };
+}
+
+function ensureTerm(ptyId: string): TermState {
+  const existing = terms.get(ptyId);
+  if (existing) return existing;
+  const created = createTermState(ptyId);
+  terms.set(ptyId, created);
+  return created;
+}
+
+function removeTerm(ptyId: string): void {
+  const st = terms.get(ptyId);
+  if (!st) return;
+  try {
+    st.term.dispose();
+  } catch {
+    // ignore
+  }
+  st.container.remove();
+  terms.delete(ptyId);
+  ptyTitles.delete(ptyId);
+}
 
 function wsUrl(): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
@@ -58,10 +170,22 @@ ws.addEventListener("message", (ev) => {
 // Supervisor control plane: tells us when to reload after agent edits.
 (() => {
   const qs = new URLSearchParams(location.search);
-  if (qs.has("nosup")) return;
+  if (qs.has("nosup")) {
+    startAssetReloadPoller();
+    return;
+  }
 
   const supUrl = `${location.protocol}//127.0.0.1:4822/events`;
   const es = new EventSource(supUrl);
+  let supOk = false;
+  const pollFallback = window.setTimeout(() => {
+    if (!supOk) startAssetReloadPoller();
+  }, 1200);
+
+  es.onopen = () => {
+    supOk = true;
+    window.clearTimeout(pollFallback);
+  };
   es.onmessage = (ev) => {
     try {
       const m = JSON.parse(ev.data) as any;
@@ -85,14 +209,26 @@ ws.addEventListener("message", (ev) => {
 function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_list") {
     ptys = msg.ptys;
+    if (activePtyId) {
+      const active = ptys.find((p) => p.id === activePtyId);
+      if (!active || active.status !== "running") {
+        activePtyId = null;
+      }
+    }
+
+    // Drop terminals for sessions that are no longer running.
+    const running = new Set(ptys.filter((p) => p.status === "running").map((p) => p.id));
+    for (const ptyId of terms.keys()) {
+      if (!running.has(ptyId)) removeTerm(ptyId);
+    }
+
+    updateTerminalVisibility();
     renderList();
     return;
   }
   if (msg.type === "pty_output") {
-    if (msg.ptyId === activePtyId) {
-      terminalEl.textContent += msg.data;
-      terminalEl.scrollTop = terminalEl.scrollHeight;
-    }
+    const st = ensureTerm(msg.ptyId);
+    st.term.write(msg.data);
     return;
   }
   if (msg.type === "pty_exit") {
@@ -127,53 +263,103 @@ async function refreshList(): Promise<void> {
   const res = await fetch("/api/ptys");
   const json = (await res.json()) as { ptys: PtySummary[] };
   ptys = json.ptys;
+  updateTerminalVisibility();
   renderList();
+}
+
+function hashHue(s: string): number {
+  // Deterministic, cheap hash -> hue in [0, 359].
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h % 360;
+}
+
+function ptyColor(ptyId: string): string {
+  return `hsl(${hashHue(ptyId)} 85% 62%)`;
+}
+
+function shortId(ptyId: string): string {
+  if (ptyId.length <= 14) return ptyId;
+  return `${ptyId.slice(0, 6)}...${ptyId.slice(-6)}`;
+}
+
+async function killPty(ptyId: string): Promise<void> {
+  await fetch(`/api/ptys/${encodeURIComponent(ptyId)}/kill`, { method: "POST" });
+  addEvent(`Killed PTY ${ptyId}`);
+
+  if (activePtyId === ptyId) {
+    activePtyId = null;
+  }
+  removeTerm(ptyId);
+  updateTerminalVisibility();
+
+  await refreshList();
 }
 
 function renderList(): void {
   listEl.textContent = "";
   for (const p of ptys) {
+    if (p.status !== "running") continue; // Don't show killed/exited PTYs.
+
     const li = document.createElement("li");
     li.className = "pty-item";
     li.dataset.ptyId = p.id;
+    li.style.setProperty("--pty-color", ptyColor(p.id));
     if (p.id === activePtyId) li.classList.add("active");
 
     const row = document.createElement("div");
     row.className = "row";
 
-    const name = document.createElement("div");
-    name.className = "name";
-    name.textContent = p.name;
+    const main = document.createElement("div");
+    main.className = "mainline";
 
-    const badge = document.createElement("div");
-    badge.className = `badge ${p.status}`;
-    badge.textContent = p.status;
+    const title = (ptyTitles.get(p.id) ?? "").trim();
+    const primary = document.createElement("div");
+    primary.className = "primary";
+    primary.textContent = title || p.name;
 
-    row.appendChild(name);
-    row.appendChild(badge);
+    const secondary = document.createElement("div");
+    secondary.className = "secondary";
+    secondary.textContent = title ? p.name : shortId(p.id);
 
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = `${p.command} ${p.args.join(" ")}${p.cwd ? `  (cwd: ${p.cwd})` : ""}`;
+    main.appendChild(primary);
+    main.appendChild(secondary);
+
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "pty-close";
+    closeBtn.textContent = "x";
+    closeBtn.title = "Close";
+    closeBtn.setAttribute("aria-label", `Close PTY ${p.name}`);
+    closeBtn.addEventListener("click", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      await killPty(p.id);
+    });
+
+    row.appendChild(main);
+    row.appendChild(closeBtn);
 
     li.appendChild(row);
-    li.appendChild(meta);
 
     li.addEventListener("click", () => setActive(p.id));
     listEl.appendChild(li);
   }
-  btnKill.disabled = !activePtyId;
 }
 
 function setActive(ptyId: string): void {
   activePtyId = ptyId;
-  terminalEl.textContent = "";
-  const p = ptys.find((x) => x.id === ptyId);
-  activeTitleEl.textContent = p ? `${p.name} (${p.id})` : ptyId;
-  btnKill.disabled = false;
-  inputEl.disabled = false;
-
-  ws.send(JSON.stringify({ type: "subscribe", ptyId }));
+  ensureTerm(ptyId);
+  updateTerminalVisibility();
+  subscribeIfNeeded(ptyId);
+  requestAnimationFrame(() => {
+    fitAndResizeActive();
+    const st = terms.get(ptyId);
+    if (st) {
+      st.term.refresh(0, Math.max(0, st.term.rows - 1));
+      st.term.focus();
+    }
+  });
   renderList();
 }
 
@@ -184,7 +370,7 @@ function highlight(ptyId: string, ttlMs: number): void {
   setTimeout(() => el.classList.remove("highlight"), ttlMs);
 }
 
-$("btn-new").addEventListener("click", async () => {
+async function newShell(): Promise<void> {
   const res = await fetch("/api/ptys/shell", { method: "POST" });
   if (!res.ok) {
     addEvent(`Failed to create PTY (${res.status})`);
@@ -194,6 +380,12 @@ $("btn-new").addEventListener("click", async () => {
   addEvent(`Created PTY ${json.id}`);
   await refreshList();
   setActive(json.id);
+}
+
+btnNew.addEventListener("click", () => {
+  newShell().catch(() => {
+    // ignore
+  });
 });
 
 $("btn-reload-triggers").addEventListener("click", async () => {
@@ -201,21 +393,65 @@ $("btn-reload-triggers").addEventListener("click", async () => {
   addEvent("Requested trigger reload");
 });
 
-btnKill.addEventListener("click", async () => {
-  if (!activePtyId) return;
-  await fetch(`/api/ptys/${encodeURIComponent(activePtyId)}/kill`, { method: "POST" });
-  addEvent(`Killed PTY ${activePtyId}`);
-});
+function subscribeIfNeeded(ptyId: string): void {
+  if (subscribed.has(ptyId)) return;
+  subscribed.add(ptyId);
+  ws.send(JSON.stringify({ type: "subscribe", ptyId }));
+}
 
-inputEl.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter") return;
-  e.preventDefault();
+function updateTerminalVisibility(): void {
+  const hasActive = Boolean(activePtyId);
+  placeholderEl.classList.toggle("hidden", hasActive);
+  for (const [ptyId, st] of terms.entries()) {
+    st.container.classList.toggle("hidden", !hasActive || ptyId !== activePtyId);
+  }
+}
+
+function fitAndResizeActive(): void {
   if (!activePtyId) return;
-  const v = inputEl.value;
-  inputEl.value = "";
-  ws.send(JSON.stringify({ type: "input", ptyId: activePtyId, data: v + "\n" }));
+  const st = terms.get(activePtyId);
+  if (!st) return;
+
+  st.fit.fit();
+
+  const cols = st.term.cols;
+  const rows = st.term.rows;
+  if (cols <= 0 || rows <= 0) return;
+  if (st.lastResize && st.lastResize.cols === cols && st.lastResize.rows === rows) return;
+
+  st.lastResize = { cols, rows };
+  ws.send(JSON.stringify({ type: "resize", ptyId: activePtyId, cols, rows }));
+}
+
+const ro = new ResizeObserver(() => {
+  requestAnimationFrame(() => fitAndResizeActive());
 });
+ro.observe(terminalEl);
+window.addEventListener("resize", () => fitAndResizeActive());
 
 refreshList().catch(() => {
   // ignore
 });
+
+// Minimal debug hooks for e2e tests and local inspection.
+function dumpBuffer(st: TermState, maxLines = 120): string {
+  const out: string[] = [];
+  const buf = st.term.buffer.active;
+  const start = Math.max(0, buf.length - maxLines);
+  for (let i = start; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    out.push(line.translateToString(true));
+  }
+  return out.join("\n");
+}
+
+(window as any).__agentTide = {
+  activePtyId: () => activePtyId,
+  dumpActive: () => {
+    if (!activePtyId) return "";
+    const st = terms.get(activePtyId);
+    if (!st) return "";
+    return dumpBuffer(st);
+  },
+};

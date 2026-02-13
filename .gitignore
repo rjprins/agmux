@@ -3,6 +3,7 @@ dist
 data
 public/app.js
 public/app.js.map
+public/xterm.css
 public/vendor
 supervisor/agent-tide-supervisor
 supervisor/agent-tide-supervisor.exe

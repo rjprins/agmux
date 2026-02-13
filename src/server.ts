@@ -11,7 +11,12 @@ import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from ".
 import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
-import { tmuxHasSession, tmuxKillSession, tmuxNewSessionDetached } from "./tmux.js";
+import {
+  tmuxAttachArgs,
+  tmuxKillSession,
+  tmuxLocateSession,
+  tmuxNewSessionDetached,
+} from "./tmux.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
 const PORT = Number(process.env.PORT ?? 4821);
@@ -94,7 +99,8 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   // This keeps "agent is alive" semantics separate from an individual server-side PTY attachment.
   if (summary?.backend === "tmux" && summary.tmuxSession) {
     void (async () => {
-      if (!(await tmuxHasSession(summary.tmuxSession!))) return;
+      const server = await tmuxLocateSession(summary.tmuxSession!);
+      if (!server) return;
       // Small delay to avoid tight loops if tmux is unstable.
       await new Promise((r) => setTimeout(r, 250));
       const re = ptys.spawn({
@@ -102,12 +108,12 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
         createdAt: summary.createdAt,
         name: summary.name,
         backend: "tmux",
-	        tmuxSession: summary.tmuxSession,
-	        command: "tmux",
-	        args: ["attach-session", "-t", summary.tmuxSession!],
-	        cols: 120,
-	        rows: 30,
-	      });
+        tmuxSession: summary.tmuxSession,
+        command: "tmux",
+        args: tmuxAttachArgs(summary.tmuxSession!, server),
+        cols: 120,
+        rows: 30,
+      });
       store.upsertSession(re);
       broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
     })();
@@ -147,13 +153,13 @@ fastify.post("/api/ptys/shell", async () => {
   const tmuxSession = `agent_tide_${randomUUID()}`;
   await tmuxNewSessionDetached(tmuxSession, shell);
 
-  const name = `shell:${path.basename(shell)} (${tmuxSession})`;
+  const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
     name,
     backend: "tmux",
     tmuxSession,
     command: "tmux",
-    args: ["attach-session", "-t", tmuxSession],
+    args: tmuxAttachArgs(tmuxSession),
     cols: 120,
     rows: 30,
   });
@@ -203,7 +209,8 @@ async function restorePersistentTmuxSessions(): Promise<void> {
     if (s.backend !== "tmux" || !s.tmuxSession) continue;
     if (ptys.getSummary(s.id)) continue;
 
-    if (!(await tmuxHasSession(s.tmuxSession))) {
+    const server = await tmuxLocateSession(s.tmuxSession);
+    if (!server) {
       s.status = "exited";
       store.upsertSession(s);
       continue;
@@ -216,7 +223,7 @@ async function restorePersistentTmuxSessions(): Promise<void> {
       backend: "tmux",
       tmuxSession: s.tmuxSession,
       command: "tmux",
-      args: ["attach-session", "-t", s.tmuxSession],
+      args: tmuxAttachArgs(s.tmuxSession, server),
       cols: 120,
       rows: 30,
     });
@@ -225,10 +232,13 @@ async function restorePersistentTmuxSessions(): Promise<void> {
 }
 
 // Minimal static serving from /public
-async function serveStatic(rel: string): Promise<{ data: Buffer; type: string } | null> {
+async function serveStatic(
+  rel: string,
+): Promise<{ data: Buffer; type: string; etag: string; lastModified: string } | null> {
   const safe = path.normalize(rel).replace(/^(\.\.[/\\])+/, "");
   const filePath = path.join(PUBLIC_DIR, safe);
   if (!filePath.startsWith(PUBLIC_DIR)) return null;
+  const st = await fs.stat(filePath);
   const data = await fs.readFile(filePath);
   const ext = path.extname(filePath).toLowerCase();
   const type =
@@ -241,12 +251,19 @@ async function serveStatic(rel: string): Promise<{ data: Buffer; type: string } 
           : ext === ".map"
             ? "application/json; charset=utf-8"
             : "application/octet-stream";
-  return { data, type };
+  // Weak ETag is enough for dev reload polling and avoids heavy hashing.
+  const etag = `W/"${st.size}-${Math.floor(st.mtimeMs)}"`;
+  const lastModified = st.mtime.toUTCString();
+  return { data, type, etag, lastModified };
 }
 
 fastify.get("/", async (_req, reply) => {
   const r = await serveStatic("index.html");
   if (!r) return reply.code(404).send("not found");
+  // This UI is primarily used in a live-edit loop; keep it uncacheable.
+  reply.header("Cache-Control", "no-store");
+  reply.header("ETag", r.etag);
+  reply.header("Last-Modified", r.lastModified);
   return reply.type(r.type).send(r.data);
 });
 
@@ -255,6 +272,15 @@ fastify.get("/:file", async (req, reply) => {
   if (file.startsWith("api")) return reply.code(404).send("not found");
   const r = await serveStatic(file);
   if (!r) return reply.code(404).send("not found");
+
+  // This UI is primarily used in a live-edit loop; keep it uncacheable.
+  reply.header("Cache-Control", "no-store");
+  reply.header("ETag", r.etag);
+  reply.header("Last-Modified", r.lastModified);
+
+  const inm = req.headers["if-none-match"];
+  if (typeof inm === "string" && inm === r.etag) return reply.code(304).send();
+
   return reply.type(r.type).send(r.data);
 });
 
