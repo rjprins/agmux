@@ -9,6 +9,11 @@ Start everything (recommended):
 npm run live
 ```
 
+If you get "address already in use", pick different ports:
+```sh
+APP_PORT=4823 SUP_PORT=4824 npm run live
+```
+
 Open:
 - App: `http://127.0.0.1:4821`
 - Rollback UI: `http://127.0.0.1:4822`
