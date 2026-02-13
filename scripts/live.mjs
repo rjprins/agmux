@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { execSync } from "node:child_process";
 
 const repo = process.cwd();
+const supDir = path.join(repo, "supervisor");
 
 const appPort = Number(process.env.APP_PORT ?? 4821);
 const supPort = Number(process.env.SUP_PORT ?? 4822);
@@ -41,7 +42,7 @@ try {
 
 const args = [
   "run",
-  path.join(repo, "supervisor"),
+  ".",
   "-repo",
   repo,
   "-app-port",
@@ -51,6 +52,7 @@ const args = [
 ];
 
 const child = spawn("go", args, {
+  cwd: supDir,
   stdio: "inherit",
   env: {
     ...process.env,
