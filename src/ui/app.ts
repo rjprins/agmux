@@ -57,6 +57,9 @@ ws.addEventListener("message", (ev) => {
 
 // Supervisor control plane: tells us when to reload after agent edits.
 (() => {
+  const qs = new URLSearchParams(location.search);
+  if (qs.has("nosup")) return;
+
   const supUrl = `${location.protocol}//127.0.0.1:4822/events`;
   const es = new EventSource(supUrl);
   es.onmessage = (ev) => {

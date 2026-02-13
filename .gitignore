@@ -5,5 +5,7 @@ public/app.js
 public/app.js.map
 supervisor/agent-tide-supervisor
 supervisor/agent-tide-supervisor.exe
+playwright-report
+test-results
 .DS_Store
 npm-debug.log*

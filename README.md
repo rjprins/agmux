@@ -31,6 +31,20 @@ Start app only (no supervisor / no auto-commit / no rollback UI):
 npm run app
 ```
 
+## E2E UI Tests (Playwright)
+
+This repo is set up to use system Chromium at `/usr/bin/chromium` to avoid Playwright browser downloads.
+
+Install:
+```sh
+PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm i -D @playwright/test
+```
+
+Run:
+```sh
+npm run e2e
+```
+
 Recommended supervisor install outside the repo (so PTY agents editing the repo can't easily modify rollback UI behavior):
 ```sh
 cd /home/rutger/agent-tide/supervisor

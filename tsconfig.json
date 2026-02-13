@@ -12,5 +12,5 @@
     "types": ["node"]
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts"],
-  "exclude": ["src/ui/**", "**/*.test.ts", "test/**"]
+  "exclude": ["src/ui/**", "**/*.test.ts", "test/**", "e2e/**", "playwright.config.ts"]
 }

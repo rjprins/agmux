@@ -12,6 +12,7 @@
     "ui:build": "node scripts/build-ui.mjs",
     "build": "tsc -p tsconfig.json && node scripts/build-ui.mjs",
     "start": "node dist/server.js",
+    "e2e": "playwright test",
     "test": "vitest run"
   },
   "keywords": [],
