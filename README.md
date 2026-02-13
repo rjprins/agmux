@@ -79,6 +79,8 @@ Quick manual test:
 - Command: `bash`
 - Args: `["-lc","echo ready; read -p 'proceed (y)? ' x; echo done"]`
 
+UI note: clicking "New PTY" creates a default interactive shell (no dialogs). To run the manual trigger test, paste the command into the input box and press Enter.
+
 ## Config
 
 Environment variables:

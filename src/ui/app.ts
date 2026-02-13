@@ -185,31 +185,7 @@ function highlight(ptyId: string, ttlMs: number): void {
 }
 
 $("btn-new").addEventListener("click", async () => {
-  const command = prompt("Command to run", "bash");
-  if (!command) return;
-  const name = prompt("Name (optional)", command) ?? command;
-  const argsRaw = prompt('Args as JSON array (e.g. ["-lc","echo hi"] )', "[]") ?? "[]";
-  let args: string[] = [];
-  try {
-    const parsed = JSON.parse(argsRaw);
-    if (Array.isArray(parsed)) args = parsed.map(String);
-  } catch {
-    addEvent("Invalid args JSON; using []");
-  }
-  const cwd = prompt("CWD (optional)", "") ?? "";
-
-  const res = await fetch("/api/ptys", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      name,
-      command,
-      args,
-      cwd: cwd.trim().length ? cwd.trim() : undefined,
-      cols: 120,
-      rows: 30,
-    }),
-  });
+  const res = await fetch("/api/ptys/shell", { method: "POST" });
   if (!res.ok) {
     addEvent(`Failed to create PTY (${res.status})`);
     return;

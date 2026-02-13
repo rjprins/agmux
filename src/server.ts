@@ -116,6 +116,23 @@ fastify.post("/api/ptys", async (req, reply) => {
   return { id: summary.id };
 });
 
+// Create an interactive login shell with zero UI configuration.
+fastify.post("/api/ptys/shell", async () => {
+  const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
+  const command = shell;
+  const name = `shell:${path.basename(shell)}`;
+  const summary = ptys.spawn({
+    name,
+    command,
+    args: [],
+    cols: 120,
+    rows: 30,
+  });
+  store.upsertSession(summary);
+  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  return { id: summary.id };
+});
+
 fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   const id = (req.params as any).id as string;
   const ok = ptys.kill(id);

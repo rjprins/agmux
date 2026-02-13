@@ -17,7 +17,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
+    command: `AGENT_TIDE_SHELL=bash DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
     url: appUrl,
     reuseExistingServer: false,
     timeout: 60_000,
