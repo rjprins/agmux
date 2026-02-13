@@ -26,6 +26,16 @@ cd supervisor
 go run . -repo .. -app-port 4821 -sup-port 4822
 ```
 
+Recommended install outside the repo (so PTY agents editing the repo can't easily modify rollback UI behavior):
+```sh
+cd /home/rutger/agent-tide/supervisor
+GOCACHE=/tmp/go-build-cache go build -o ~/.local/bin/agent-tide-supervisor .
+~/.local/bin/agent-tide-supervisor -repo /home/rutger/agent-tide -app-port 4821 -sup-port 4822
+```
+
+Optional hardening (Linux):
+- make the installed supervisor binary non-writable for the PTY agent user
+
 Open:
 - App: `http://127.0.0.1:4821`
 - Rollback UI: `http://127.0.0.1:4822`
