@@ -116,7 +116,7 @@
       const openApp = document.getElementById("open-app");
 
       // We assume app is on same hostname, fixed port.
-      const appUrl = `${location.protocol}//${location.hostname}:4821/`;
+      const appUrl = `${location.protocol}//127.0.0.1:4821/`;
       openApp.href = appUrl;
 
       function log(msg) {
