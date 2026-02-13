@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 const appPort = Number(process.env.E2E_APP_PORT ?? 4931);
 const appUrl = `http://127.0.0.1:${appPort}`;
+const dbPath = process.env.E2E_DB_PATH ?? "/tmp/agent-tide-e2e.db";
 
 export default defineConfig({
   testDir: "e2e",
@@ -16,10 +17,9 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `PORT=${appPort} npm run -s app`,
+    command: `DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
     url: appUrl,
     reuseExistingServer: false,
     timeout: 60_000,
   },
 });
-
