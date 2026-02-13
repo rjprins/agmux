@@ -45,6 +45,21 @@ Run:
 npm run e2e
 ```
 
+Visible:
+```sh
+npm run e2e:headed
+```
+
+Interactive runner UI:
+```sh
+npm run e2e:ui
+```
+
+Debug (Playwright inspector):
+```sh
+npm run e2e:debug
+```
+
 Recommended supervisor install outside the repo (so PTY agents editing the repo can't easily modify rollback UI behavior):
 ```sh
 cd /home/rutger/agent-tide/supervisor
