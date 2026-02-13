@@ -1,0 +1,113 @@
+import { EventEmitter } from "node:events";
+import { randomUUID } from "node:crypto";
+import * as pty from "node-pty";
+import type { IPty } from "node-pty";
+import type { PtyId, PtySummary } from "../types.js";
+
+export type PtySpawnRequest = {
+  name?: string;
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  cols?: number;
+  rows?: number;
+};
+
+export type PtyManagerEvents = {
+  output: (ptyId: PtyId, data: string) => void;
+  exit: (ptyId: PtyId, code: number | null, signal: string | null) => void;
+};
+
+type PtySession = {
+  id: PtyId;
+  pty: IPty;
+  summary: PtySummary;
+};
+
+export class PtyManager extends EventEmitter {
+  private sessions = new Map<PtyId, PtySession>();
+
+  spawn(req: PtySpawnRequest): PtySummary {
+    const id = `pty_${randomUUID()}`;
+    const args = req.args ?? [];
+    const cols = req.cols ?? 120;
+    const rows = req.rows ?? 30;
+    const createdAt = Date.now();
+
+    const child = pty.spawn(req.command, args, {
+      name: "xterm-256color",
+      cols,
+      rows,
+      cwd: req.cwd ?? process.cwd(),
+      env: { ...process.env, ...(req.env ?? {}) } as Record<string, string>,
+    });
+
+    const summary: PtySummary = {
+      id,
+      name: req.name ?? req.command,
+      command: req.command,
+      args,
+      cwd: req.cwd ?? null,
+      createdAt,
+      status: "running",
+    };
+
+    const session: PtySession = { id, pty: child, summary };
+    this.sessions.set(id, session);
+
+    child.onData((data) => {
+      this.emit("output", id, data);
+    });
+
+    child.onExit(({ exitCode, signal }) => {
+      const s = this.sessions.get(id);
+      if (s) {
+        s.summary.status = "exited";
+        s.summary.exitCode = exitCode ?? null;
+        s.summary.exitSignal = signal == null ? null : String(signal);
+      }
+      this.emit("exit", id, exitCode ?? null, signal == null ? null : String(signal));
+    });
+
+    return summary;
+  }
+
+  list(): PtySummary[] {
+    return [...this.sessions.values()]
+      .map((s) => ({ ...s.summary }))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
+
+  getSummary(id: PtyId): PtySummary | null {
+    const s = this.sessions.get(id);
+    return s ? { ...s.summary } : null;
+  }
+
+  write(id: PtyId, data: string): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    s.pty.write(data);
+  }
+
+  resize(id: PtyId, cols: number, rows: number): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    try {
+      s.pty.resize(cols, rows);
+    } catch {
+      // Some PTYs reject resize during teardown; ignore.
+    }
+  }
+
+  kill(id: PtyId): boolean {
+    const s = this.sessions.get(id);
+    if (!s) return false;
+    try {
+      s.pty.kill();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}

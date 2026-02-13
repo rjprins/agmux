@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>agent-tide</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="title">agent-tide</div>
+          <div class="subtitle">Local PTY manager</div>
+        </div>
+
+        <div class="controls">
+          <button id="btn-new" type="button">New PTY</button>
+          <button id="btn-reload-triggers" type="button">Reload triggers</button>
+        </div>
+
+        <div class="section">
+          <div class="section-title">PTYs</div>
+          <ul id="pty-list" class="pty-list"></ul>
+        </div>
+
+        <div class="section">
+          <div class="section-title">Events</div>
+          <div id="events" class="events"></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="header">
+          <div id="active-title" class="active-title">No PTY selected</div>
+          <div class="header-actions">
+            <button id="btn-kill" type="button" disabled>Kill</button>
+          </div>
+        </header>
+
+        <section class="terminal-wrap">
+          <pre id="terminal" class="terminal">(select a PTY)</pre>
+        </section>
+
+        <footer class="footer">
+          <input
+            id="input"
+            class="input"
+            placeholder="Type here and press Enter (raw input, no local echo)"
+            disabled
+            autocomplete="off"
+          />
+          <div class="hint">This is a minimal terminal view; xterm.js integration can be added next.</div>
+        </footer>
+      </main>
+    </div>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
+

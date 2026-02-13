@@ -1,0 +1,226 @@
+import Fastify from "fastify";
+import fs from "node:fs/promises";
+import path from "node:path";
+import process from "node:process";
+import { WebSocketServer } from "ws";
+import type WebSocket from "ws";
+import { PtyManager } from "./pty/manager.js";
+import { SqliteStore } from "./persist/sqlite.js";
+import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from "./types.js";
+import { WsHub } from "./ws/hub.js";
+import { TriggerEngine } from "./triggers/engine.js";
+import { TriggerLoader } from "./triggers/loader.js";
+
+const HOST = process.env.HOST ?? "127.0.0.1";
+const PORT = Number(process.env.PORT ?? 5173);
+const PUBLIC_DIR = path.resolve("public");
+const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agent-tide.db");
+const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
+
+const fastify = Fastify({ logger: true });
+
+const store = new SqliteStore(DB_PATH);
+const ptys = new PtyManager();
+const hub = new WsHub();
+const triggerEngine = new TriggerEngine();
+const triggerLoader = new TriggerLoader(TRIGGERS_PATH);
+
+function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
+  const byId = new Map<string, PtySummary>();
+  for (const p of persisted) byId.set(p.id, p);
+  for (const p of live) byId.set(p.id, p);
+  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function broadcast(evt: ServerToClientMessage): void {
+  hub.broadcast(evt);
+  if (evt.type === "trigger_fired") {
+    store.insertEvent({
+      sessionId: evt.ptyId,
+      ts: evt.ts,
+      type: evt.type,
+      payload: evt,
+    });
+  }
+}
+
+async function loadTriggersAndBroadcast(reason: string): Promise<void> {
+  try {
+    const { triggers, version } = await triggerLoader.load();
+    triggerEngine.setTriggers(triggers);
+    fastify.log.info({ reason, version, count: triggers.length }, "Triggers loaded");
+  } catch (err) {
+    // Keep last-known-good triggers.
+    triggerEngine.setTriggers(triggerLoader.lastGoodTriggers());
+    const message = err instanceof Error ? err.message : String(err);
+    fastify.log.error({ err: message }, "Trigger reload failed");
+    hub.broadcast({
+      type: "trigger_error",
+      ptyId: "system",
+      trigger: "reload",
+      ts: Date.now(),
+      message,
+    } as any);
+  }
+}
+
+// PTY events -> persistence + triggers + WS
+ptys.on("output", (ptyId: string, data: string) => {
+  hub.queuePtyOutput(ptyId, data);
+  triggerEngine.onOutput(
+    ptyId,
+    data,
+    (evt) => {
+      const type = (evt as any)?.type;
+      if (typeof type !== "string") return;
+      if (type === "trigger_fired" || type === "pty_highlight") {
+        broadcast(evt as any);
+        return;
+      }
+      hub.broadcast(evt as any);
+    },
+    (id, d) => ptys.write(id, d),
+  );
+});
+
+ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
+  const summary = ptys.getSummary(ptyId);
+  if (summary) store.upsertSession(summary);
+  broadcast({ type: "pty_exit", ptyId, code, signal });
+});
+
+// REST API
+fastify.get("/api/ptys", async () => {
+  const live = ptys.list();
+  const persisted = store.listSessions();
+  return { ptys: mergePtys(live, persisted) };
+});
+
+fastify.post("/api/ptys", async (req, reply) => {
+  const body = (req.body ?? {}) as any;
+  if (typeof body.command !== "string" || body.command.length === 0) {
+    reply.code(400);
+    return { error: "command is required" };
+  }
+  const summary = ptys.spawn({
+    name: typeof body.name === "string" ? body.name : undefined,
+    command: body.command,
+    args: Array.isArray(body.args) ? body.args.map(String) : [],
+    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
+    env: typeof body.env === "object" && body.env ? body.env : undefined,
+    cols: Number.isFinite(body.cols) ? Number(body.cols) : undefined,
+    rows: Number.isFinite(body.rows) ? Number(body.rows) : undefined,
+  });
+  store.upsertSession(summary);
+  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  return { id: summary.id };
+});
+
+fastify.post("/api/ptys/:id/kill", async (req, reply) => {
+  const id = (req.params as any).id as string;
+  const ok = ptys.kill(id);
+  if (!ok) {
+    reply.code(404);
+    return { error: "unknown PTY" };
+  }
+  return { ok: true };
+});
+
+fastify.post("/api/triggers/reload", async () => {
+  await loadTriggersAndBroadcast("manual");
+  return { ok: true };
+});
+
+// Minimal static serving from /public
+async function serveStatic(rel: string): Promise<{ data: Buffer; type: string } | null> {
+  const safe = path.normalize(rel).replace(/^(\.\.[/\\])+/, "");
+  const filePath = path.join(PUBLIC_DIR, safe);
+  if (!filePath.startsWith(PUBLIC_DIR)) return null;
+  const data = await fs.readFile(filePath);
+  const ext = path.extname(filePath).toLowerCase();
+  const type =
+    ext === ".html"
+      ? "text/html; charset=utf-8"
+      : ext === ".css"
+        ? "text/css; charset=utf-8"
+        : ext === ".js"
+          ? "text/javascript; charset=utf-8"
+          : ext === ".map"
+            ? "application/json; charset=utf-8"
+            : "application/octet-stream";
+  return { data, type };
+}
+
+fastify.get("/", async (_req, reply) => {
+  const r = await serveStatic("index.html");
+  if (!r) return reply.code(404).send("not found");
+  return reply.type(r.type).send(r.data);
+});
+
+fastify.get("/:file", async (req, reply) => {
+  const file = (req.params as any).file as string;
+  if (file.startsWith("api")) return reply.code(404).send("not found");
+  const r = await serveStatic(file);
+  if (!r) return reply.code(404).send("not found");
+  return reply.type(r.type).send(r.data);
+});
+
+// WS upgrade on /ws
+const wss = new WebSocketServer({ noServer: true });
+
+function send(ws: WebSocket, msg: ServerToClientMessage): void {
+  ws.send(JSON.stringify(msg));
+}
+
+wss.on("connection", (ws) => {
+  const client = hub.add(ws);
+
+  // Initial list.
+  send(ws, { type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+
+  ws.on("message", (buf) => {
+    let msg: ClientToServerMessage;
+    try {
+      msg = JSON.parse(buf.toString("utf-8")) as ClientToServerMessage;
+    } catch {
+      return;
+    }
+
+    if (msg.type === "subscribe") {
+      client.subscribed.add(msg.ptyId);
+      return;
+    }
+    if (msg.type === "input") {
+      ptys.write(msg.ptyId, msg.data);
+      return;
+    }
+    if (msg.type === "resize") {
+      ptys.resize(msg.ptyId, msg.cols, msg.rows);
+      return;
+    }
+  });
+});
+
+fastify.server.on("upgrade", (req, socket, head) => {
+  try {
+    const url = new URL(req.url ?? "", `http://${req.headers.host ?? "localhost"}`);
+    if (url.pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+  } catch {
+    // Ignore invalid upgrades.
+    try {
+      socket.destroy();
+    } catch {
+      // ignore
+    }
+  }
+});
+
+// Boot
+await loadTriggersAndBroadcast("startup");
+triggerLoader.watch(() => void loadTriggersAndBroadcast("watch"));
+
+await fastify.listen({ host: HOST, port: PORT });
