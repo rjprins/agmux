@@ -15,7 +15,20 @@ npm run dev
 ```
 
 3. Open:
-- `http://127.0.0.1:5173`
+- `http://127.0.0.1:4821`
+
+## Live Self-Editable Mode (Supervisor)
+
+The supervisor watches for edits (including edits made by agents inside PTYs), auto-commits them to git, rebuilds the UI when needed, restarts the server when needed, and triggers browser reloads. It also serves a rollback UI.
+
+```sh
+cd supervisor
+go run . -repo .. -app-port 4821 -sup-port 4822
+```
+
+Open:
+- App: `http://127.0.0.1:4821`
+- Rollback UI: `http://127.0.0.1:4822`
 
 ## Triggers
 
@@ -31,7 +44,7 @@ Quick manual test:
 
 Environment variables:
 - `HOST` (default `127.0.0.1`)
-- `PORT` (default `5173`)
+- `PORT` (default `4821`)
 - `DB_PATH` (default `data/agent-tide.db`)
 - `TRIGGERS_PATH` (default `triggers/index.js`)
 

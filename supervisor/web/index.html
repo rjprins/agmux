@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>agent-tide rollback</title>
+    <style>
+      :root {
+        --bg: #0b0e14;
+        --panel: #101626;
+        --text: #e7ecff;
+        --muted: #99a2c2;
+        --line: rgba(255, 255, 255, 0.08);
+        --accent: #ffcc66;
+        --danger: #ff5f87;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        color: var(--text);
+        background: radial-gradient(1200px 600px at 20% 10%, #1a2440 0%, transparent 60%),
+          radial-gradient(800px 500px at 90% 30%, #2a1d33 0%, transparent 55%), var(--bg);
+        font: 14px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+          monospace;
+      }
+      header {
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(16, 22, 38, 0.65);
+        backdrop-filter: blur(6px);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+      }
+      .title { font-size: 16px; }
+      .sub { color: var(--muted); font-size: 12px; margin-top: 4px; }
+      .wrap { padding: 16px 18px; max-width: 980px; }
+      .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      button, a.btn {
+        display: inline-block;
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--line);
+        padding: 8px 10px;
+        border-radius: 10px;
+        cursor: pointer;
+        text-decoration: none;
+      }
+      button:hover, a.btn:hover { border-color: rgba(255, 255, 255, 0.18); }
+      button.danger { border-color: rgba(255, 95, 135, 0.35); color: #ffb3c6; }
+      button.danger:hover { border-color: rgba(255, 95, 135, 0.65); }
+      .card {
+        margin-top: 14px;
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        overflow: hidden;
+      }
+      .card h2 {
+        margin: 0;
+        padding: 12px 12px;
+        border-bottom: 1px solid var(--line);
+        font-size: 13px;
+        color: var(--muted);
+      }
+      .list { list-style: none; padding: 0; margin: 0; }
+      .item {
+        padding: 10px 12px;
+        border-top: 1px solid var(--line);
+        display: grid;
+        grid-template-columns: 160px 1fr auto;
+        gap: 10px;
+        align-items: center;
+      }
+      .item:first-child { border-top: none; }
+      .sha { color: var(--accent); }
+      .msg { color: var(--text); opacity: 0.95; }
+      .time { color: var(--muted); font-size: 12px; }
+      .item .time { grid-column: 1 / -1; }
+      .log {
+        padding: 10px 12px;
+        color: var(--muted);
+        font-size: 12px;
+        border-top: 1px solid var(--line);
+        white-space: pre-wrap;
+      }
+      @media (max-width: 820px) {
+        .item { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div>
+        <div class="title">agent-tide rollback</div>
+        <div class="sub">Supervisor UI (immutable when served from installed binary)</div>
+      </div>
+      <div class="row">
+        <a class="btn" id="open-app" href="#" target="_blank" rel="noreferrer">Open app</a>
+        <button class="danger" id="rollback-last">Rollback HEAD~1</button>
+      </div>
+    </header>
+
+    <div class="wrap">
+      <div class="card">
+        <h2>Recent commits</h2>
+        <ul class="list" id="commits"></ul>
+        <div class="log" id="log"></div>
+      </div>
+    </div>
+
+    <script>
+      const logEl = document.getElementById("log");
+      const commitsEl = document.getElementById("commits");
+      const openApp = document.getElementById("open-app");
+
+      // We assume app is on same hostname, fixed port.
+      const appUrl = `${location.protocol}//${location.hostname}:4821/`;
+      openApp.href = appUrl;
+
+      function log(msg) {
+        logEl.textContent = `${new Date().toLocaleTimeString()}  ${msg}\n` + logEl.textContent;
+      }
+
+      async function api(path, opts) {
+        const res = await fetch(path, Object.assign({ headers: { "content-type": "application/json" } }, opts));
+        const txt = await res.text();
+        let json = null;
+        try { json = JSON.parse(txt); } catch {}
+        if (!res.ok) {
+          throw new Error((json && json.error) ? json.error : `HTTP ${res.status}`);
+        }
+        return json;
+      }
+
+      function render(commits) {
+        commitsEl.textContent = "";
+        for (const c of commits) {
+          const li = document.createElement("li");
+          li.className = "item";
+
+          const sha = document.createElement("div");
+          sha.className = "sha";
+          sha.textContent = c.sha.slice(0, 12);
+
+          const msg = document.createElement("div");
+          msg.className = "msg";
+          msg.textContent = c.subject;
+
+          const meta = document.createElement("div");
+          meta.className = "time";
+          meta.textContent = new Date(c.ts * 1000).toLocaleString();
+
+          const btn = document.createElement("button");
+          btn.className = "danger";
+          btn.textContent = "Rollback";
+          btn.onclick = async () => {
+            if (!confirm(`Rollback working tree to ${c.sha.slice(0,12)}? This will discard uncommitted changes.`)) return;
+            log(`Rolling back to ${c.sha.slice(0,12)}...`);
+            await api("/api/rollback", { method: "POST", body: JSON.stringify({ sha: c.sha }) });
+            log("Rollback complete (rebuild/restart triggered).");
+            await refresh();
+          };
+
+          const meta = document.createElement("div");
+          meta.className = "time";
+          meta.textContent = new Date(c.ts * 1000).toLocaleString();
+
+          li.appendChild(sha);
+          li.appendChild(msg);
+          li.appendChild(btn);
+          li.appendChild(meta);
+          commitsEl.appendChild(li);
+        }
+      }
+
+      async function refresh() {
+        const json = await api("/api/commits?limit=50");
+        render(json.commits);
+      }
+
+      document.getElementById("rollback-last").onclick = async () => {
+        if (!confirm("Rollback to previous commit (HEAD~1)? This will discard uncommitted changes.")) return;
+        log("Rolling back to HEAD~1...");
+        await api("/api/rollback-last", { method: "POST", body: "{}" });
+        log("Rollback complete (rebuild/restart triggered).");
+        await refresh();
+      };
+
+      // Live supervisor events.
+      const es = new EventSource("/events");
+      es.onmessage = (ev) => {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === "commit") log(`commit ${m.sha.slice(0,12)} ${m.msg}`);
+          if (m.type === "reload") log(`reload (${m.reason})`);
+          if (m.type === "status") log(`server ${m.server}`);
+        } catch {}
+      };
+      es.onerror = () => log("events disconnected");
+
+      refresh().catch((e) => log(`refresh failed: ${e.message}`));
+    </script>
+  </body>
+</html>

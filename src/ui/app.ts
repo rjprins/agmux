@@ -55,6 +55,30 @@ ws.addEventListener("message", (ev) => {
   onServerMsg(msg);
 });
 
+// Supervisor control plane: tells us when to reload after agent edits.
+(() => {
+  const supUrl = `${location.protocol}//${location.hostname}:4822/events`;
+  const es = new EventSource(supUrl);
+  es.onmessage = (ev) => {
+    try {
+      const m = JSON.parse(ev.data) as any;
+      if (m?.type === "commit") addEvent(`commit ${String(m.sha ?? "").slice(0, 12)} ${m.msg ?? ""}`);
+      if (m?.type === "status") addEvent(`server ${m.server}`);
+      if (m?.type === "reload") {
+        // Ignore informational reload events that don't require refresh.
+        if (m.reason === "triggers_updated") return;
+        addEvent(`reload (${m.reason ?? "unknown"})`);
+        location.reload();
+      }
+    } catch {
+      // ignore
+    }
+  };
+  es.onerror = () => {
+    addEvent("supervisor events disconnected");
+  };
+})();
+
 function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_list") {
     ptys = msg.ptys;

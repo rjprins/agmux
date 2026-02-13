@@ -12,7 +12,7 @@ import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
-const PORT = Number(process.env.PORT ?? 5173);
+const PORT = Number(process.env.PORT ?? 4821);
 const PUBLIC_DIR = path.resolve("public");
 const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agent-tide.db");
 const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
