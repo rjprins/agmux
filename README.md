@@ -91,5 +91,12 @@ Environment variables:
 
 ## Notes
 
-- Persistence is metadata-only: prior PTYs remain visible after restart, but the underlying processes do not survive.
+- Plain PTYs (created via `/api/ptys`) are not persistent: if the Node server stops, those processes stop too.
+- The default "New PTY" shell is tmux-backed (see below), so it survives Node server restarts.
 - WebSocket output is batched (flush every ~16ms) to keep a clear path toward performance without early over-optimization.
+
+## Agent Persistence (tmux)
+
+By default, "New PTY" creates a tmux-backed shell. This means:
+- If the Node server restarts/crashes, the tmux session (and anything running in it) continues.
+- When the server comes back, it reattaches to known tmux sessions from SQLite and streaming resumes.

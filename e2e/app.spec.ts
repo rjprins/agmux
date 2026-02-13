@@ -16,4 +16,10 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
 
   // Trigger should fire; either via highlight class or events panel.
   await expect(page.locator("#events")).toContainText("trigger proceed_prompt", { timeout: 30_000 });
+
+  // Cleanup: kill the PTY/tmux session so e2e runs don't leak sessions.
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  if (ptyId) {
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill`);
+  }
 });

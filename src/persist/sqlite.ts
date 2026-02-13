@@ -25,6 +25,8 @@ export class SqliteStore {
       create table if not exists sessions (
         id text primary key,
         name text not null,
+        backend text,
+        tmux_session text,
         command text not null,
         args_json text not null,
         cwd text,
@@ -45,17 +47,29 @@ export class SqliteStore {
 
       create index if not exists idx_events_session_ts on events(session_id, ts);
     `);
+
+    // Backwards-compatible column adds for existing DBs.
+    const cols = this.db.prepare(`pragma table_info(sessions);`).all() as Array<{ name: string }>;
+    const have = new Set(cols.map((c) => c.name));
+    if (!have.has("backend")) {
+      this.db.exec(`alter table sessions add column backend text;`);
+    }
+    if (!have.has("tmux_session")) {
+      this.db.exec(`alter table sessions add column tmux_session text;`);
+    }
   }
 
   upsertSession(summary: PtySummary): void {
     const stmt = this.db.prepare(`
       insert into sessions (
-        id, name, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
+        id, name, backend, tmux_session, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
       ) values (
-        @id, @name, @command, @args_json, @cwd, @created_at, @last_seen_at, @status, @exit_code, @exit_signal
+        @id, @name, @backend, @tmux_session, @command, @args_json, @cwd, @created_at, @last_seen_at, @status, @exit_code, @exit_signal
       )
       on conflict(id) do update set
         name=excluded.name,
+        backend=excluded.backend,
+        tmux_session=excluded.tmux_session,
         command=excluded.command,
         args_json=excluded.args_json,
         cwd=excluded.cwd,
@@ -68,6 +82,8 @@ export class SqliteStore {
     stmt.run({
       id: summary.id,
       name: summary.name,
+      backend: summary.backend ?? null,
+      tmux_session: summary.tmuxSession ?? null,
       command: summary.command,
       args_json: JSON.stringify(summary.args),
       cwd: summary.cwd,
@@ -94,7 +110,7 @@ export class SqliteStore {
 
   listSessions(limit = 200): PtySummary[] {
     const stmt = this.db.prepare(`
-      select id, name, command, args_json, cwd, created_at, status, exit_code, exit_signal
+      select id, name, backend, tmux_session, command, args_json, cwd, created_at, status, exit_code, exit_signal
       from sessions
       order by created_at desc
       limit ?;
@@ -102,6 +118,8 @@ export class SqliteStore {
     const rows = stmt.all(limit) as Array<{
       id: string;
       name: string;
+      backend: string | null;
+      tmux_session: string | null;
       command: string;
       args_json: string;
       cwd: string | null;
@@ -114,6 +132,8 @@ export class SqliteStore {
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
+      backend: r.backend === "tmux" ? "tmux" : r.backend === "pty" ? "pty" : undefined,
+      tmuxSession: r.tmux_session,
       command: r.command,
       args: JSON.parse(r.args_json) as string[],
       cwd: r.cwd,

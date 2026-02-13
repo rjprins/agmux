@@ -5,13 +5,17 @@ import type { IPty } from "node-pty";
 import type { PtyId, PtySummary } from "../types.js";
 
 export type PtySpawnRequest = {
+  id?: string;
   name?: string;
+  backend?: "pty" | "tmux";
+  tmuxSession?: string | null;
   command: string;
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
   cols?: number;
   rows?: number;
+  createdAt?: number;
 };
 
 export type PtyManagerEvents = {
@@ -29,11 +33,21 @@ export class PtyManager extends EventEmitter {
   private sessions = new Map<PtyId, PtySession>();
 
   spawn(req: PtySpawnRequest): PtySummary {
-    const id = `pty_${randomUUID()}`;
+    const id = req.id ?? `pty_${randomUUID()}`;
     const args = req.args ?? [];
     const cols = req.cols ?? 120;
     const rows = req.rows ?? 30;
-    const createdAt = Date.now();
+    const existing = this.sessions.get(id);
+    const createdAt = req.createdAt ?? existing?.summary.createdAt ?? Date.now();
+
+    // Replace existing session if any (e.g. reattach after restart).
+    if (existing?.pty) {
+      try {
+        existing.pty.kill();
+      } catch {
+        // ignore
+      }
+    }
 
     const child = pty.spawn(req.command, args, {
       name: "xterm-256color",
@@ -46,6 +60,8 @@ export class PtyManager extends EventEmitter {
     const summary: PtySummary = {
       id,
       name: req.name ?? req.command,
+      backend: req.backend,
+      tmuxSession: req.tmuxSession ?? null,
       command: req.command,
       args,
       cwd: req.cwd ?? null,

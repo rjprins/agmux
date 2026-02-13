@@ -5,6 +5,8 @@ export type PtyStatus = "running" | "exited";
 export type PtySummary = {
   id: PtyId;
   name: string;
+  backend?: "pty" | "tmux";
+  tmuxSession?: string | null;
   command: string;
   args: string[];
   cwd: string | null;
@@ -32,4 +34,3 @@ export type ServerToClientMessage =
       ts: number;
     }
   | { type: "pty_highlight"; ptyId: PtyId; reason: string; ttlMs: number };
-

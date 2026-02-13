@@ -3,6 +3,7 @@ dist
 data
 public/app.js
 public/app.js.map
+public/vendor
 supervisor/agent-tide-supervisor
 supervisor/agent-tide-supervisor.exe
 playwright-report
