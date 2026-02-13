@@ -82,7 +82,7 @@ type Supervisor struct {
 	appPort int
 	supPort int
 
-	debounce time.Duration
+	debounce  time.Duration
 	pollEvery time.Duration
 
 	hub *SSEHub
@@ -90,6 +90,7 @@ type Supervisor struct {
 	mu         sync.Mutex
 	serverCmd  *exec.Cmd
 	serverDead bool
+	lastHead   string
 }
 
 func (s *Supervisor) envForServer() []string {
@@ -294,6 +295,9 @@ func (s *Supervisor) autoCommit() (sha string, msg string, ok bool, err error) {
 		return "", "", true, nil
 	}
 	sha = strings.TrimSpace(shaOut)
+	s.mu.Lock()
+	s.lastHead = sha
+	s.mu.Unlock()
 	return sha, msg, true, nil
 }
 
@@ -331,6 +335,30 @@ func (s *Supervisor) handleSettledChanges(paths []string) {
 	}
 }
 
+func (s *Supervisor) handleCommittedChanges(paths []string) {
+	// For changes that arrive via git (commit/rollback/branch switch) where the worktree may be clean.
+	uiChanged := needsUIBuild(paths)
+	srvChanged := needsServerRestart(paths)
+
+	if uiChanged {
+		if err := s.buildUI(); err != nil {
+			log.Printf("ui build failed: %v", err)
+		}
+	}
+	if srvChanged {
+		if err := s.restartServer(); err != nil {
+			log.Printf("server restart failed: %v", err)
+		}
+	}
+
+	if uiChanged || srvChanged {
+		s.hub.Broadcast(map[string]any{"type": "reload", "reason": "head_changed"})
+	}
+	if onlyTriggers(paths) {
+		s.hub.Broadcast(map[string]any{"type": "reload", "reason": "triggers_updated", "note": "no page reload needed"})
+	}
+}
+
 func (s *Supervisor) pollLoop(stop <-chan struct{}) {
 	var pending []string
 	var lastDirty time.Time
@@ -344,6 +372,44 @@ func (s *Supervisor) pollLoop(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
+			// React to git HEAD changes even when the working tree is clean.
+			// This catches quick edit+commit bursts, rollbacks, and branch switches.
+			if lastDirty.IsZero() && len(pending) == 0 {
+				if headOut, err := runCmd(s.repoDir, "git", "rev-parse", "HEAD"); err == nil {
+					head := strings.TrimSpace(headOut)
+					s.mu.Lock()
+					prev := s.lastHead
+					if prev == "" {
+						s.lastHead = head
+						prev = head
+					}
+					s.mu.Unlock()
+
+					if head != "" && prev != "" && head != prev {
+						diffOut, err := runCmd(s.repoDir, "git", "diff", "--name-only", prev, head)
+						if err != nil {
+							log.Printf("git diff failed (%s..%s): %v", prev, head, err)
+							// Fallback: restart+rebuild as a safe default.
+							s.handleCommittedChanges([]string{"src/server.ts", "src/ui/app.ts"})
+						} else {
+							var changed []string
+							for _, line := range strings.Split(strings.TrimSpace(diffOut), "\n") {
+								line = strings.TrimSpace(line)
+								if line == "" {
+									continue
+								}
+								changed = append(changed, line)
+							}
+							s.handleCommittedChanges(changed)
+						}
+
+						s.mu.Lock()
+						s.lastHead = head
+						s.mu.Unlock()
+					}
+				}
+			}
+
 			paths, err := s.gitDirtyPaths()
 			if err != nil {
 				log.Printf("git status failed: %v", err)
@@ -373,6 +439,13 @@ func (s *Supervisor) pollLoop(stop <-chan struct{}) {
 				lastSeen = map[string]bool{}
 
 				s.handleSettledChanges(settled)
+
+				// Keep lastHead in sync; autoCommit updates it, but this also covers no-op commits.
+				if headOut, err := runCmd(s.repoDir, "git", "rev-parse", "HEAD"); err == nil {
+					s.mu.Lock()
+					s.lastHead = strings.TrimSpace(headOut)
+					s.mu.Unlock()
+				}
 			}
 		}
 	}
@@ -479,6 +552,11 @@ func (s *Supervisor) rollbackTo(sha string) error {
 	if _, err := runCmd(s.repoDir, "git", "reset", "--hard", sha); err != nil {
 		return err
 	}
+	if headOut, err := runCmd(s.repoDir, "git", "rev-parse", "HEAD"); err == nil {
+		s.mu.Lock()
+		s.lastHead = strings.TrimSpace(headOut)
+		s.mu.Unlock()
+	}
 	// Best-effort rebuild/restart.
 	_ = s.buildUI()
 	_ = s.restartServer()
@@ -583,6 +661,9 @@ func main() {
 		pollEvery: *pollEvery,
 		hub:       NewSSEHub(),
 	}
+	if headOut, err := runCmd(s.repoDir, "git", "rev-parse", "HEAD"); err == nil {
+		s.lastHead = strings.TrimSpace(headOut)
+	}
 
 	if err := s.buildUI(); err != nil {
 		log.Printf("initial ui build failed: %v", err)
@@ -616,4 +697,3 @@ func main() {
 
 	close(stop)
 }
-
