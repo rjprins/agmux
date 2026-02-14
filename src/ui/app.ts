@@ -105,6 +105,24 @@ function createTermState(ptyId: string): TermState {
   term.loadAddon(fit);
   term.open(container);
 
+  // Ensure trackpad/mouse wheel scrolling works even if the native DOM scrollbar
+  // isn't available (or gets stuck due to layout/CSS quirks).
+  container.addEventListener(
+    "wheel",
+    (ev) => {
+      // Let the browser handle zoom.
+      if (ev.ctrlKey) return;
+      ev.preventDefault();
+
+      // Heuristic: translate pixel deltas to a small number of lines.
+      const dy = ev.deltaY;
+      if (!Number.isFinite(dy) || dy === 0) return;
+      const lines = Math.max(1, Math.round(Math.abs(dy) / 80));
+      term.scrollLines(dy > 0 ? lines : -lines);
+    },
+    { passive: false, capture: true },
+  );
+
   term.onData((data) => {
     if (activePtyId !== ptyId) return;
     ws.send(JSON.stringify({ type: "input", ptyId, data }));
@@ -453,5 +471,23 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
     const st = terms.get(activePtyId);
     if (!st) return "";
     return dumpBuffer(st);
+  },
+  bufferActiveInfo: () => {
+    if (!activePtyId) return { baseY: 0, viewportY: 0, length: 0, rows: 0 };
+    const st = terms.get(activePtyId);
+    if (!st) return { baseY: 0, viewportY: 0, length: 0, rows: 0 };
+    const b = st.term.buffer.active;
+    return {
+      baseY: b.baseY,
+      viewportY: b.viewportY,
+      length: b.length,
+      rows: st.term.rows,
+    };
+  },
+  scrollToBottomActive: () => {
+    if (!activePtyId) return;
+    const st = terms.get(activePtyId);
+    if (!st) return;
+    st.term.scrollToBottom();
   },
 };

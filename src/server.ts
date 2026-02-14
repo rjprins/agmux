@@ -73,10 +73,12 @@ async function loadTriggersAndBroadcast(reason: string): Promise<void> {
 
 // PTY events -> persistence + triggers + WS
 ptys.on("output", (ptyId: string, data: string) => {
-  hub.queuePtyOutput(ptyId, data);
+  const summary = ptys.getSummary(ptyId);
+  const out = summary?.backend === "tmux" ? stripAlternateScreenSequences(data) : data;
+  hub.queuePtyOutput(ptyId, out);
   triggerEngine.onOutput(
     ptyId,
-    data,
+    out,
     (evt) => {
       const type = (evt as any)?.type;
       if (typeof type !== "string") return;
@@ -89,6 +91,19 @@ ptys.on("output", (ptyId: string, data: string) => {
     (id, d) => ptys.write(id, d),
   );
 });
+
+function stripAlternateScreenSequences(s: string): string {
+  // Many CLIs (and tmux itself) use the alternate screen, which disables scrollback in xterm.js.
+  // This mirrors a common terminal setting ("disable alternate screen") by stripping the control
+  // sequences that switch buffers.
+  return s
+    .replaceAll("\x1b[?1049h", "")
+    .replaceAll("\x1b[?1049l", "")
+    .replaceAll("\x1b[?47h", "")
+    .replaceAll("\x1b[?47l", "")
+    .replaceAll("\x1b[?1047h", "")
+    .replaceAll("\x1b[?1047l", "");
+}
 
 ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   const summary = ptys.getSummary(ptyId);
