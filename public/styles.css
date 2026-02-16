@@ -92,6 +92,71 @@ button:disabled {
   cursor: not-allowed;
 }
 
+#btn-keys {
+  margin-left: auto;
+  padding: 8px 10px;
+  min-width: 0;
+  font-weight: 650;
+}
+
+.keys-popup {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 24px;
+  z-index: 1000;
+  min-width: 280px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.keys-popup.hidden {
+  display: none;
+}
+
+.keys-popup-title {
+  font-weight: 650;
+  margin-bottom: 12px;
+}
+
+.keys-popup table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.keys-popup td {
+  padding: 4px 0;
+}
+
+.keys-popup td:first-child {
+  color: var(--muted);
+  padding-right: 16px;
+  white-space: nowrap;
+}
+
+.keys-popup kbd {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.keys-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.keys-backdrop.hidden {
+  display: none;
+}
+
 .section {
   margin-top: 16px;
 }

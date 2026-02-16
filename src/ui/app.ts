@@ -950,6 +950,41 @@ document.addEventListener(
   { capture: true },
 );
 
+// --- Keybindings popup ---
+
+const btnKeys = $("btn-keys") as HTMLButtonElement;
+
+const keysBackdrop = document.createElement("div");
+keysBackdrop.className = "keys-backdrop hidden";
+document.body.appendChild(keysBackdrop);
+
+const keysPopup = document.createElement("div");
+keysPopup.className = "keys-popup hidden";
+keysPopup.innerHTML = `
+  <div class="keys-popup-title">Keybindings</div>
+  <table>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>New shell</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd></td><td>Close PTY</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>]</kbd></td><td>Next PTY</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>[</kbd></td><td>Previous PTY</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd></td><td>Next ready PTY</td></tr>
+  </table>`;
+document.body.appendChild(keysPopup);
+
+function toggleKeysPopup(): void {
+  const show = keysPopup.classList.contains("hidden");
+  keysPopup.classList.toggle("hidden", !show);
+  keysBackdrop.classList.toggle("hidden", !show);
+}
+
+btnKeys.addEventListener("click", toggleKeysPopup);
+keysBackdrop.addEventListener("click", toggleKeysPopup);
+document.addEventListener("keydown", (ev) => {
+  if (ev.key === "Escape" && !keysPopup.classList.contains("hidden")) {
+    toggleKeysPopup();
+  }
+});
+
 void (async () => {
   try {
     await fetchSessionToken();
