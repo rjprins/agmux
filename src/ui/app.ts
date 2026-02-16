@@ -59,17 +59,38 @@ let activePtyId: string | null = null;
 const ACTIVE_PTY_KEY = "agent-tide:activePty";
 
 function saveActivePty(ptyId: string | null): void {
-  if (!ptyId) { localStorage.removeItem(ACTIVE_PTY_KEY); return; }
-  const p = ptys.find((x) => x.id === ptyId);
-  localStorage.setItem(ACTIVE_PTY_KEY, JSON.stringify({
-    ptyId, tmuxSession: p?.tmuxSession ?? null,
-  }));
+  try {
+    if (!ptyId) {
+      sessionStorage.removeItem(ACTIVE_PTY_KEY);
+      // Cleanup legacy shared storage value from older builds.
+      localStorage.removeItem(ACTIVE_PTY_KEY);
+      return;
+    }
+    const p = ptys.find((x) => x.id === ptyId);
+    sessionStorage.setItem(
+      ACTIVE_PTY_KEY,
+      JSON.stringify({
+        ptyId,
+        tmuxSession: p?.tmuxSession ?? null,
+      }),
+    );
+    // Cleanup legacy shared storage value from older builds.
+    localStorage.removeItem(ACTIVE_PTY_KEY);
+  } catch {
+    // ignore storage failures
+  }
 }
 
 function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null } | null {
   try {
-    const raw = localStorage.getItem(ACTIVE_PTY_KEY);
+    // sessionStorage is tab-scoped: each browser tab remembers its own active PTY.
+    // Fall back to legacy localStorage once, then migrate and clear it.
+    const raw = sessionStorage.getItem(ACTIVE_PTY_KEY) ?? localStorage.getItem(ACTIVE_PTY_KEY);
     if (!raw) return null;
+    if (!sessionStorage.getItem(ACTIVE_PTY_KEY)) {
+      sessionStorage.setItem(ACTIVE_PTY_KEY, raw);
+    }
+    localStorage.removeItem(ACTIVE_PTY_KEY);
     const v = JSON.parse(raw);
     return typeof v.ptyId === "string" ? { ptyId: v.ptyId, tmuxSession: v.tmuxSession ?? null } : null;
   } catch { return null; }
@@ -997,7 +1018,7 @@ void (async () => {
   }
   await refreshList();
 
-  // Restore previously active PTY from localStorage.
+  // Restore previously active PTY for this browser tab.
   if (!activePtyId) {
     const saved = loadSavedActivePty();
     if (saved) {

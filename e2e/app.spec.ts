@@ -448,3 +448,44 @@ test("reopening running tmux PTY after refresh shows output without wheel scroll
     }
   }
 });
+
+test("each browser tab restores its own active PTY after reload", async ({ page }) => {
+  let page2: Page | null = null;
+  let firstTabPtyId: string | null = null;
+  let secondTabPtyId: string | null = null;
+
+  try {
+    await page.goto("/?nosup=1");
+    page2 = await page.context().newPage();
+    await page2.goto("/?nosup=1");
+
+    await page.getByRole("button", { name: "New PTY" }).click();
+    await expect(page.locator(".pty-item.active")).toHaveCount(1);
+    firstTabPtyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    if (!firstTabPtyId) throw new Error("missing first tab PTY id");
+
+    await page2.getByRole("button", { name: "New PTY" }).click();
+    await expect(page2.locator(".pty-item.active")).toHaveCount(1);
+    secondTabPtyId = await page2.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    if (!secondTabPtyId) throw new Error("missing second tab PTY id");
+    expect(secondTabPtyId).not.toBe(firstTabPtyId);
+
+    await expect(page.locator(`.pty-item[data-pty-id="${firstTabPtyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
+    await expect(page2.locator(`.pty-item[data-pty-id="${secondTabPtyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
+
+    await page.reload();
+    await page2.reload();
+
+    await expect(page.locator(`.pty-item[data-pty-id="${firstTabPtyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
+    await expect(page2.locator(`.pty-item[data-pty-id="${secondTabPtyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
+  } finally {
+    const token = await readSessionToken(page);
+    if (firstTabPtyId) {
+      await page.request.post(`/api/ptys/${encodeURIComponent(firstTabPtyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+    if (secondTabPtyId && secondTabPtyId !== firstTabPtyId) {
+      await page.request.post(`/api/ptys/${encodeURIComponent(secondTabPtyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+    if (page2) await page2.close();
+  }
+});
