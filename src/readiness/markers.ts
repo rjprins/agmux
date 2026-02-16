@@ -2,6 +2,7 @@ import stripAnsi from "strip-ansi";
 
 export type AgentFamily = "codex" | "claude" | "other";
 export type AgentOutputSignal = "busy" | "prompt" | "none";
+const AGENT_TAIL_MAX_CHARS = 4000;
 
 function recentVisibleLines(chunk: string, maxLines = 16): string[] {
   const tail = stripAnsi(chunk).replaceAll("\r", "\n").replaceAll("\u00a0", " ").slice(-1400);
@@ -50,4 +51,10 @@ export function detectAgentOutputSignal(chunk: string, family: AgentFamily | nul
   if (outputShowsAgentBusyMarker(chunk, family)) return "busy";
   if (outputShowsAgentPromptMarker(chunk, family)) return "prompt";
   return "none";
+}
+
+export function mergeAgentOutputTail(previousTail: string, chunk: string, maxChars = AGENT_TAIL_MAX_CHARS): string {
+  if (!previousTail) return chunk.length <= maxChars ? chunk : chunk.slice(-maxChars);
+  const merged = `${previousTail}${chunk}`;
+  return merged.length <= maxChars ? merged : merged.slice(-maxChars);
 }
