@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -154,6 +155,16 @@ function isShellProcess(name: string): boolean {
   return SHELL_PROCESS_NAMES.has(normalizeProcessName(name));
 }
 
+function gitBranchForCwd(cwd: string): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile("git", ["-C", cwd, "rev-parse", "--abbrev-ref", "HEAD"], { timeout: 500 }, (err, stdout) => {
+      if (err) return resolve(null);
+      const branch = stdout.trim();
+      resolve(branch || null);
+    });
+  });
+}
+
 function ensureReadiness(ptyId: string): PtyReadyState {
   let st = readinessByPty.get(ptyId);
   if (st) return st;
@@ -182,8 +193,10 @@ function setPtyReadiness(ptyId: string, ready: boolean, reason: string, emitEven
   st.reason = reason;
   st.updatedAt = Date.now();
   if (!emitEvent) return;
-  const cwd = ptys.getSummary(ptyId)?.cwd ?? null;
-  broadcast({ type: "pty_ready", ptyId, ready, reason, ts: st.updatedAt, cwd });
+  const summary = ptys.getSummary(ptyId);
+  const cwd = summary?.cwd ?? null;
+  const gitBranch = summary?.gitBranch ?? null;
+  broadcast({ type: "pty_ready", ptyId, ready, reason, ts: st.updatedAt, cwd, gitBranch });
 }
 
 function outputLooksLikePrompt(chunk: string): boolean {
@@ -274,13 +287,21 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
       tmuxPaneCurrentPath(summary.tmuxSession),
     ]);
     activeProcess = proc;
-    if (liveCwd) ptys.updateCwd(ptyId, liveCwd);
+    if (liveCwd) {
+      ptys.updateCwd(ptyId, liveCwd);
+      const branch = await gitBranchForCwd(liveCwd);
+      ptys.updateGitBranch(ptyId, branch);
+    }
   } else {
     const pid = ptys.getPid(ptyId);
     if (pid) {
       try {
         const liveCwd = await fs.readlink(`/proc/${pid}/cwd`);
-        if (liveCwd) ptys.updateCwd(ptyId, liveCwd);
+        if (liveCwd) {
+          ptys.updateCwd(ptyId, liveCwd);
+          const branch = await gitBranchForCwd(liveCwd);
+          ptys.updateGitBranch(ptyId, branch);
+        }
       } catch {
         // Process may have exited; ignore.
       }
@@ -330,6 +351,8 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
       const [activeProcess, liveCwd] = isTmux
         ? await Promise.all([tmuxPaneActiveProcess(p.tmuxSession!), tmuxPaneCurrentPath(p.tmuxSession!)])
         : [null, null];
+      const effectiveCwd = liveCwd ?? p.cwd;
+      const gitBranch = effectiveCwd ? await gitBranchForCwd(effectiveCwd) : null;
       const now = Date.now();
       const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
       if (promptFresh) {
@@ -345,7 +368,7 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
       } else {
         setPtyReadiness(p.id, false, "unknown", false);
       }
-      return { ...p, activeProcess, cwd: liveCwd ?? p.cwd, ready: st.ready, readyReason: st.reason };
+      return { ...p, activeProcess, cwd: effectiveCwd, gitBranch, ready: st.ready, readyReason: st.reason };
     }),
   );
 }

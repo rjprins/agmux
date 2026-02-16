@@ -192,6 +192,16 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.pty-item .branch-label {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 0 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-left: auto;
+}
+
 .pty-item .secondary {
   color: var(--muted);
   font-size: 12px;
