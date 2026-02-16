@@ -68,6 +68,16 @@ async function tmuxByServer(server: TmuxServer, args: string[]): Promise<void> {
   await tmuxAgent(args);
 }
 
+async function tmuxAgentOut(args: string[]): Promise<string> {
+  const { stdout } = await tmuxExec("agent_tide", args);
+  return stdout;
+}
+
+async function tmuxDefaultOut(args: string[]): Promise<string> {
+  const { stdout } = await tmuxExec("default", args);
+  return stdout;
+}
+
 export async function tmuxLocateSession(name: string): Promise<TmuxServer | null> {
   try {
     await tmuxAgent(["has-session", "-t", name]);
@@ -264,4 +274,81 @@ export async function tmuxScrollHistory(
     String(n),
     direction === "up" ? "scroll-up" : "scroll-down",
   ]);
+}
+
+const SHELL_COMMANDS = new Set([
+  "sh",
+  "bash",
+  "zsh",
+  "fish",
+  "dash",
+  "ksh",
+  "tcsh",
+  "csh",
+  "nu",
+]);
+
+function normalizeCommandName(cmd: string): string {
+  const base = cmd.trim().split("/").filter(Boolean).at(-1) ?? cmd.trim();
+  return base.toLowerCase();
+}
+
+function isShellCommand(cmd: string): boolean {
+  return SHELL_COMMANDS.has(normalizeCommandName(cmd));
+}
+
+async function tmuxPaneMeta(name: string): Promise<{ command: string; panePid: number | null; tty: string | null } | null> {
+  const server = await tmuxLocateSession(name);
+  if (!server) return null;
+  try {
+    const out =
+      server === "default"
+        ? await tmuxDefaultOut(["display-message", "-p", "-t", name, "#{pane_current_command}\t#{pane_pid}\t#{pane_tty}"])
+        : await tmuxAgentOut(["display-message", "-p", "-t", name, "#{pane_current_command}\t#{pane_pid}\t#{pane_tty}"]);
+    const [commandRaw, panePidRaw, ttyRaw] = out.trim().split("\t");
+    const command = (commandRaw ?? "").trim();
+    const panePidNum = Number((panePidRaw ?? "").trim());
+    const panePid = Number.isFinite(panePidNum) && panePidNum > 0 ? panePidNum : null;
+    const tty = (ttyRaw ?? "").trim() || null;
+    return { command, panePid, tty };
+  } catch {
+    return null;
+  }
+}
+
+async function ttyForegroundCommand(tty: string, panePid: number | null): Promise<string | null> {
+  try {
+    const ttyArg = tty.startsWith("/dev/") ? tty.slice("/dev/".length) : tty;
+    const { stdout } = await execFileAsync("ps", ["-o", "pid=,tpgid=,comm=", "-t", ttyArg]);
+    const rows = stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const m = line.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        if (!m) return null;
+        return { pid: Number(m[1]), tpgid: Number(m[2]), comm: m[3].trim() };
+      })
+      .filter((r): r is { pid: number; tpgid: number; comm: string } => r != null);
+
+    for (const r of rows) {
+      if (r.pid === r.tpgid && !isShellCommand(r.comm)) return r.comm;
+    }
+    for (const r of rows) {
+      if (panePid != null && r.pid === panePid) continue;
+      if (!isShellCommand(r.comm)) return r.comm;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export async function tmuxPaneActiveProcess(name: string): Promise<string | null> {
+  const meta = await tmuxPaneMeta(name);
+  if (!meta || !meta.command) return null;
+  if (!isShellCommand(meta.command)) return meta.command;
+  if (!meta.tty) return meta.command;
+  const fg = await ttyForegroundCommand(meta.tty, meta.panePid);
+  return fg ?? meta.command;
 }

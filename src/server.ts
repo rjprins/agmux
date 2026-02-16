@@ -21,6 +21,7 @@ import {
   tmuxNewSessionDetached,
   tmuxScrollHistory,
   type TmuxServer,
+  tmuxPaneActiveProcess,
 } from "./tmux.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -126,6 +127,26 @@ function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
   return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
+async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
+  return Promise.all(
+    items.map(async (p) => {
+      if (p.status !== "running" || p.backend !== "tmux" || !p.tmuxSession) {
+        return { ...p, activeProcess: p.activeProcess ?? null };
+      }
+      const activeProcess = await tmuxPaneActiveProcess(p.tmuxSession);
+      return { ...p, activeProcess };
+    }),
+  );
+}
+
+async function listPtys(): Promise<PtySummary[]> {
+  return withActiveProcesses(mergePtys(ptys.list(), store.listSessions()));
+}
+
+async function broadcastPtyList(): Promise<void> {
+  broadcast({ type: "pty_list", ptys: await listPtys() });
+}
+
 function broadcast(evt: ServerToClientMessage): void {
   hub.broadcast(evt);
   if (evt.type === "trigger_fired") {
@@ -222,7 +243,7 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
         rows: 30,
       });
       store.upsertSession(re);
-      broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+      await broadcastPtyList();
     })();
   }
 });
@@ -243,9 +264,7 @@ fastify.get("/api/session", async (_req, reply) => {
 });
 
 fastify.get("/api/ptys", async () => {
-  const live = ptys.list();
-  const persisted = store.listSessions();
-  return { ptys: mergePtys(live, persisted) };
+  return { ptys: await listPtys() };
 });
 
 fastify.get("/api/tmux/sessions", async () => {
@@ -321,7 +340,7 @@ fastify.post("/api/ptys", async (req, reply) => {
     rows,
   });
   store.upsertSession(summary);
-  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  await broadcastPtyList();
   return { id: summary.id };
 });
 
@@ -364,7 +383,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     rows: 30,
   });
   store.upsertSession(summary);
-  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  await broadcastPtyList();
   return { id: summary.id };
 });
 
@@ -432,7 +451,7 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   after.exitCode = after.exitCode ?? null;
   after.exitSignal = after.exitSignal ?? null;
   store.upsertSession(after);
-  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  await broadcastPtyList();
   return { ok: true };
 });
 
@@ -621,7 +640,9 @@ wss.on("connection", (ws) => {
   const client = hub.add(ws);
 
   // Initial list.
-  send(ws, { type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  void listPtys()
+    .then((items) => send(ws, { type: "pty_list", ptys: items }))
+    .catch(() => send(ws, { type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) }));
 
   ws.on("message", (raw) => {
     const msg = parseWsMessage(raw);

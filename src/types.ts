@@ -7,6 +7,7 @@ export type PtySummary = {
   name: string;
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
+  activeProcess?: string | null;
   command: string;
   args: string[];
   cwd: string | null;

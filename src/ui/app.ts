@@ -6,6 +6,7 @@ type PtySummary = {
   name: string;
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
+  activeProcess?: string | null;
   command: string;
   args: string[];
   cwd: string | null;
@@ -51,6 +52,9 @@ const eventsEl = $("events");
 let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
 const ptyTitles = new Map<string, string>();
+const ptyLastInput = new Map<string, string>();
+const ptyInputLineBuffers = new Map<string, string>();
+const ptyInputProcessHints = new Map<string, string>();
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
@@ -171,6 +175,7 @@ function createTermState(ptyId: string): TermState {
 
   term.onData((data) => {
     if (activePtyId !== ptyId) return;
+    trackUserInput(ptyId, data);
     sendWsMessage({ type: "input", ptyId, data });
   });
 
@@ -204,6 +209,9 @@ function removeTerm(ptyId: string): void {
   st.container.remove();
   terms.delete(ptyId);
   ptyTitles.delete(ptyId);
+  ptyLastInput.delete(ptyId);
+  ptyInputLineBuffers.delete(ptyId);
+  ptyInputProcessHints.delete(ptyId);
 }
 
 function wsUrl(): string {
@@ -503,6 +511,99 @@ function shortId(ptyId: string): string {
   return `${ptyId.slice(0, 6)}...${ptyId.slice(-6)}`;
 }
 
+function compactWhitespace(s: string): string {
+  return s.replace(/\s+/g, " ").trim();
+}
+
+const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
+
+function normalizeProcessName(s: string): string {
+  const v = s.trim();
+  if (!v) return "";
+  return (v.split("/").filter(Boolean).at(-1) ?? v).toLowerCase();
+}
+
+function isShellProcess(s: string): boolean {
+  return shellProcessNames.has(normalizeProcessName(s));
+}
+
+function truncateText(s: string, max = 68): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(1, max - 3))}...`;
+}
+
+function unquoteToken(s: string): string {
+  if (s.length >= 2 && ((s.startsWith(`"`) && s.endsWith(`"`)) || (s.startsWith(`'`) && s.endsWith(`'`)))) {
+    return s.slice(1, -1);
+  }
+  return s;
+}
+
+function inferProcessFromInput(line: string): string | null {
+  const tokens = line.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
+  if (!tokens.length) return null;
+
+  const wrappers = new Set(["sudo", "env", "nohup", "time", "command"]);
+  let i = 0;
+  while (i < tokens.length) {
+    const raw = unquoteToken(tokens[i]).trim();
+    if (!raw) {
+      i++;
+      continue;
+    }
+    if (/^[A-Za-z_][A-Za-z0-9_]*=.*/.test(raw)) {
+      i++;
+      continue;
+    }
+    if (wrappers.has(raw) || raw === "--") {
+      i++;
+      continue;
+    }
+    let token = raw.replace(/^[({]+/, "").replace(/[;|&)}]+$/, "");
+    if (!token) return null;
+    if (token.includes("/")) token = token.split("/").filter(Boolean).at(-1) ?? token;
+    if (!token) return null;
+    return token;
+  }
+  return null;
+}
+
+function trackUserInput(ptyId: string, data: string): void {
+  const cleaned = data
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+    .replace(/\x1b./g, "");
+
+  let line = ptyInputLineBuffers.get(ptyId) ?? "";
+  let changed = false;
+  for (const ch of cleaned) {
+    if (ch === "\r" || ch === "\n") {
+      const normalized = compactWhitespace(line);
+      if (normalized) {
+        ptyLastInput.set(ptyId, truncateText(normalized));
+        const proc = inferProcessFromInput(normalized);
+        if (proc) ptyInputProcessHints.set(ptyId, proc);
+        changed = true;
+      }
+      line = "";
+      continue;
+    }
+    if (ch === "\u007f" || ch === "\b") {
+      line = line.slice(0, -1);
+      continue;
+    }
+    if (ch === "\u0015") {
+      line = "";
+      continue;
+    }
+    if (ch < " ") continue;
+    line += ch;
+    if (line.length > 512) line = line.slice(-512);
+  }
+  ptyInputLineBuffers.set(ptyId, line);
+  if (changed) renderList();
+}
+
 async function killPty(ptyId: string): Promise<void> {
   const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/kill`, { method: "POST" });
   if (!res.ok) {
@@ -538,13 +639,24 @@ function renderList(): void {
     main.className = "mainline";
 
     const title = (ptyTitles.get(p.id) ?? "").trim();
+    const activeProcess = compactWhitespace(p.activeProcess ?? "");
+    const inputHint = compactWhitespace(ptyInputProcessHints.get(p.id) ?? "");
+    const process =
+      (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || inputHint || activeProcess || title || p.name;
+    const inputPreview = ptyLastInput.get(p.id) ?? "";
     const primary = document.createElement("div");
     primary.className = "primary";
-    primary.textContent = title || p.name;
+    primary.textContent = process;
 
     const secondary = document.createElement("div");
     secondary.className = "secondary";
-    secondary.textContent = title ? p.name : shortId(p.id);
+    if (inputPreview) {
+      secondary.textContent = `> ${inputPreview}`;
+    } else if (title && title !== process) {
+      secondary.textContent = title;
+    } else {
+      secondary.textContent = title ? p.name : shortId(p.id);
+    }
 
     main.appendChild(primary);
     main.appendChild(secondary);
@@ -554,7 +666,7 @@ function renderList(): void {
     closeBtn.className = "pty-close";
     closeBtn.textContent = "x";
     closeBtn.title = "Close";
-    closeBtn.setAttribute("aria-label", `Close PTY ${p.name}`);
+    closeBtn.setAttribute("aria-label", `Close PTY ${process}`);
     closeBtn.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();

@@ -177,3 +177,23 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
     await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
   }
 });
+
+test("pty list shows running subprocess name", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  try {
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await page.keyboard.type("sleep 8");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator(".pty-item.active .primary")).toContainText("sleep", { timeout: 10_000 });
+    await expect(page.locator(".pty-item.active .secondary")).toContainText("> sleep 8", { timeout: 10_000 });
+  } finally {
+    if (ptyId) {
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill`);
+    }
+  }
+});
