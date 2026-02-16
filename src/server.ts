@@ -164,6 +164,7 @@ const inputLineByPty = new Map<string, string>();
 const READINESS_QUIET_MS = 220;
 const READINESS_PROMPT_WINDOW_MS = 15_000;
 const READINESS_BUSY_DELAY_MS = 120;
+const READINESS_AGENT_UNKNOWN_TO_READY_MS = 1_200;
 const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 const AGENT_PROCESS_NAMES = new Set(["codex", "claude", "aider", "goose", "opencode", "cursor-agent"]);
 
@@ -359,6 +360,35 @@ function outputHasVisibleText(chunk: string): boolean {
   return visible.length > 0;
 }
 
+function agentUnknownDecision(
+  st: PtyReadyState,
+  now: number,
+  unknownReason: string,
+): { state: PtyReadinessState; reason: string; promoteInMs: number | null } {
+  if (st.lastOutputAt <= 0) {
+    return { state: "unknown", reason: unknownReason, promoteInMs: READINESS_AGENT_UNKNOWN_TO_READY_MS };
+  }
+  const quietMs = now - st.lastOutputAt;
+  if (quietMs >= READINESS_AGENT_UNKNOWN_TO_READY_MS) {
+    return { state: "ready", reason: "agent:settled", promoteInMs: null };
+  }
+  return { state: "unknown", reason: unknownReason, promoteInMs: READINESS_AGENT_UNKNOWN_TO_READY_MS - quietMs };
+}
+
+function setAgentUnknownOrReady(
+  ptyId: string,
+  st: PtyReadyState,
+  now: number,
+  unknownReason: string,
+  emitEvent = true,
+): void {
+  const decision = agentUnknownDecision(st, now, unknownReason);
+  setPtyReadiness(ptyId, decision.state, decision.reason, emitEvent);
+  if (emitEvent && decision.promoteInMs != null) {
+    scheduleReadinessRecompute(ptyId, Math.max(READINESS_QUIET_MS, decision.promoteInMs + 10));
+  }
+}
+
 async function tmuxSessionShowsPrompt(
   ptyId: string,
   tmuxSession: string,
@@ -528,14 +558,14 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
 
   const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
   if (promptFresh) {
-    if (effectiveMode === "agent") setPtyReadiness(ptyId, "unknown", "agent:prompt-stable");
+    if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-stable");
     else setPtyReadiness(ptyId, "ready", "prompt");
     return;
   }
 
   if (summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
     if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, effectiveMode, agentFamily)) {
-      if (effectiveMode === "agent") setPtyReadiness(ptyId, "unknown", "agent:prompt-visible");
+      if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-visible");
       else setPtyReadiness(ptyId, "ready", "prompt-visible");
       return;
     }
@@ -545,7 +575,7 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
 
   if (summary.backend === "tmux" && summary.tmuxSession && !activeProcess) {
     if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, effectiveMode, agentFamily)) {
-      if (effectiveMode === "agent") setPtyReadiness(ptyId, "unknown", "agent:prompt-visible");
+      if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-visible");
       else setPtyReadiness(ptyId, "ready", "prompt-visible");
       return;
     }
@@ -554,13 +584,13 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
   }
 
   if (summary.backend === "tmux" && (!activeProcess || isShellProcess(activeProcess))) {
-    if (effectiveMode === "agent") setPtyReadiness(ptyId, "unknown", "agent:idle-shell");
+    if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:idle-shell");
     else setPtyReadiness(ptyId, "ready", "idle-shell");
     return;
   }
 
   if (effectiveMode === "agent") {
-    setPtyReadiness(ptyId, "unknown", "agent:idle");
+    setAgentUnknownOrReady(ptyId, st, now, "agent:idle");
     return;
   }
   setPtyReadiness(ptyId, "unknown", "unknown");
@@ -596,27 +626,40 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
       st.agentFamilyHint = agentFamily;
       const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
       if (promptFresh) {
-        if (effectiveMode === "agent") setPtyReadiness(p.id, "unknown", "agent:prompt-stable", false);
+        if (effectiveMode === "agent") {
+          const decision = agentUnknownDecision(st, now, "agent:prompt-stable");
+          setPtyReadiness(p.id, decision.state, decision.reason, false);
+        }
         else setPtyReadiness(p.id, "ready", "prompt", false);
       } else if (p.backend === "tmux" && p.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
         if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession, effectiveMode, agentFamily)) {
-          if (effectiveMode === "agent") setPtyReadiness(p.id, "unknown", "agent:prompt-visible", false);
+          if (effectiveMode === "agent") {
+            const decision = agentUnknownDecision(st, now, "agent:prompt-visible");
+            setPtyReadiness(p.id, decision.state, decision.reason, false);
+          }
           else setPtyReadiness(p.id, "ready", "prompt-visible", false);
         } else {
           setPtyReadiness(p.id, "busy", `process:${normalizeProcessName(activeProcess)}`, false);
         }
       } else if (p.backend === "tmux" && p.tmuxSession && !activeProcess) {
         if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession, effectiveMode, agentFamily)) {
-          if (effectiveMode === "agent") setPtyReadiness(p.id, "unknown", "agent:prompt-visible", false);
+          if (effectiveMode === "agent") {
+            const decision = agentUnknownDecision(st, now, "agent:prompt-visible");
+            setPtyReadiness(p.id, decision.state, decision.reason, false);
+          }
           else setPtyReadiness(p.id, "ready", "prompt-visible", false);
         } else {
           setPtyReadiness(p.id, "unknown", "tmux:process-unresolved", false);
         }
       } else if (p.backend === "tmux") {
-        if (effectiveMode === "agent") setPtyReadiness(p.id, "unknown", "agent:idle-shell", false);
+        if (effectiveMode === "agent") {
+          const decision = agentUnknownDecision(st, now, "agent:idle-shell");
+          setPtyReadiness(p.id, decision.state, decision.reason, false);
+        }
         else setPtyReadiness(p.id, "ready", "idle-shell", false);
       } else if (effectiveMode === "agent") {
-        setPtyReadiness(p.id, "unknown", "agent:idle", false);
+        const decision = agentUnknownDecision(st, now, "agent:idle");
+        setPtyReadiness(p.id, decision.state, decision.reason, false);
       } else {
         setPtyReadiness(p.id, "unknown", "unknown", false);
       }
