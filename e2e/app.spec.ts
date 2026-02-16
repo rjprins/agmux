@@ -265,6 +265,53 @@ test("pty readiness flips busy to ready around subprocess execution", async ({ p
   }
 });
 
+test("pty readiness does not flash busy for immediate prompt commands", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  try {
+    const active = page.locator(".pty-item.active");
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    await page.evaluate(() => {
+      const root = document.querySelector(".pty-list") ?? document.body;
+      (window as any).__busyFlashSeen = false;
+      const update = () => {
+        if (document.querySelector(".pty-item.active .ready-dot.busy")) {
+          (window as any).__busyFlashSeen = true;
+        }
+      };
+      const observer = new MutationObserver(update);
+      observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
+      (window as any).__busyFlashObserver = observer;
+      update();
+    });
+
+    await page.keyboard.type(":");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(700);
+
+    const busySeen = await page.evaluate(() => Boolean((window as any).__busyFlashSeen));
+    expect(busySeen).toBeFalsy();
+    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    await page.evaluate(() => {
+      const obs = (window as any).__busyFlashObserver;
+      if (obs && typeof obs.disconnect === "function") obs.disconnect();
+      delete (window as any).__busyFlashObserver;
+      delete (window as any).__busyFlashSeen;
+    });
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+  }
+});
+
 test("tmux non-shell interactive prompt stays ready after reload", async ({ page }) => {
   const hasTmux = await commandAvailable("tmux", ["-V"]);
   const hasPython = await commandAvailable("python3", ["--version"]);
