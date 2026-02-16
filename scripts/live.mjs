@@ -1,25 +1,21 @@
 import { spawn, execFile, execSync } from "node:child_process";
-import { createServer } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import fs from "node:fs";
 
 const repo = process.cwd();
 const supDir = path.join(repo, "supervisor");
-
-function findFreePort() {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on("error", reject);
-  });
+const DEFAULT_APP_PORT = 4821;
+const DEFAULT_SUP_PORT = 4822;
+const requestedAppPort = Number(process.env.APP_PORT ?? String(DEFAULT_APP_PORT));
+const requestedSupPort = Number(process.env.SUP_PORT ?? String(DEFAULT_SUP_PORT));
+const appPort = Number.isInteger(requestedAppPort) && requestedAppPort > 0 ? requestedAppPort : DEFAULT_APP_PORT;
+const supPort = Number.isInteger(requestedSupPort) && requestedSupPort > 0 ? requestedSupPort : DEFAULT_SUP_PORT;
+if (appPort === supPort) {
+  // eslint-disable-next-line no-console
+  console.error(`APP_PORT and SUP_PORT must differ (both are ${appPort}).`);
+  process.exit(2);
 }
-
-const appPort = process.env.APP_PORT ? Number(process.env.APP_PORT) : await findFreePort();
-const supPort = process.env.SUP_PORT ? Number(process.env.SUP_PORT) : await findFreePort();
 
 function checkPortAvailable(port) {
   try {
@@ -41,9 +37,8 @@ function checkPortAvailable(port) {
   }
 }
 
-// Only check explicitly requested ports; auto-discovered ones are known-free.
-if (process.env.APP_PORT) checkPortAvailable(appPort);
-if (process.env.SUP_PORT) checkPortAvailable(supPort);
+checkPortAvailable(appPort);
+checkPortAvailable(supPort);
 
 const goCache = process.env.GOCACHE ?? "/tmp/go-build-cache";
 try {
