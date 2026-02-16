@@ -246,7 +246,8 @@ function markReadyOutput(ptyId: string, chunk: string): void {
     scheduleReadinessRecompute(ptyId);
     return;
   }
-  setPtyReadiness(ptyId, false, "output");
+  // Avoid brief busy flashes for tiny output bursts that are immediately followed by a prompt redraw.
+  if (!st.ready) setPtyReadiness(ptyId, false, "output");
   scheduleReadinessRecompute(ptyId);
 }
 
@@ -254,7 +255,8 @@ function markReadyInput(ptyId: string): void {
   const st = ensureReadiness(ptyId);
   st.lastOutputAt = Date.now();
   st.lastPromptAt = 0;
-  setPtyReadiness(ptyId, false, "input");
+  // Keep prompt sessions ready while typing; recompute will switch to busy if execution actually continues.
+  if (!st.ready) setPtyReadiness(ptyId, false, "input");
   scheduleReadinessRecompute(ptyId);
 }
 
