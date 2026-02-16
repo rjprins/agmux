@@ -1,8 +1,14 @@
 import stripAnsi from "strip-ansi";
+import {
+  compileAgentPatternCatalog,
+  type CompiledAgentPatternCatalog,
+  type CompiledPatternMap,
+} from "./patterns.js";
 
 export type AgentFamily = "codex" | "claude" | "other";
 export type AgentOutputSignal = "busy" | "prompt" | "none";
 const AGENT_TAIL_MAX_CHARS = 4000;
+const DEFAULT_PATTERNS = compileAgentPatternCatalog();
 
 function recentVisibleLines(chunk: string, maxLines = 16): string[] {
   const tail = stripAnsi(chunk).replaceAll("\r", "\n").replaceAll("\u00a0", " ").slice(-1400);
@@ -13,33 +19,54 @@ function recentVisibleLines(chunk: string, maxLines = 16): string[] {
     .slice(-maxLines);
 }
 
-export function outputShowsAgentBusyMarker(chunk: string, family: AgentFamily | null): boolean {
+function hasPattern(lines: string[], patterns: CompiledPatternMap, id: string): boolean {
+  const re = patterns.get(id);
+  if (!re) return false;
+  return lines.some((line) => re.test(line));
+}
+
+function hasBusy(lines: string[], id: string, patterns: CompiledAgentPatternCatalog): boolean {
+  return hasPattern(lines, patterns.busy, id);
+}
+
+function hasPrompt(lines: string[], id: string, patterns: CompiledAgentPatternCatalog): boolean {
+  return hasPattern(lines, patterns.prompt, id);
+}
+
+export function outputShowsAgentBusyMarker(
+  chunk: string,
+  family: AgentFamily | null,
+  patterns: CompiledAgentPatternCatalog = DEFAULT_PATTERNS,
+): boolean {
   const lines = recentVisibleLines(chunk, 18);
   if (lines.length === 0) return false;
 
-  const hasInterrupt = lines.some((line) => /\besc to interrupt\b/i.test(line));
-  const hasCodexWorking = lines.some((line) => /^[•·●]?\s*working\b.*\besc to interrupt\b/i.test(line));
-  const hasClaudeThinking = lines.some((line) =>
-    /^[✶✻✢✳*]\s+.+\((?:thinking|analyzing|planning|reasoning)\)\s*$/iu.test(line),
-  );
+  const hasInterrupt = hasBusy(lines, "busy_interrupt", patterns);
+  const hasCodexWorking = hasBusy(lines, "busy_codex_working", patterns);
+  const hasClaudeThinking = hasBusy(lines, "busy_claude_thinking", patterns);
+  const hasWorkingWord = hasBusy(lines, "busy_working_word", patterns);
 
-  if (family === "codex") return hasCodexWorking || (hasInterrupt && lines.some((line) => /\bworking\b/i.test(line)));
+  if (family === "codex") return hasCodexWorking || (hasInterrupt && hasWorkingWord);
   if (family === "claude") return hasClaudeThinking;
   if (family === "other") return hasClaudeThinking || hasCodexWorking;
   return hasClaudeThinking || hasCodexWorking;
 }
 
-export function outputShowsAgentPromptMarker(chunk: string, family: AgentFamily | null): boolean {
+export function outputShowsAgentPromptMarker(
+  chunk: string,
+  family: AgentFamily | null,
+  patterns: CompiledAgentPatternCatalog = DEFAULT_PATTERNS,
+): boolean {
   const lines = recentVisibleLines(chunk, 20);
   if (lines.length === 0) return false;
 
-  const hasPromptInput = lines.some((line) => /^[›❯]\s*(?:$|\S.*)$/u.test(line));
+  const hasPromptInput = hasPrompt(lines, "prompt_input", patterns);
   if (!hasPromptInput) return false;
 
-  const hasContext = lines.some((line) => /\b\d{1,3}%\s+context left\b/i.test(line));
-  const hasShortcuts = lines.some((line) => /\?\s+for shortcuts\b/i.test(line));
-  const hasClaudeHeader = lines.some((line) => /\bClaude Code\b/i.test(line));
-  const hasRuleLine = lines.some((line) => /^[─-]{20,}$/.test(line));
+  const hasContext = hasPrompt(lines, "prompt_context_left", patterns);
+  const hasShortcuts = hasPrompt(lines, "prompt_shortcuts", patterns);
+  const hasClaudeHeader = hasPrompt(lines, "prompt_claude_header", patterns);
+  const hasRuleLine = hasPrompt(lines, "prompt_rule_line", patterns);
 
   if (family === "codex") return hasContext || hasShortcuts;
   if (family === "claude") return hasShortcuts || hasRuleLine || hasClaudeHeader;
@@ -47,9 +74,14 @@ export function outputShowsAgentPromptMarker(chunk: string, family: AgentFamily 
   return hasContext || hasShortcuts;
 }
 
-export function detectAgentOutputSignal(chunk: string, family: AgentFamily | null): AgentOutputSignal {
-  if (outputShowsAgentBusyMarker(chunk, family)) return "busy";
-  if (outputShowsAgentPromptMarker(chunk, family)) return "prompt";
+export function detectAgentOutputSignal(
+  chunk: string,
+  family: AgentFamily | null,
+  patterns: CompiledAgentPatternCatalog = DEFAULT_PATTERNS,
+): AgentOutputSignal {
+  // Busy has precedence over prompt to avoid transient ready flicker while a tool is still streaming.
+  if (outputShowsAgentBusyMarker(chunk, family, patterns)) return "busy";
+  if (outputShowsAgentPromptMarker(chunk, family, patterns)) return "prompt";
   return "none";
 }
 
