@@ -782,7 +782,8 @@ function renderList(): void {
       (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || inputHint || activeProcess || title || p.name;
     const inputPreview = ptyLastInput.get(p.id) ?? "";
     const readyInfo = ptyReady.get(p.id) ?? { ready: Boolean(p.ready), reason: String(p.readyReason ?? "") };
-    const readyLabel = readyInfo.ready ? "ready" : "busy";
+    li.classList.add(readyInfo.ready ? "state-ready" : "state-busy");
+    const readyStateLabel = readyInfo.ready ? "ready" : "busy";
     const cwdLabel = compactWhitespace(p.cwd ?? "");
 
     const primaryRow = document.createElement("div");
@@ -790,9 +791,8 @@ function renderList(): void {
 
     const readyDot = document.createElement("span");
     readyDot.className = `ready-dot ${readyInfo.ready ? "ready" : "busy"}`;
-    readyDot.textContent = "●";
-    readyDot.title = `PTY is ${readyLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
-    readyDot.setAttribute("aria-label", `PTY is ${readyLabel}`);
+    readyDot.title = `PTY is ${readyStateLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
+    readyDot.setAttribute("aria-label", `PTY is ${readyStateLabel}`);
 
     const primary = document.createElement("div");
     primary.className = "primary";
@@ -820,11 +820,11 @@ function renderList(): void {
     secondary.className = "secondary";
     let secondaryText = "";
     if (inputPreview) {
-      secondaryText = `> ${inputPreview}  ${readyLabel}`;
+      secondaryText = `> ${inputPreview}`;
     } else if (title && title !== process) {
-      secondaryText = `${title}  ${readyLabel}`;
+      secondaryText = title;
     } else {
-      secondaryText = `${p.name}  ${readyLabel}`;
+      secondaryText = p.name;
     }
     secondary.textContent = secondaryText;
 
