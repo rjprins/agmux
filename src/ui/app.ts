@@ -1,6 +1,9 @@
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 
+type PtyReadinessState = "ready" | "busy" | "unknown";
+type PtyReadinessIndicator = "ready" | "busy";
+
 type PtySummary = {
   id: string;
   name: string;
@@ -8,6 +11,8 @@ type PtySummary = {
   tmuxSession?: string | null;
   activeProcess?: string | null;
   ready?: boolean;
+  readyState?: PtyReadinessState;
+  readyIndicator?: PtyReadinessIndicator;
   readyReason?: string | null;
   command: string;
   args: string[];
@@ -41,7 +46,15 @@ type ServerMsg =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: string; data: string }
   | { type: "pty_exit"; ptyId: string; code: number | null; signal: string | null }
-  | { type: "pty_ready"; ptyId: string; ready: boolean; reason: string; ts: number; cwd?: string | null }
+  | {
+      type: "pty_ready";
+      ptyId: string;
+      state: PtyReadinessState;
+      indicator: PtyReadinessIndicator;
+      reason: string;
+      ts: number;
+      cwd?: string | null;
+    }
   | { type: "trigger_fired"; ptyId: string; trigger: string; match: string; line: string; ts: number }
   | { type: "pty_highlight"; ptyId: string; reason: string; ttlMs: number }
   | { type: "trigger_error"; ptyId: string; trigger: string; ts: number; message: string };
@@ -106,9 +119,16 @@ const ptyLastInput = new Map<string, string>();
 const ptyInputHistory = new Map<string, string[]>();
 const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
-const ptyReady = new Map<string, { ready: boolean; reason: string }>();
+type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator; reason: string };
+const ptyReady = new Map<string, PtyReadyInfo>();
 const PTY_INPUT_META_KEY = "agent-tide:ptyInputMeta";
 const MAX_INPUT_HISTORY = 40;
+
+function readinessFromSummary(p: PtySummary): PtyReadyInfo {
+  const state = p.readyState ?? (typeof p.ready === "boolean" ? (p.ready ? "ready" : "busy") : "unknown");
+  const indicator = p.readyIndicator ?? (state === "ready" ? "ready" : "busy");
+  return { state, indicator, reason: String(p.readyReason ?? "") };
+}
 
 function savePtyInputMeta(): void {
   try {
@@ -484,8 +504,7 @@ function onServerMsg(msg: ServerMsg): void {
     const allKnown = new Set(ptys.map((p) => p.id));
     prunePtyInputMeta(allKnown);
     for (const p of ptys) {
-      if (typeof p.ready !== "boolean") continue;
-      ptyReady.set(p.id, { ready: p.ready, reason: String(p.readyReason ?? "") });
+      ptyReady.set(p.id, readinessFromSummary(p));
     }
     for (const ptyId of ptyReady.keys()) {
       if (!running.has(ptyId)) ptyReady.delete(ptyId);
@@ -514,13 +533,13 @@ function onServerMsg(msg: ServerMsg): void {
     return;
   }
   if (msg.type === "pty_exit") {
-    ptyReady.set(msg.ptyId, { ready: false, reason: "exited" });
+    ptyReady.set(msg.ptyId, { state: "busy", indicator: "busy", reason: "exited" });
     addEvent(`PTY exited: ${msg.ptyId} code=${msg.code ?? "?"} signal=${msg.signal ?? "-"}`);
     refreshList();
     return;
   }
   if (msg.type === "pty_ready") {
-    ptyReady.set(msg.ptyId, { ready: msg.ready, reason: msg.reason });
+    ptyReady.set(msg.ptyId, { state: msg.state, indicator: msg.indicator, reason: msg.reason });
     if (msg.cwd != null) {
       const p = ptys.find((x) => x.id === msg.ptyId);
       if (p) p.cwd = msg.cwd;
@@ -850,16 +869,16 @@ function renderList(): void {
     const process =
       (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || inputHint || activeProcess || title || p.name;
     const inputPreview = ptyLastInput.get(p.id) ?? "";
-    const readyInfo = ptyReady.get(p.id) ?? { ready: Boolean(p.ready), reason: String(p.readyReason ?? "") };
-    li.classList.add(readyInfo.ready ? "state-ready" : "state-busy");
-    const readyStateLabel = readyInfo.ready ? "ready" : "busy";
+    const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
+    li.classList.add(`state-${readyInfo.state}`);
+    const readyStateLabel = readyInfo.state;
     const cwdLabel = compactWhitespace(p.cwd ?? "");
 
     const primaryRow = document.createElement("div");
     primaryRow.className = "primary-row";
 
     const readyDot = document.createElement("span");
-    readyDot.className = `ready-dot ${readyInfo.ready ? "ready" : "busy"}`;
+    readyDot.className = `ready-dot ${readyInfo.indicator}`;
     readyDot.title = `PTY is ${readyStateLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
     readyDot.setAttribute("aria-label", `PTY is ${readyStateLabel}`);
 
@@ -867,6 +886,13 @@ function renderList(): void {
     primary.className = "primary";
     primary.textContent = process;
     primaryRow.appendChild(readyDot);
+    if (readyInfo.state === "unknown") {
+      const unknownDot = document.createElement("span");
+      unknownDot.className = "ready-unknown-dot";
+      unknownDot.title = `PTY state is unknown${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
+      unknownDot.setAttribute("aria-label", "PTY state is unknown");
+      primaryRow.appendChild(unknownDot);
+    }
     if (cwdLabel) {
       const cwdEl = document.createElement("span");
       cwdEl.className = "cwd-label";
@@ -1088,7 +1114,7 @@ function switchToNextReady(): void {
   for (let i = 1; i <= running.length; i++) {
     const candidate = running[(idx + i) % running.length];
     const readyInfo = ptyReady.get(candidate.id);
-    if (readyInfo?.ready) {
+    if (readyInfo?.state === "ready") {
       setActive(candidate.id);
       return;
     }

@@ -9,7 +9,18 @@ import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import { PtyManager } from "./pty/manager.js";
 import { SqliteStore } from "./persist/sqlite.js";
-import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from "./types.js";
+import {
+  detectAgentOutputSignal,
+  outputShowsAgentPromptMarker,
+  type AgentFamily,
+} from "./readiness/markers.js";
+import type {
+  ClientToServerMessage,
+  PtyReadinessIndicator,
+  PtyReadinessState,
+  PtySummary,
+  ServerToClientMessage,
+} from "./types.js";
 import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
@@ -134,20 +145,29 @@ function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
 }
 
 type PtyReadyState = {
-  ready: boolean;
+  state: PtyReadinessState;
+  indicator: PtyReadinessIndicator;
   reason: string;
   updatedAt: number;
   lastOutputAt: number;
   lastPromptAt: number;
   timer: NodeJS.Timeout | null;
   busyDelayTimer: NodeJS.Timeout | null;
+  shellHooksInstalled: boolean;
+  modeHint: SessionMode | null;
+  agentFamilyHint: AgentFamily | null;
 };
 
 const readinessByPty = new Map<string, PtyReadyState>();
 const READINESS_QUIET_MS = 220;
 const READINESS_PROMPT_WINDOW_MS = 15_000;
 const READINESS_BUSY_DELAY_MS = 120;
+const SHELL_HOOK_MARKER = /\x1b]133;(AT_BUSY|AT_READY)(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/g;
 const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
+const AGENT_PROCESS_NAMES = new Set(["codex", "claude", "aider", "goose", "opencode", "cursor-agent"]);
+
+type SessionMode = "shell" | "agent" | "other";
+type ShellKind = "bash" | "zsh" | "fish";
 
 function normalizeProcessName(name: string): string {
   const trimmed = name.trim();
@@ -159,17 +179,62 @@ function isShellProcess(name: string): boolean {
   return SHELL_PROCESS_NAMES.has(normalizeProcessName(name));
 }
 
+function isAgentProcess(name: string): boolean {
+  const normalized = normalizeProcessName(name);
+  if (!normalized) return false;
+  if (AGENT_PROCESS_NAMES.has(normalized)) return true;
+  return normalized.startsWith("codex") || normalized.startsWith("claude");
+}
+
+function agentFamilyFromProcessName(name: string | null | undefined): AgentFamily | null {
+  if (!name) return null;
+  const normalized = normalizeProcessName(name);
+  if (!normalized) return null;
+  if (normalized.startsWith("codex")) return "codex";
+  if (normalized.startsWith("claude")) return "claude";
+  if (AGENT_PROCESS_NAMES.has(normalized)) return "other";
+  return null;
+}
+
+function detectAgentFamily(summary: PtySummary | null, activeProcess: string | null): AgentFamily | null {
+  return (
+    agentFamilyFromProcessName(activeProcess) ??
+    agentFamilyFromProcessName(summary?.activeProcess ?? null) ??
+    agentFamilyFromProcessName(summary?.command ?? null)
+  );
+}
+
+function classifySessionMode(summary: PtySummary | null, activeProcess: string | null): SessionMode {
+  if (activeProcess && isAgentProcess(activeProcess)) return "agent";
+  if (summary?.command && isAgentProcess(summary.command)) return "agent";
+  if (summary?.name?.startsWith("shell:")) return "shell";
+  if (summary?.command && isShellProcess(summary.command)) return "shell";
+  if (activeProcess && isShellProcess(activeProcess)) return "shell";
+  return "other";
+}
+
+function shellKindFromValue(value: string | null | undefined): ShellKind | null {
+  if (!value) return null;
+  const name = normalizeProcessName(value);
+  if (name === "bash" || name === "zsh" || name === "fish") return name;
+  return null;
+}
+
 function ensureReadiness(ptyId: string): PtyReadyState {
   let st = readinessByPty.get(ptyId);
   if (st) return st;
   st = {
-    ready: false,
+    state: "unknown",
+    indicator: "busy",
     reason: "startup",
     updatedAt: Date.now(),
     lastOutputAt: 0,
     lastPromptAt: 0,
     timer: null,
     busyDelayTimer: null,
+    shellHooksInstalled: false,
+    modeHint: null,
+    agentFamilyHint: null,
   };
   readinessByPty.set(ptyId, st);
   return st;
@@ -187,6 +252,71 @@ function clearBusyDelayTimer(st: PtyReadyState): void {
   st.busyDelayTimer = null;
 }
 
+function parseShellHookSignal(chunk: string): "ready" | "busy" | null {
+  SHELL_HOOK_MARKER.lastIndex = 0;
+  let out: "ready" | "busy" | null = null;
+  let m: RegExpExecArray | null;
+  while ((m = SHELL_HOOK_MARKER.exec(chunk)) != null) {
+    out = m[1] === "AT_READY" ? "ready" : "busy";
+  }
+  return out;
+}
+
+function stripShellHookMarkers(chunk: string): string {
+  SHELL_HOOK_MARKER.lastIndex = 0;
+  return chunk.replace(SHELL_HOOK_MARKER, "");
+}
+
+function shellHookInstallScript(kind: ShellKind): string {
+  if (kind === "bash") {
+    return [
+      "__agent_tide_precmd() { printf '\\033]133;AT_READY\\a'; }",
+      "PS0=$'\\033]133;AT_BUSY\\a'",
+      "PROMPT_COMMAND=\"__agent_tide_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"",
+      "__agent_tide_precmd",
+      "",
+    ].join("\n");
+  }
+  if (kind === "zsh") {
+    return [
+      "autoload -Uz add-zsh-hook 2>/dev/null",
+      "__agent_tide_preexec() { printf '\\033]133;AT_BUSY\\a'; }",
+      "__agent_tide_precmd() { printf '\\033]133;AT_READY\\a'; }",
+      "if whence -w add-zsh-hook >/dev/null 2>&1; then",
+      "  add-zsh-hook preexec __agent_tide_preexec 2>/dev/null",
+      "  add-zsh-hook precmd __agent_tide_precmd 2>/dev/null",
+      "else",
+      "  preexec_functions+=(__agent_tide_preexec)",
+      "  precmd_functions+=(__agent_tide_precmd)",
+      "fi",
+      "__agent_tide_precmd",
+      "",
+    ].join("\n");
+  }
+  return [
+    "functions -q __agent_tide_preexec; or function __agent_tide_preexec --on-event fish_preexec; printf '\\033]133;AT_BUSY\\a'; end",
+    "functions -q __agent_tide_prompt; or function __agent_tide_prompt --on-event fish_prompt; printf '\\033]133;AT_READY\\a'; end",
+    "emit fish_prompt",
+    "",
+  ].join("\n");
+}
+
+function installShellHooksForPty(ptyId: string, shellValue: string | null | undefined): void {
+  const st = ensureReadiness(ptyId);
+  if (st.shellHooksInstalled) return;
+  const shellKind = shellKindFromValue(shellValue);
+  if (!shellKind) return;
+  st.shellHooksInstalled = true;
+  const script = shellHookInstallScript(shellKind);
+  setTimeout(() => {
+    try {
+      ptys.write(ptyId, script);
+    } catch {
+      // best effort hook install
+    }
+  }, 40);
+}
+
 function scheduleBusyDelay(ptyId: string, reason: string): void {
   const st = ensureReadiness(ptyId);
   if (st.busyDelayTimer) return;
@@ -195,19 +325,28 @@ function scheduleBusyDelay(ptyId: string, reason: string): void {
     // Prompt output arrived during the delay window; keep the PTY ready.
     const promptFresh = st.lastPromptAt > 0 && Date.now() - st.lastPromptAt <= READINESS_BUSY_DELAY_MS + 40;
     if (promptFresh) return;
-    setPtyReadiness(ptyId, false, reason);
+    setPtyReadiness(ptyId, "busy", reason);
   }, READINESS_BUSY_DELAY_MS);
 }
 
-function setPtyReadiness(ptyId: string, ready: boolean, reason: string, emitEvent = true): void {
+function setPtyReadiness(
+  ptyId: string,
+  state: PtyReadinessState,
+  reason: string,
+  emitEvent = true,
+  indicatorOverride?: PtyReadinessIndicator,
+): void {
   const st = ensureReadiness(ptyId);
-  if (st.ready === ready && st.reason === reason) return;
-  st.ready = ready;
+  const indicator =
+    state === "ready" ? "ready" : state === "busy" ? "busy" : (indicatorOverride ?? st.indicator);
+  if (st.state === state && st.reason === reason && st.indicator === indicator) return;
+  st.state = state;
+  st.indicator = indicator;
   st.reason = reason;
   st.updatedAt = Date.now();
   if (!emitEvent) return;
   const cwd = ptys.getSummary(ptyId)?.cwd ?? null;
-  broadcast({ type: "pty_ready", ptyId, ready, reason, ts: st.updatedAt, cwd });
+  broadcast({ type: "pty_ready", ptyId, state, indicator, reason, ts: st.updatedAt, cwd });
 }
 
 function outputLooksLikePrompt(chunk: string): boolean {
@@ -241,9 +380,19 @@ function outputHasVisibleText(chunk: string): boolean {
   return visible.length > 0;
 }
 
-async function tmuxSessionShowsPrompt(ptyId: string, tmuxSession: string): Promise<boolean> {
+async function tmuxSessionShowsPrompt(
+  ptyId: string,
+  tmuxSession: string,
+  mode: SessionMode,
+  agentFamily: AgentFamily | null,
+): Promise<boolean> {
   const snapshot = await tmuxCapturePaneVisible(tmuxSession);
-  if (!snapshot || !outputLooksLikePrompt(snapshot)) return false;
+  if (!snapshot) return false;
+  const promptVisible =
+    mode === "agent"
+      ? outputShowsAgentPromptMarker(snapshot, agentFamily) || (agentFamily === "other" && outputLooksLikePrompt(snapshot))
+      : outputLooksLikePrompt(snapshot);
+  if (!promptVisible) return false;
   ensureReadiness(ptyId).lastPromptAt = Date.now();
   return true;
 }
@@ -259,21 +408,70 @@ function scheduleReadinessRecompute(ptyId: string, delayMs = READINESS_QUIET_MS)
 
 function markReadyOutput(ptyId: string, chunk: string): void {
   const st = ensureReadiness(ptyId);
+  const summary = ptys.getSummary(ptyId);
   const now = Date.now();
-  const promptLike = outputLooksLikePrompt(chunk);
-  if (!promptLike && !outputHasVisibleText(chunk)) return;
+  const hookSignal = parseShellHookSignal(chunk);
+  const cleanChunk = stripShellHookMarkers(chunk);
+  const classifiedMode = classifySessionMode(summary, summary?.activeProcess ?? null);
+  const mode = classifiedMode === "other" && summary?.backend === "tmux" && st.modeHint ? st.modeHint : classifiedMode;
+  const agentFamily = mode === "agent" ? (detectAgentFamily(summary, summary?.activeProcess ?? null) ?? st.agentFamilyHint) : null;
+  if (mode !== "other") st.modeHint = mode;
+  if (agentFamily) st.agentFamilyHint = agentFamily;
+  if (hookSignal === "ready") {
+    clearBusyDelayTimer(st);
+    st.lastOutputAt = now;
+    st.lastPromptAt = now;
+    setPtyReadiness(ptyId, "ready", "hook:prompt");
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
+  if (hookSignal === "busy") {
+    clearBusyDelayTimer(st);
+    st.lastOutputAt = now;
+    st.lastPromptAt = 0;
+    if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "hook:preexec");
+    else setPtyReadiness(ptyId, "busy", "hook:preexec");
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
+  const agentSignal = mode === "agent" ? detectAgentOutputSignal(cleanChunk, agentFamily) : "none";
+  if (agentSignal === "busy") {
+    clearBusyDelayTimer(st);
+    st.lastOutputAt = now;
+    st.lastPromptAt = 0;
+    setPtyReadiness(ptyId, "busy", `agent:busy-marker${agentFamily ? `:${agentFamily}` : ""}`);
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
+  if (agentSignal === "prompt") {
+    clearBusyDelayTimer(st);
+    st.lastOutputAt = now;
+    st.lastPromptAt = now;
+    setPtyReadiness(ptyId, "unknown", `agent:prompt-marker${agentFamily ? `:${agentFamily}` : ""}`);
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
+  const promptLike = outputLooksLikePrompt(cleanChunk);
+  if (!promptLike && !outputHasVisibleText(cleanChunk)) return;
   st.lastOutputAt = now;
+  if (mode === "agent") {
+    st.lastPromptAt = 0;
+    if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "agent:output");
+    else setPtyReadiness(ptyId, "busy", "agent:output");
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
   if (promptLike) {
     clearBusyDelayTimer(st);
     st.lastPromptAt = now;
     // Prompt redraws can stream continuously; keep these sessions marked ready.
-    setPtyReadiness(ptyId, true, "prompt");
+    setPtyReadiness(ptyId, "ready", "prompt");
     scheduleReadinessRecompute(ptyId);
     return;
   }
   // Delay busy slightly so prompt redraw chunks don't flash busy, while sustained output still flips to busy.
-  if (st.ready) scheduleBusyDelay(ptyId, "output");
-  else setPtyReadiness(ptyId, false, "output");
+  if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "output");
+  else setPtyReadiness(ptyId, "busy", "output");
   scheduleReadinessRecompute(ptyId);
 }
 
@@ -282,8 +480,8 @@ function markReadyInput(ptyId: string): void {
   clearBusyDelayTimer(st);
   st.lastOutputAt = Date.now();
   st.lastPromptAt = 0;
-  // Keep prompt sessions ready while typing; recompute will switch to busy if execution actually continues.
-  if (!st.ready) setPtyReadiness(ptyId, false, "input");
+  // Keep ready sessions stable while user types; recompute switches to busy when output resumes.
+  if (st.state !== "ready") setPtyReadiness(ptyId, "busy", "input");
   scheduleReadinessRecompute(ptyId);
 }
 
@@ -291,14 +489,14 @@ function markReadyExited(ptyId: string): void {
   const st = ensureReadiness(ptyId);
   clearReadinessTimer(st);
   clearBusyDelayTimer(st);
-  setPtyReadiness(ptyId, false, "exited");
+  setPtyReadiness(ptyId, "busy", "exited");
 }
 
 async function recomputeReadiness(ptyId: string): Promise<void> {
   const st = ensureReadiness(ptyId);
   const summary = ptys.getSummary(ptyId);
   if (!summary || summary.status !== "running") {
-    setPtyReadiness(ptyId, false, "exited");
+    setPtyReadiness(ptyId, "busy", "exited");
     return;
   }
 
@@ -322,42 +520,72 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
       }
     }
   }
+  if (summary.name.startsWith("shell:")) {
+    installShellHooksForPty(ptyId, summary.name.slice("shell:".length));
+  }
+  const mode = classifySessionMode(summary, activeProcess);
+  const agentFamily = mode === "agent" ? detectAgentFamily(summary, activeProcess) : null;
+  st.modeHint = mode;
+  st.agentFamilyHint = agentFamily;
 
   const sinceOutput = now - st.lastOutputAt;
   if (st.lastOutputAt > 0 && sinceOutput < READINESS_QUIET_MS) {
-    if (summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
-      if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession)) {
-        setPtyReadiness(ptyId, true, "prompt-visible");
+    // Avoid re-marking busy immediately after a prompt marker redraw.
+    const promptJustSeen = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_BUSY_DELAY_MS + 80;
+    if (promptJustSeen) {
+      scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
+      return;
+    }
+    if (mode !== "agent" && summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
+      if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, mode, agentFamily)) {
+        setPtyReadiness(ptyId, "ready", "prompt-visible");
         scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
         return;
       }
     }
-    setPtyReadiness(ptyId, false, "output");
+    setPtyReadiness(ptyId, "busy", mode === "agent" ? "agent:output" : "output");
     scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
     return;
   }
 
   const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
   if (promptFresh) {
-    setPtyReadiness(ptyId, true, "prompt");
+    if (mode === "agent") setPtyReadiness(ptyId, "unknown", "agent:prompt-stable");
+    else setPtyReadiness(ptyId, "ready", "prompt");
     return;
   }
 
   if (summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
-    if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession)) {
-      setPtyReadiness(ptyId, true, "prompt-visible");
+    if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, mode, agentFamily)) {
+      if (mode === "agent") setPtyReadiness(ptyId, "unknown", "agent:prompt-visible");
+      else setPtyReadiness(ptyId, "ready", "prompt-visible");
       return;
     }
-    setPtyReadiness(ptyId, false, `process:${normalizeProcessName(activeProcess)}`);
+    setPtyReadiness(ptyId, "busy", `process:${normalizeProcessName(activeProcess)}`);
+    return;
+  }
+
+  if (summary.backend === "tmux" && summary.tmuxSession && !activeProcess) {
+    if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, mode, agentFamily)) {
+      if (mode === "agent") setPtyReadiness(ptyId, "unknown", "agent:prompt-visible");
+      else setPtyReadiness(ptyId, "ready", "prompt-visible");
+      return;
+    }
+    setPtyReadiness(ptyId, "unknown", "tmux:process-unresolved");
     return;
   }
 
   if (summary.backend === "tmux" && (!activeProcess || isShellProcess(activeProcess))) {
-    setPtyReadiness(ptyId, true, "idle-shell");
+    if (mode === "agent") setPtyReadiness(ptyId, "unknown", "agent:idle-shell");
+    else setPtyReadiness(ptyId, "ready", "idle-shell");
     return;
   }
 
-  setPtyReadiness(ptyId, false, "unknown");
+  if (mode === "agent") {
+    setPtyReadiness(ptyId, "unknown", "agent:idle");
+    return;
+  }
+  setPtyReadiness(ptyId, "unknown", "unknown");
 }
 
 async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
@@ -366,30 +594,65 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
       const st = ensureReadiness(p.id);
       if (p.status !== "running") {
         clearReadinessTimer(st);
-        setPtyReadiness(p.id, false, "exited", false);
-        return { ...p, activeProcess: p.activeProcess ?? null, ready: false, readyReason: "exited" };
+        clearBusyDelayTimer(st);
+        setPtyReadiness(p.id, "busy", "exited", false);
+        return {
+          ...p,
+          activeProcess: p.activeProcess ?? null,
+          ready: false,
+          readyState: "busy",
+          readyIndicator: "busy",
+          readyReason: "exited",
+        };
       }
       const isTmux = p.backend === "tmux" && p.tmuxSession;
       const [activeProcess, liveCwd] = isTmux
         ? await Promise.all([tmuxPaneActiveProcess(p.tmuxSession!), tmuxPaneCurrentPath(p.tmuxSession!)])
         : [null, null];
       const effectiveCwd = liveCwd ?? p.cwd;
+      if (p.name.startsWith("shell:")) {
+        installShellHooksForPty(p.id, p.name.slice("shell:".length));
+      }
+      const mode = classifySessionMode(p, activeProcess);
+      const agentFamily = mode === "agent" ? detectAgentFamily(p, activeProcess) : null;
+      st.modeHint = mode;
+      st.agentFamilyHint = agentFamily;
       const now = Date.now();
       const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
       if (promptFresh) {
-        setPtyReadiness(p.id, true, "prompt", false);
+        if (mode === "agent") setPtyReadiness(p.id, "unknown", "agent:prompt-stable", false);
+        else setPtyReadiness(p.id, "ready", "prompt", false);
       } else if (p.backend === "tmux" && p.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
-        if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession)) {
-          setPtyReadiness(p.id, true, "prompt-visible", false);
+        if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession, mode, agentFamily)) {
+          if (mode === "agent") setPtyReadiness(p.id, "unknown", "agent:prompt-visible", false);
+          else setPtyReadiness(p.id, "ready", "prompt-visible", false);
         } else {
-          setPtyReadiness(p.id, false, `process:${normalizeProcessName(activeProcess)}`, false);
+          setPtyReadiness(p.id, "busy", `process:${normalizeProcessName(activeProcess)}`, false);
+        }
+      } else if (p.backend === "tmux" && p.tmuxSession && !activeProcess) {
+        if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession, mode, agentFamily)) {
+          if (mode === "agent") setPtyReadiness(p.id, "unknown", "agent:prompt-visible", false);
+          else setPtyReadiness(p.id, "ready", "prompt-visible", false);
+        } else {
+          setPtyReadiness(p.id, "unknown", "tmux:process-unresolved", false);
         }
       } else if (p.backend === "tmux") {
-        setPtyReadiness(p.id, true, "idle-shell", false);
+        if (mode === "agent") setPtyReadiness(p.id, "unknown", "agent:idle-shell", false);
+        else setPtyReadiness(p.id, "ready", "idle-shell", false);
+      } else if (mode === "agent") {
+        setPtyReadiness(p.id, "unknown", "agent:idle", false);
       } else {
-        setPtyReadiness(p.id, false, "unknown", false);
+        setPtyReadiness(p.id, "unknown", "unknown", false);
       }
-      return { ...p, activeProcess, cwd: effectiveCwd, ready: st.ready, readyReason: st.reason };
+      return {
+        ...p,
+        activeProcess,
+        cwd: effectiveCwd,
+        ready: st.state === "ready",
+        readyState: st.state,
+        readyIndicator: st.indicator,
+        readyReason: st.reason,
+      };
     }),
   );
 }
@@ -613,6 +876,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
       cols: 120,
       rows: 30,
     });
+    installShellHooksForPty(summary.id, shell);
     store.upsertSession(summary);
     broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
     return { id: summary.id };
@@ -639,6 +903,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     cols: 120,
     rows: 30,
   });
+  installShellHooksForPty(summary.id, shell);
   store.upsertSession(summary);
   await broadcastPtyList();
   return { id: summary.id };

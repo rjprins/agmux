@@ -221,6 +221,12 @@ button:disabled {
   border-left-color: color-mix(in srgb, var(--pty-color, var(--accent)) 55%, #ffb870);
 }
 
+.pty-item.state-unknown {
+  border-style: dashed;
+  border-left-color: color-mix(in srgb, var(--pty-color, var(--accent)) 50%, #d8c172);
+  box-shadow: 0 0 0 1px rgba(216, 193, 114, 0.18) inset;
+}
+
 .pty-item.highlight {
   animation: flash 0.25s ease-in-out 0s 6 alternate;
 }
@@ -283,6 +289,16 @@ button:disabled {
   border-top-color: #ffb870;
   box-shadow: none;
   animation: spin 0.75s linear infinite;
+}
+
+.pty-item .ready-unknown-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  display: inline-block;
+  flex: 0 0 auto;
+  background: #d8c172;
+  box-shadow: 0 0 0 2px rgba(216, 193, 114, 0.16);
 }
 
 @keyframes spin {

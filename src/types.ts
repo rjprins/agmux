@@ -1,6 +1,8 @@
 export type PtyId = string;
 
 export type PtyStatus = "running" | "exited";
+export type PtyReadinessState = "ready" | "busy" | "unknown";
+export type PtyReadinessIndicator = "ready" | "busy";
 
 export type PtySummary = {
   id: PtyId;
@@ -9,6 +11,8 @@ export type PtySummary = {
   tmuxSession?: string | null;
   activeProcess?: string | null;
   ready?: boolean;
+  readyState?: PtyReadinessState;
+  readyIndicator?: PtyReadinessIndicator;
   readyReason?: string | null;
   command: string;
   args: string[];
@@ -29,7 +33,15 @@ export type ServerToClientMessage =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: PtyId; data: string }
   | { type: "pty_exit"; ptyId: PtyId; code: number | null; signal: string | null }
-  | { type: "pty_ready"; ptyId: PtyId; ready: boolean; reason: string; ts: number; cwd?: string | null }
+  | {
+      type: "pty_ready";
+      ptyId: PtyId;
+      state: PtyReadinessState;
+      indicator: PtyReadinessIndicator;
+      reason: string;
+      ts: number;
+      cwd?: string | null;
+    }
   | {
       type: "trigger_fired";
       ptyId: PtyId;
