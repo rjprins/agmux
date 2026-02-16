@@ -12,7 +12,6 @@ type PtySummary = {
   command: string;
   args: string[];
   cwd: string | null;
-  gitBranch?: string | null;
   createdAt: number;
   status: "running" | "exited";
   exitCode?: number | null;
@@ -42,7 +41,7 @@ type ServerMsg =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: string; data: string }
   | { type: "pty_exit"; ptyId: string; code: number | null; signal: string | null }
-  | { type: "pty_ready"; ptyId: string; ready: boolean; reason: string; ts: number; cwd?: string | null; gitBranch?: string | null }
+  | { type: "pty_ready"; ptyId: string; ready: boolean; reason: string; ts: number; cwd?: string | null }
   | { type: "trigger_fired"; ptyId: string; trigger: string; match: string; line: string; ts: number }
   | { type: "pty_highlight"; ptyId: string; reason: string; ttlMs: number }
   | { type: "trigger_error"; ptyId: string; trigger: string; ts: number; message: string };
@@ -505,10 +504,9 @@ function onServerMsg(msg: ServerMsg): void {
   }
   if (msg.type === "pty_ready") {
     ptyReady.set(msg.ptyId, { ready: msg.ready, reason: msg.reason });
-    const p = ptys.find((x) => x.id === msg.ptyId);
-    if (p) {
-      if (msg.cwd != null) p.cwd = msg.cwd;
-      if (msg.gitBranch !== undefined) p.gitBranch = msg.gitBranch;
+    if (msg.cwd != null) {
+      const p = ptys.find((x) => x.id === msg.ptyId);
+      if (p) p.cwd = msg.cwd;
     }
     renderList();
     return;
@@ -807,13 +805,12 @@ function renderList(): void {
       primaryRow.appendChild(cwdEl);
     }
     primaryRow.appendChild(primary);
-    const branchName = compactWhitespace(p.gitBranch ?? "");
-    if (branchName) {
-      const branchEl = document.createElement("span");
-      branchEl.className = "branch-label";
-      branchEl.textContent = branchName;
-      branchEl.title = `branch: ${branchName}`;
-      primaryRow.appendChild(branchEl);
+    if (title && title !== process) {
+      const titleEl = document.createElement("span");
+      titleEl.className = "title-label";
+      titleEl.textContent = title;
+      titleEl.title = title;
+      primaryRow.appendChild(titleEl);
     }
 
     const secondary = document.createElement("div");

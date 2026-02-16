@@ -293,7 +293,7 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.pty-item .branch-label {
+.pty-item .title-label {
   color: var(--muted);
   font-size: 12px;
   flex: 0 1 auto;
@@ -357,6 +357,75 @@ button:disabled {
   overflow: hidden;
   min-height: 0;
   display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.input-context {
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.22);
+  border-radius: 10px;
+  padding: 8px 10px;
+  min-height: 0;
+}
+
+.input-context.hidden {
+  display: none;
+}
+
+.input-context-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.input-context-label {
+  color: var(--muted);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+
+.input-context-last {
+  color: #d9f0ff;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 4px 8px;
+  min-height: 24px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1 1 auto;
+}
+
+.input-context-btn {
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 8px;
+  flex: 0 0 auto;
+}
+
+.input-history-list {
+  margin: 8px 0 0;
+  padding: 0 0 0 18px;
+  max-height: 190px;
+  overflow: auto;
+  display: grid;
+  gap: 4px;
+}
+
+.input-history-list.hidden {
+  display: none;
+}
+
+.input-history-list li {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .terminal {

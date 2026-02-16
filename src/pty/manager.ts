@@ -121,11 +121,6 @@ export class PtyManager extends EventEmitter {
     if (s) s.summary.cwd = cwd;
   }
 
-  updateGitBranch(id: PtyId, branch: string | null): void {
-    const s = this.sessions.get(id);
-    if (s) s.summary.gitBranch = branch;
-  }
-
   getPid(id: PtyId): number | null {
     const s = this.sessions.get(id);
     return s ? s.pty.pid : null;

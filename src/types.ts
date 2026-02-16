@@ -13,7 +13,6 @@ export type PtySummary = {
   command: string;
   args: string[];
   cwd: string | null;
-  gitBranch?: string | null;
   createdAt: number;
   status: PtyStatus;
   exitCode?: number | null;
@@ -30,7 +29,7 @@ export type ServerToClientMessage =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: PtyId; data: string }
   | { type: "pty_exit"; ptyId: PtyId; code: number | null; signal: string | null }
-  | { type: "pty_ready"; ptyId: PtyId; ready: boolean; reason: string; ts: number; cwd?: string | null; gitBranch?: string | null }
+  | { type: "pty_ready"; ptyId: PtyId; ready: boolean; reason: string; ts: number; cwd?: string | null }
   | {
       type: "trigger_fired";
       ptyId: PtyId;
