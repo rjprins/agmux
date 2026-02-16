@@ -365,10 +365,11 @@ function agentUnknownDecision(
   now: number,
   unknownReason: string,
 ): { state: PtyReadinessState; reason: string; promoteInMs: number | null } {
-  if (st.lastOutputAt <= 0) {
+  const basisTs = st.lastPromptAt > 0 ? st.lastPromptAt : st.lastOutputAt;
+  if (basisTs <= 0) {
     return { state: "unknown", reason: unknownReason, promoteInMs: READINESS_AGENT_UNKNOWN_TO_READY_MS };
   }
-  const quietMs = now - st.lastOutputAt;
+  const quietMs = now - basisTs;
   if (quietMs >= READINESS_AGENT_UNKNOWN_TO_READY_MS) {
     return { state: "ready", reason: "agent:settled", promoteInMs: null };
   }
@@ -446,14 +447,19 @@ function markReadyOutput(ptyId: string, chunk: string): void {
     clearBusyDelayTimer(st);
     st.lastOutputAt = now;
     st.lastPromptAt = now;
-    setPtyReadiness(ptyId, "unknown", `agent:prompt-marker${agentFamily ? `:${agentFamily}` : ""}`);
-    scheduleReadinessRecompute(ptyId);
+    setAgentUnknownOrReady(ptyId, st, now, `agent:prompt-marker${agentFamily ? `:${agentFamily}` : ""}`);
     return;
   }
   const promptLike = outputLooksLikePrompt(chunk);
   if (!promptLike && !outputHasVisibleText(chunk)) return;
   st.lastOutputAt = now;
   if (mode === "agent") {
+    const promptFreshForPromotion =
+      st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_AGENT_UNKNOWN_TO_READY_MS + READINESS_BUSY_DELAY_MS;
+    if (promptFreshForPromotion) {
+      setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-pending");
+      return;
+    }
     st.lastPromptAt = 0;
     if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "agent:output");
     else setPtyReadiness(ptyId, "busy", "agent:output");
@@ -997,6 +1003,27 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   store.upsertSession(after);
   markReadyExited(id);
   await broadcastPtyList();
+  return { ok: true };
+});
+
+fastify.get("/api/input-history", async () => {
+  return { history: store.loadAllInputHistory() };
+});
+
+fastify.put("/api/ptys/:id/input-history", async (req, reply) => {
+  const id = (req.params as any).id as string;
+  const body = isRecord(req.body) ? req.body : {};
+  const history = Array.isArray(body.history) ? body.history : [];
+  const lastInput = typeof body.lastInput === "string" ? body.lastInput : undefined;
+  const processHint = typeof body.processHint === "string" ? body.processHint : undefined;
+  const entries = history
+    .filter((x: any) => x && typeof x.text === "string" && x.text.trim().length > 0)
+    .map((x: any) => ({
+      text: String(x.text),
+      bufferLine: typeof x.bufferLine === "number" ? x.bufferLine : 0,
+    }))
+    .slice(-40);
+  store.saveInputHistory(id, { lastInput, processHint, history: entries });
   return { ok: true };
 });
 

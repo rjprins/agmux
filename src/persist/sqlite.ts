@@ -10,6 +10,17 @@ export type PersistedEvent = {
   payload: unknown;
 };
 
+export type InputHistoryEntry = {
+  text: string;
+  bufferLine: number;
+};
+
+export type InputMeta = {
+  lastInput?: string;
+  processHint?: string;
+  history: InputHistoryEntry[];
+};
+
 export class SqliteStore {
   private db: any;
 
@@ -46,6 +57,14 @@ export class SqliteStore {
       );
 
       create index if not exists idx_events_session_ts on events(session_id, ts);
+
+      create table if not exists input_history (
+        session_id text primary key,
+        last_input text,
+        process_hint text,
+        history_json text not null default '[]',
+        updated_at integer not null
+      );
     `);
 
     // Backwards-compatible column adds for existing DBs.
@@ -142,6 +161,63 @@ export class SqliteStore {
       exitCode: r.exit_code,
       exitSignal: r.exit_signal,
     }));
+  }
+
+  saveInputHistory(sessionId: string, meta: InputMeta): void {
+    const stmt = this.db.prepare(`
+      insert into input_history (session_id, last_input, process_hint, history_json, updated_at)
+      values (@session_id, @last_input, @process_hint, @history_json, @updated_at)
+      on conflict(session_id) do update set
+        last_input=excluded.last_input,
+        process_hint=excluded.process_hint,
+        history_json=excluded.history_json,
+        updated_at=excluded.updated_at;
+    `);
+    stmt.run({
+      session_id: sessionId,
+      last_input: meta.lastInput ?? null,
+      process_hint: meta.processHint ?? null,
+      history_json: JSON.stringify(meta.history),
+      updated_at: Date.now(),
+    });
+  }
+
+  loadAllInputHistory(): Record<string, InputMeta> {
+    const stmt = this.db.prepare(`
+      select session_id, last_input, process_hint, history_json
+      from input_history
+      order by updated_at desc;
+    `);
+    const rows = stmt.all() as Array<{
+      session_id: string;
+      last_input: string | null;
+      process_hint: string | null;
+      history_json: string;
+    }>;
+    const result: Record<string, InputMeta> = {};
+    for (const r of rows) {
+      let history: InputHistoryEntry[] = [];
+      try {
+        const parsed = JSON.parse(r.history_json);
+        if (Array.isArray(parsed)) {
+          history = parsed.filter(
+            (x: any) => x && typeof x.text === "string" && x.text.trim().length > 0,
+          );
+        }
+      } catch {
+        // ignore
+      }
+      result[r.session_id] = {
+        ...(r.last_input ? { lastInput: r.last_input } : {}),
+        ...(r.process_hint ? { processHint: r.process_hint } : {}),
+        history,
+      };
+    }
+    return result;
+  }
+
+  deleteInputHistory(sessionId: string): void {
+    this.db.prepare(`delete from input_history where session_id = ?;`).run(sessionId);
   }
 
   private parseArgsJson(raw: string): string[] {
