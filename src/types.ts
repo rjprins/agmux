@@ -8,6 +8,8 @@ export type PtySummary = {
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
   activeProcess?: string | null;
+  ready?: boolean;
+  readyReason?: string | null;
   command: string;
   args: string[];
   cwd: string | null;
@@ -27,6 +29,7 @@ export type ServerToClientMessage =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: PtyId; data: string }
   | { type: "pty_exit"; ptyId: PtyId; code: number | null; signal: string | null }
+  | { type: "pty_ready"; ptyId: PtyId; ready: boolean; reason: string; ts: number }
   | {
       type: "trigger_fired";
       ptyId: PtyId;

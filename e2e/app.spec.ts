@@ -193,7 +193,30 @@ test("pty list shows running subprocess name", async ({ page }) => {
     await expect(page.locator(".pty-item.active .secondary")).toContainText("> sleep 8", { timeout: 10_000 });
   } finally {
     if (ptyId) {
-      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill`);
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+  }
+});
+
+test("pty readiness flips busy to ready around subprocess execution", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  try {
+    const active = page.locator(".pty-item.active");
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await page.keyboard.type("sleep 1");
+    await page.keyboard.press("Enter");
+
+    await expect(active.locator(".ready-dot.busy")).toHaveCount(1, { timeout: 5_000 });
+    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
     }
   }
 });

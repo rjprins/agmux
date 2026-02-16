@@ -156,9 +156,31 @@ button:disabled {
 
 .pty-item .primary {
   font-weight: 650;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.pty-item .primary-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pty-item .ready-dot {
+  font-size: 10px;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.pty-item .ready-dot.ready {
+  color: #5fd18c;
+}
+
+.pty-item .ready-dot.busy {
+  color: #ffb870;
 }
 
 .pty-item .secondary {

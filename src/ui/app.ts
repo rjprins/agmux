@@ -7,6 +7,8 @@ type PtySummary = {
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
   activeProcess?: string | null;
+  ready?: boolean;
+  readyReason?: string | null;
   command: string;
   args: string[];
   cwd: string | null;
@@ -39,6 +41,7 @@ type ServerMsg =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: string; data: string }
   | { type: "pty_exit"; ptyId: string; code: number | null; signal: string | null }
+  | { type: "pty_ready"; ptyId: string; ready: boolean; reason: string; ts: number }
   | { type: "trigger_fired"; ptyId: string; trigger: string; match: string; line: string; ts: number }
   | { type: "pty_highlight"; ptyId: string; reason: string; ttlMs: number }
   | { type: "trigger_error"; ptyId: string; trigger: string; ts: number; message: string };
@@ -55,6 +58,7 @@ const ptyTitles = new Map<string, string>();
 const ptyLastInput = new Map<string, string>();
 const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
+const ptyReady = new Map<string, { ready: boolean; reason: string }>();
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
@@ -208,6 +212,7 @@ function removeTerm(ptyId: string): void {
   ptyLastInput.delete(ptyId);
   ptyInputLineBuffers.delete(ptyId);
   ptyInputProcessHints.delete(ptyId);
+  ptyReady.delete(ptyId);
 }
 
 function wsUrl(): string {
@@ -338,6 +343,13 @@ function onServerMsg(msg: ServerMsg): void {
 
     // Drop terminals for sessions that are no longer running.
     const running = new Set(ptys.filter((p) => p.status === "running").map((p) => p.id));
+    for (const p of ptys) {
+      if (typeof p.ready !== "boolean") continue;
+      ptyReady.set(p.id, { ready: p.ready, reason: String(p.readyReason ?? "") });
+    }
+    for (const ptyId of ptyReady.keys()) {
+      if (!running.has(ptyId)) ptyReady.delete(ptyId);
+    }
     for (const ptyId of terms.keys()) {
       if (!running.has(ptyId)) removeTerm(ptyId);
     }
@@ -359,8 +371,14 @@ function onServerMsg(msg: ServerMsg): void {
     return;
   }
   if (msg.type === "pty_exit") {
+    ptyReady.set(msg.ptyId, { ready: false, reason: "exited" });
     addEvent(`PTY exited: ${msg.ptyId} code=${msg.code ?? "?"} signal=${msg.signal ?? "-"}`);
     refreshList();
+    return;
+  }
+  if (msg.type === "pty_ready") {
+    ptyReady.set(msg.ptyId, { ready: msg.ready, reason: msg.reason });
+    renderList();
     return;
   }
   if (msg.type === "trigger_fired") {
@@ -627,21 +645,35 @@ function renderList(): void {
     const process =
       (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || inputHint || activeProcess || title || p.name;
     const inputPreview = ptyLastInput.get(p.id) ?? "";
+    const readyInfo = ptyReady.get(p.id) ?? { ready: Boolean(p.ready), reason: String(p.readyReason ?? "") };
+    const readyLabel = readyInfo.ready ? "ready" : "busy";
+
+    const primaryRow = document.createElement("div");
+    primaryRow.className = "primary-row";
+
+    const readyDot = document.createElement("span");
+    readyDot.className = `ready-dot ${readyInfo.ready ? "ready" : "busy"}`;
+    readyDot.textContent = "●";
+    readyDot.title = `PTY is ${readyLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
+    readyDot.setAttribute("aria-label", `PTY is ${readyLabel}`);
+
     const primary = document.createElement("div");
     primary.className = "primary";
     primary.textContent = process;
+    primaryRow.appendChild(readyDot);
+    primaryRow.appendChild(primary);
 
     const secondary = document.createElement("div");
     secondary.className = "secondary";
     if (inputPreview) {
-      secondary.textContent = `> ${inputPreview}`;
+      secondary.textContent = `> ${inputPreview}  ${readyLabel}`;
     } else if (title && title !== process) {
-      secondary.textContent = title;
+      secondary.textContent = `${title}  ${readyLabel}`;
     } else {
-      secondary.textContent = title ? p.name : shortId(p.id);
+      secondary.textContent = `${title ? p.name : shortId(p.id)}  ${readyLabel}`;
     }
 
-    main.appendChild(primary);
+    main.appendChild(primaryRow);
     main.appendChild(secondary);
 
     const closeBtn = document.createElement("button");

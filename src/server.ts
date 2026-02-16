@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
+import stripAnsi from "strip-ansi";
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import { PtyManager } from "./pty/manager.js";
@@ -128,14 +129,169 @@ function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
   return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
+type PtyReadyState = {
+  ready: boolean;
+  reason: string;
+  updatedAt: number;
+  lastOutputAt: number;
+  lastPromptAt: number;
+  timer: NodeJS.Timeout | null;
+};
+
+const readinessByPty = new Map<string, PtyReadyState>();
+const READINESS_QUIET_MS = 220;
+const READINESS_PROMPT_WINDOW_MS = 15_000;
+const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
+
+function normalizeProcessName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) return "";
+  return (trimmed.split("/").filter(Boolean).at(-1) ?? trimmed).toLowerCase();
+}
+
+function isShellProcess(name: string): boolean {
+  return SHELL_PROCESS_NAMES.has(normalizeProcessName(name));
+}
+
+function ensureReadiness(ptyId: string): PtyReadyState {
+  let st = readinessByPty.get(ptyId);
+  if (st) return st;
+  st = {
+    ready: false,
+    reason: "startup",
+    updatedAt: Date.now(),
+    lastOutputAt: 0,
+    lastPromptAt: 0,
+    timer: null,
+  };
+  readinessByPty.set(ptyId, st);
+  return st;
+}
+
+function clearReadinessTimer(st: PtyReadyState): void {
+  if (!st.timer) return;
+  clearTimeout(st.timer);
+  st.timer = null;
+}
+
+function setPtyReadiness(ptyId: string, ready: boolean, reason: string, emitEvent = true): void {
+  const st = ensureReadiness(ptyId);
+  if (st.ready === ready && st.reason === reason) return;
+  st.ready = ready;
+  st.reason = reason;
+  st.updatedAt = Date.now();
+  if (!emitEvent) return;
+  broadcast({ type: "pty_ready", ptyId, ready, reason, ts: st.updatedAt });
+}
+
+function outputLooksLikePrompt(chunk: string): boolean {
+  const cleaned = stripAnsi(chunk).replaceAll("\r", "\n");
+  const tail = cleaned.slice(-800);
+  if (/proceed \(y\)\?\s*$/i.test(tail)) return true;
+  if (/(password|username|login):\s*$/i.test(tail)) return true;
+  const lastLine = tail.split("\n").at(-1)?.trimEnd() ?? "";
+  if (!lastLine) return false;
+  if (/^[^>\n]{0,140}[$#%]\s?$/.test(lastLine)) return true;
+  if (/^[^>\n]{0,140}>\s?$/.test(lastLine)) return true;
+  if (/^[^>\n]{0,140}❯\s?$/.test(lastLine)) return true;
+  return false;
+}
+
+function scheduleReadinessRecompute(ptyId: string, delayMs = READINESS_QUIET_MS): void {
+  const st = ensureReadiness(ptyId);
+  clearReadinessTimer(st);
+  st.timer = setTimeout(() => {
+    st.timer = null;
+    void recomputeReadiness(ptyId);
+  }, Math.max(10, delayMs));
+}
+
+function markReadyOutput(ptyId: string, chunk: string): void {
+  const st = ensureReadiness(ptyId);
+  const now = Date.now();
+  st.lastOutputAt = now;
+  if (outputLooksLikePrompt(chunk)) st.lastPromptAt = now;
+  setPtyReadiness(ptyId, false, "output");
+  scheduleReadinessRecompute(ptyId);
+}
+
+function markReadyInput(ptyId: string): void {
+  const st = ensureReadiness(ptyId);
+  st.lastOutputAt = Date.now();
+  st.lastPromptAt = 0;
+  setPtyReadiness(ptyId, false, "input");
+  scheduleReadinessRecompute(ptyId);
+}
+
+function markReadyExited(ptyId: string): void {
+  const st = ensureReadiness(ptyId);
+  clearReadinessTimer(st);
+  setPtyReadiness(ptyId, false, "exited");
+}
+
+async function recomputeReadiness(ptyId: string): Promise<void> {
+  const st = ensureReadiness(ptyId);
+  const summary = ptys.getSummary(ptyId);
+  if (!summary || summary.status !== "running") {
+    setPtyReadiness(ptyId, false, "exited");
+    return;
+  }
+
+  const now = Date.now();
+  let activeProcess: string | null = summary.activeProcess ?? null;
+  if (summary.backend === "tmux" && summary.tmuxSession) {
+    activeProcess = await tmuxPaneActiveProcess(summary.tmuxSession);
+    if (activeProcess && !isShellProcess(activeProcess)) {
+      setPtyReadiness(ptyId, false, `process:${normalizeProcessName(activeProcess)}`);
+      return;
+    }
+  }
+
+  const sinceOutput = now - st.lastOutputAt;
+  if (st.lastOutputAt > 0 && sinceOutput < READINESS_QUIET_MS) {
+    setPtyReadiness(ptyId, false, "output");
+    scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
+    return;
+  }
+
+  const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
+  if (promptFresh) {
+    setPtyReadiness(ptyId, true, "prompt");
+    return;
+  }
+
+  if (summary.backend === "tmux" && (!activeProcess || isShellProcess(activeProcess))) {
+    setPtyReadiness(ptyId, true, "idle-shell");
+    return;
+  }
+
+  setPtyReadiness(ptyId, false, "unknown");
+}
+
 async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
   return Promise.all(
     items.map(async (p) => {
-      if (p.status !== "running" || p.backend !== "tmux" || !p.tmuxSession) {
-        return { ...p, activeProcess: p.activeProcess ?? null };
+      const st = ensureReadiness(p.id);
+      if (p.status !== "running") {
+        clearReadinessTimer(st);
+        setPtyReadiness(p.id, false, "exited", false);
+        return { ...p, activeProcess: p.activeProcess ?? null, ready: false, readyReason: "exited" };
       }
-      const activeProcess = await tmuxPaneActiveProcess(p.tmuxSession);
-      return { ...p, activeProcess };
+      const activeProcess = p.backend === "tmux" && p.tmuxSession ? await tmuxPaneActiveProcess(p.tmuxSession) : null;
+      if (activeProcess && !isShellProcess(activeProcess)) {
+        setPtyReadiness(p.id, false, `process:${normalizeProcessName(activeProcess)}`, false);
+      } else {
+        const now = Date.now();
+        const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
+        if (promptFresh) {
+          setPtyReadiness(p.id, true, "prompt", false);
+        } else if (p.backend === "tmux") {
+          setPtyReadiness(p.id, true, "idle-shell", false);
+        } else {
+          setPtyReadiness(p.id, false, "unknown", false);
+        }
+      }
+      return { ...p, activeProcess, ready: st.ready, readyReason: st.reason };
     }),
   );
 }
@@ -184,6 +340,7 @@ async function loadTriggersAndBroadcast(reason: string): Promise<void> {
 ptys.on("output", (ptyId: string, data: string) => {
   const summary = ptys.getSummary(ptyId);
   const out = summary?.backend === "tmux" ? stripAlternateScreenSequences(data) : data;
+  markReadyOutput(ptyId, out);
   hub.queuePtyOutput(ptyId, out);
   triggerEngine.onOutput(
     ptyId,
@@ -217,6 +374,7 @@ function stripAlternateScreenSequences(s: string): string {
 ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   const summary = ptys.getSummary(ptyId);
   if (summary) store.upsertSession(summary);
+  markReadyExited(ptyId);
   broadcast({ type: "pty_exit", ptyId, code, signal });
 
   // If this PTY is an attachment to a persistent tmux session, try to reattach.
@@ -452,6 +610,7 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   after.exitCode = after.exitCode ?? null;
   after.exitSignal = after.exitSignal ?? null;
   store.upsertSession(after);
+  markReadyExited(id);
   await broadcastPtyList();
   return { ok: true };
 });
@@ -669,6 +828,7 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "input") {
+      markReadyInput(msg.ptyId);
       ptys.write(msg.ptyId, msg.data);
       return;
     }
