@@ -1101,7 +1101,7 @@ document.addEventListener(
         ev.stopPropagation();
         switchPtyByOffset(-1);
         return;
-      case "KeyT":
+      case "Backquote":
         ev.preventDefault();
         ev.stopPropagation();
         newShell().catch(() => {});
@@ -1134,7 +1134,7 @@ keysPopup.className = "keys-popup hidden";
 keysPopup.innerHTML = `
   <div class="keys-popup-title">Keybindings</div>
   <table>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>T</kbd></td><td>New shell</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>\`</kbd></td><td>New shell</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd></td><td>Close PTY</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>]</kbd></td><td>Next PTY</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>[</kbd></td><td>Previous PTY</td></tr>

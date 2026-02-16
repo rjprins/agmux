@@ -190,8 +190,9 @@ button:disabled {
 
 .pty-item.active {
   border-color: color-mix(in srgb, var(--pty-color, var(--accent)) 55%, rgba(255, 255, 255, 0.08));
+  border-left: 3px solid var(--pty-color, var(--accent));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--pty-color, var(--accent)) 25%, transparent) inset;
-  background: color-mix(in srgb, var(--pty-color, var(--accent)) 6%, rgba(255, 255, 255, 0.03));
+  background: color-mix(in srgb, var(--pty-color, var(--accent)) 12%, rgba(255, 255, 255, 0.04));
 }
 
 .pty-item.state-ready {
@@ -205,11 +206,12 @@ button:disabled {
 }
 
 .pty-item.active.state-ready {
+  border-left: 3px solid var(--pty-color, var(--accent));
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--pty-color, var(--accent)) 22%, rgba(95, 209, 140, 0.45)) inset;
   background: linear-gradient(
     92deg,
-    color-mix(in srgb, var(--pty-color, var(--accent)) 11%, rgba(95, 209, 140, 0.12)),
-    rgba(255, 255, 255, 0.05)
+    color-mix(in srgb, var(--pty-color, var(--accent)) 16%, rgba(95, 209, 140, 0.16)),
+    rgba(255, 255, 255, 0.06)
   );
 }
 
