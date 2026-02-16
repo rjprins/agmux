@@ -13,6 +13,22 @@ async function readSessionToken(page: Page): Promise<string> {
   return json.token;
 }
 
+async function killPty(page: Page, token: string, ptyId: string): Promise<void> {
+  await page.request
+    .post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`, { timeout: 5_000 })
+    .catch(() => {});
+}
+
+async function killAllRunningPtys(page: Page, token: string): Promise<void> {
+  const res = await page.request.get(`/api/ptys?token=${encodeURIComponent(token)}`, { timeout: 5_000 });
+  if (!res.ok()) return;
+  const json = (await res.json()) as { ptys?: Array<{ id?: unknown; status?: unknown }> };
+  const running = (json.ptys ?? []).filter((p) => p?.status === "running").map((p) => p?.id).filter((id): id is string => typeof id === "string");
+  for (const id of running) {
+    await killPty(page, token, id);
+  }
+}
+
 async function commandAvailable(command: string, args: string[]): Promise<boolean> {
   try {
     await execFileAsync(command, args);
@@ -564,5 +580,65 @@ test("ready PTY keeps last input visible after reload", async ({ page }) => {
   } finally {
     const token = await readSessionToken(page);
     await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  }
+});
+
+test("input context bar tracks last input history per PTY", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  const token = await readSessionToken(page);
+  let ptyOne: string | null = null;
+  let ptyTwo: string | null = null;
+
+  try {
+    await killAllRunningPtys(page, token);
+
+    await page.getByRole("button", { name: "New PTY" }).click();
+    await expect(page.locator(".pty-item.active")).toHaveCount(1);
+    ptyOne = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    if (!ptyOne) throw new Error("missing PTY one id");
+
+    await page.locator(`.pty-item[data-pty-id="${ptyOne}"]`).click();
+    const ptyOneXterm = page.locator(`.term-pane[data-pty-id="${ptyOne}"]:not(.hidden) .xterm`);
+    await expect(ptyOneXterm).toBeVisible({ timeout: 10_000 });
+    await ptyOneXterm.click({ force: true });
+    await page.keyboard.type("echo __ctx_pty_one__");
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("pwd");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#input-context")).not.toHaveClass(/hidden/, { timeout: 10_000 });
+    await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
+
+    await page.getByRole("button", { name: "History" }).click();
+    await expect(page.locator("#input-history-list")).not.toHaveClass(/hidden/, { timeout: 10_000 });
+    await expect(page.locator("#input-history-list")).toContainText("pwd", { timeout: 10_000 });
+    await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
+
+    await page.getByRole("button", { name: "New PTY" }).click();
+    await expect(page.locator(".pty-item.active")).toHaveCount(1);
+    ptyTwo = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    if (!ptyTwo) throw new Error("missing PTY two id");
+
+    await page.locator(`.pty-item[data-pty-id="${ptyTwo}"]`).click();
+    const ptyTwoXterm = page.locator(`.term-pane[data-pty-id="${ptyTwo}"]:not(.hidden) .xterm`);
+    await expect(ptyTwoXterm).toBeVisible({ timeout: 10_000 });
+    await ptyTwoXterm.click({ force: true });
+    await page.keyboard.type("echo __ctx_pty_two__");
+    await page.keyboard.press("Enter");
+
+    await expect(page.locator("#input-context-last")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
+    await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
+    await expect(page.locator("#input-history-list")).not.toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
+
+    await page.locator(`.pty-item[data-pty-id="${ptyOne}"]`).click();
+    await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
+    await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
+  } finally {
+    if (ptyOne) {
+      await killPty(page, token, ptyOne);
+    }
+    if (ptyTwo && ptyTwo !== ptyOne) {
+      await killPty(page, token, ptyTwo);
+    }
   }
 });

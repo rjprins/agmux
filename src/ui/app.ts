@@ -51,9 +51,14 @@ const $ = (id: string) => document.getElementById(id)!;
 const listEl = $("pty-list");
 const terminalEl = $("terminal");
 const eventsEl = $("events");
+const inputContextEl = $("input-context");
+const inputContextLastEl = $("input-context-last");
+const inputHistoryListEl = $("input-history-list");
+const btnInputHistory = $("btn-input-history") as HTMLButtonElement;
 
 let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
+let inputHistoryExpanded = false;
 
 const ACTIVE_PTY_KEY = "agent-tide:activePty";
 
@@ -97,22 +102,26 @@ function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null } | n
 
 const ptyTitles = new Map<string, string>();
 const ptyLastInput = new Map<string, string>();
+const ptyInputHistory = new Map<string, string[]>();
 const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
 const ptyReady = new Map<string, { ready: boolean; reason: string }>();
 const PTY_INPUT_META_KEY = "agent-tide:ptyInputMeta";
+const MAX_INPUT_HISTORY = 40;
 
 function savePtyInputMeta(): void {
   try {
-    const payload: Record<string, { lastInput?: string; processHint?: string }> = {};
-    const ptyIds = new Set<string>([...ptyLastInput.keys(), ...ptyInputProcessHints.keys()]);
+    const payload: Record<string, { lastInput?: string; processHint?: string; history?: string[] }> = {};
+    const ptyIds = new Set<string>([...ptyLastInput.keys(), ...ptyInputProcessHints.keys(), ...ptyInputHistory.keys()]);
     for (const ptyId of ptyIds) {
       const lastInput = ptyLastInput.get(ptyId);
       const processHint = ptyInputProcessHints.get(ptyId);
-      if (!lastInput && !processHint) continue;
+      const history = ptyInputHistory.get(ptyId) ?? [];
+      if (!lastInput && !processHint && history.length === 0) continue;
       payload[ptyId] = {};
       if (lastInput) payload[ptyId].lastInput = lastInput;
       if (processHint) payload[ptyId].processHint = processHint;
+      if (history.length > 0) payload[ptyId].history = history;
     }
     if (Object.keys(payload).length === 0) {
       sessionStorage.removeItem(PTY_INPUT_META_KEY);
@@ -143,9 +152,13 @@ function loadPtyInputMeta(): void {
     for (const [ptyId, meta] of Object.entries(parsed as Record<string, unknown>)) {
       if (!ptyId || typeof ptyId !== "string") continue;
       if (!meta || typeof meta !== "object") continue;
-      const rec = meta as { lastInput?: unknown; processHint?: unknown };
+      const rec = meta as { lastInput?: unknown; processHint?: unknown; history?: unknown };
       if (typeof rec.lastInput === "string" && rec.lastInput.trim()) ptyLastInput.set(ptyId, rec.lastInput);
       if (typeof rec.processHint === "string" && rec.processHint.trim()) ptyInputProcessHints.set(ptyId, rec.processHint);
+      if (Array.isArray(rec.history)) {
+        const entries = rec.history.filter((x): x is string => typeof x === "string" && x.trim().length > 0).slice(-MAX_INPUT_HISTORY);
+        if (entries.length > 0) ptyInputHistory.set(ptyId, entries);
+      }
     }
   } catch {
     // ignore storage failures
@@ -162,6 +175,11 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
   for (const ptyId of [...ptyInputProcessHints.keys()]) {
     if (ptyIds.has(ptyId)) continue;
     ptyInputProcessHints.delete(ptyId);
+    changed = true;
+  }
+  for (const ptyId of [...ptyInputHistory.keys()]) {
+    if (ptyIds.has(ptyId)) continue;
+    ptyInputHistory.delete(ptyId);
     changed = true;
   }
   if (changed) savePtyInputMeta();
@@ -330,6 +348,7 @@ function removeTerm(ptyId: string): void {
   terms.delete(ptyId);
   ptyTitles.delete(ptyId);
   ptyLastInput.delete(ptyId);
+  ptyInputHistory.delete(ptyId);
   ptyInputLineBuffers.delete(ptyId);
   ptyInputProcessHints.delete(ptyId);
   ptyReady.delete(ptyId);
@@ -663,6 +682,56 @@ function truncateText(s: string, max = 68): string {
   return `${s.slice(0, Math.max(1, max - 3))}...`;
 }
 
+function appendPtyInputHistory(ptyId: string, input: string): void {
+  const entry = truncateText(input, 220);
+  const prev = ptyInputHistory.get(ptyId) ?? [];
+  if (prev.at(-1) === entry) return;
+  const next = [...prev, entry];
+  if (next.length > MAX_INPUT_HISTORY) next.splice(0, next.length - MAX_INPUT_HISTORY);
+  ptyInputHistory.set(ptyId, next);
+}
+
+function renderInputContextBar(): void {
+  if (!activePtyId) {
+    inputContextEl.classList.add("hidden");
+    inputContextLastEl.textContent = "(none yet)";
+    inputHistoryListEl.classList.add("hidden");
+    inputHistoryListEl.textContent = "";
+    btnInputHistory.disabled = true;
+    return;
+  }
+
+  inputContextEl.classList.remove("hidden");
+  btnInputHistory.disabled = false;
+
+  const history = ptyInputHistory.get(activePtyId) ?? [];
+  const latest = ptyLastInput.get(activePtyId) ?? history.at(-1) ?? "(none yet)";
+  inputContextLastEl.textContent = latest;
+  inputContextLastEl.title = latest;
+
+  btnInputHistory.textContent = history.length > 0 ? `History (${history.length})` : "History";
+
+  if (!inputHistoryExpanded) {
+    inputHistoryListEl.classList.add("hidden");
+    return;
+  }
+
+  inputHistoryListEl.textContent = "";
+  if (history.length === 0) {
+    const li = document.createElement("li");
+    li.textContent = "No inputs yet";
+    inputHistoryListEl.appendChild(li);
+  } else {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const li = document.createElement("li");
+      li.textContent = history[i];
+      li.title = history[i];
+      inputHistoryListEl.appendChild(li);
+    }
+  }
+  inputHistoryListEl.classList.remove("hidden");
+}
+
 function unquoteToken(s: string): string {
   if (s.length >= 2 && ((s.startsWith(`"`) && s.endsWith(`"`)) || (s.startsWith(`'`) && s.endsWith(`'`)))) {
     return s.slice(1, -1);
@@ -712,6 +781,7 @@ function trackUserInput(ptyId: string, data: string): void {
       const normalized = compactWhitespace(line);
       if (normalized) {
         ptyLastInput.set(ptyId, truncateText(normalized));
+        appendPtyInputHistory(ptyId, normalized);
         const proc = inferProcessFromInput(normalized);
         if (proc) ptyInputProcessHints.set(ptyId, proc);
         changed = true;
@@ -735,6 +805,7 @@ function trackUserInput(ptyId: string, data: string): void {
   if (changed) {
     savePtyInputMeta();
     renderList();
+    renderInputContextBar();
   }
 }
 
@@ -866,6 +937,7 @@ function setActive(ptyId: string): void {
     }
   });
   renderList();
+  renderInputContextBar();
 }
 
 function highlight(ptyId: string, ttlMs: number): void {
@@ -942,6 +1014,12 @@ btnReloadTriggers.addEventListener("click", async () => {
   addEvent("Requested trigger reload");
 });
 
+btnInputHistory.addEventListener("click", () => {
+  if (!activePtyId) return;
+  inputHistoryExpanded = !inputHistoryExpanded;
+  renderInputContextBar();
+});
+
 function subscribeIfNeeded(ptyId: string): void {
   if (subscribed.has(ptyId)) return;
   subscribed.add(ptyId);
@@ -951,6 +1029,7 @@ function subscribeIfNeeded(ptyId: string): void {
 function updateTerminalVisibility(): void {
   const hasActive = Boolean(activePtyId);
   placeholderEl.classList.toggle("hidden", hasActive);
+  renderInputContextBar();
   for (const [ptyId, st] of terms.entries()) {
     st.container.classList.toggle("hidden", !hasActive || ptyId !== activePtyId);
   }

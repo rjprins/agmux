@@ -37,6 +37,14 @@
 
       <main class="main">
         <section class="terminal-wrap">
+          <div id="input-context" class="input-context hidden">
+            <div class="input-context-row">
+              <span class="input-context-label">Last input</span>
+              <code id="input-context-last" class="input-context-last">(none yet)</code>
+              <button id="btn-input-history" type="button" class="input-context-btn">History</button>
+            </div>
+            <ol id="input-history-list" class="input-history-list hidden"></ol>
+          </div>
           <div id="terminal" class="terminal"></div>
         </section>
       </main>
