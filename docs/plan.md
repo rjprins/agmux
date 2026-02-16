@@ -140,7 +140,7 @@ Acceptance:
 ## Immediate Next Sprint (Concrete)
 
 1. [x] Add `src/providers/types.ts` and tmux provider scaffold.
-2. [ ] Move status decision code from `src/server.ts` into a dedicated status engine module.
-3. [ ] Port agent-deck-style pattern catalog + detector ordering into that module.
-4. [ ] Add transcript replay tests with randomized chunk boundaries and parity fixtures.
-5. [ ] Add status decision tracing endpoint/logging for debugging.
+2. [x] Move status decision code from `src/server.ts` into a dedicated status engine module.
+3. [x] Port agent-deck-style pattern catalog + detector ordering into that module.
+4. [x] Add transcript replay tests with randomized chunk boundaries and parity fixtures.
+5. [x] Add status decision tracing endpoint/logging for debugging.

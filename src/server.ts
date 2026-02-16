@@ -4,21 +4,13 @@ import fs from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
-import stripAnsi from "strip-ansi";
 import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import { PtyManager } from "./pty/manager.js";
 import { SqliteStore } from "./persist/sqlite.js";
-import {
-  detectAgentOutputSignal,
-  mergeAgentOutputTail,
-  outputShowsAgentPromptMarker,
-  type AgentFamily,
-} from "./readiness/markers.js";
+import { ReadinessEngine, type PtyReadyEvent } from "./readiness/engine.js";
 import type {
   ClientToServerMessage,
-  PtyReadinessIndicator,
-  PtyReadinessState,
   PtySummary,
   ServerToClientMessage,
 } from "./types.js";
@@ -36,8 +28,6 @@ import {
   tmuxNewSessionDetached,
   tmuxScrollHistory,
   type TmuxServer,
-  tmuxPaneActiveProcess,
-  tmuxPaneCurrentPath,
 } from "./tmux.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -49,6 +39,8 @@ const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agent-tide.db");
 const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
 const AUTH_TOKEN = process.env.AGENT_TIDE_TOKEN ?? randomBytes(32).toString("hex");
 const ALLOW_NON_LOOPBACK_BIND = process.env.AGENT_TIDE_ALLOW_NON_LOOPBACK === "1";
+const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGENT_TIDE_READINESS_TRACE_MAX ?? "2000") || 2000);
+const READINESS_TRACE_LOG = process.env.AGENT_TIDE_READINESS_TRACE_LOG === "1";
 const WS_ALLOWED_ORIGINS = new Set(
   [
     `http://127.0.0.1:${PORT}`,
@@ -145,539 +137,41 @@ function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
   return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
-type PtyReadyState = {
-  state: PtyReadinessState;
-  indicator: PtyReadinessIndicator;
-  reason: string;
-  updatedAt: number;
-  lastOutputAt: number;
-  lastPromptAt: number;
-  recentAgentOutputTail: string;
-  timer: NodeJS.Timeout | null;
-  busyDelayTimer: NodeJS.Timeout | null;
-  modeHint: SessionMode | null;
-  agentFamilyHint: AgentFamily | null;
-};
+type ReadinessTraceEntry = PtyReadyEvent & { seq: number };
+const readinessTrace: ReadinessTraceEntry[] = [];
+let readinessTraceSeq = 0;
 
-const readinessByPty = new Map<string, PtyReadyState>();
-const inputLineByPty = new Map<string, string>();
-const READINESS_QUIET_MS = 220;
-const READINESS_PROMPT_WINDOW_MS = 15_000;
-const READINESS_BUSY_DELAY_MS = 120;
-const READINESS_AGENT_UNKNOWN_TO_READY_MS = 1_200;
-const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
-const AGENT_PROCESS_NAMES = new Set(["codex", "claude", "aider", "goose", "opencode", "cursor-agent"]);
-
-type SessionMode = "shell" | "agent" | "other";
-
-function normalizeProcessName(name: string): string {
-  const trimmed = name.trim();
-  if (!trimmed) return "";
-  return (trimmed.split("/").filter(Boolean).at(-1) ?? trimmed).toLowerCase();
-}
-
-function isShellProcess(name: string): boolean {
-  return SHELL_PROCESS_NAMES.has(normalizeProcessName(name));
-}
-
-function isAgentProcess(name: string): boolean {
-  const normalized = normalizeProcessName(name);
-  if (!normalized) return false;
-  if (AGENT_PROCESS_NAMES.has(normalized)) return true;
-  return normalized.startsWith("codex") || normalized.startsWith("claude");
-}
-
-function agentFamilyFromProcessName(name: string | null | undefined): AgentFamily | null {
-  if (!name) return null;
-  const normalized = normalizeProcessName(name);
-  if (!normalized) return null;
-  if (normalized.startsWith("codex")) return "codex";
-  if (normalized.startsWith("claude")) return "claude";
-  if (AGENT_PROCESS_NAMES.has(normalized)) return "other";
-  return null;
-}
-
-function detectAgentFamily(summary: PtySummary | null, activeProcess: string | null): AgentFamily | null {
-  return (
-    agentFamilyFromProcessName(activeProcess) ??
-    agentFamilyFromProcessName(summary?.activeProcess ?? null) ??
-    agentFamilyFromProcessName(summary?.command ?? null)
-  );
-}
-
-function inferAgentFamilyFromOutput(chunk: string): AgentFamily | null {
-  if (outputShowsAgentPromptMarker(chunk, "codex")) return "codex";
-  if (outputShowsAgentPromptMarker(chunk, "claude")) return "claude";
-  const codexBusy = detectAgentOutputSignal(chunk, "codex") === "busy";
-  if (codexBusy) return "codex";
-  const claudeBusy = detectAgentOutputSignal(chunk, "claude") === "busy";
-  if (claudeBusy) return "claude";
-  return detectAgentOutputSignal(chunk, null) !== "none" ? "other" : null;
-}
-
-function classifySessionMode(summary: PtySummary | null, activeProcess: string | null): SessionMode {
-  if (activeProcess && isAgentProcess(activeProcess)) return "agent";
-  if (summary?.command && isAgentProcess(summary.command)) return "agent";
-  if (summary?.name?.startsWith("shell:")) return "shell";
-  if (summary?.command && isShellProcess(summary.command)) return "shell";
-  if (activeProcess && isShellProcess(activeProcess)) return "shell";
-  return "other";
-}
-
-function effectiveSessionMode(
-  st: PtyReadyState,
-  summary: PtySummary | null,
-  classifiedMode: SessionMode,
-  now: number,
-): SessionMode {
-  if (classifiedMode === "agent") return "agent";
-  if (classifiedMode === "other" && summary?.backend === "tmux" && st.modeHint) return st.modeHint;
-  if (st.modeHint === "agent") {
-    const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
-    if (promptFresh) return "agent";
+function recordReadinessTrace(evt: PtyReadyEvent): void {
+  readinessTrace.push({ ...evt, seq: readinessTraceSeq++ });
+  if (readinessTrace.length > READINESS_TRACE_MAX) {
+    readinessTrace.splice(0, readinessTrace.length - READINESS_TRACE_MAX);
   }
-  return classifiedMode;
-}
-
-function ensureReadiness(ptyId: string): PtyReadyState {
-  let st = readinessByPty.get(ptyId);
-  if (st) return st;
-  st = {
-    state: "unknown",
-    indicator: "busy",
-    reason: "startup",
-    updatedAt: Date.now(),
-    lastOutputAt: 0,
-    lastPromptAt: 0,
-    recentAgentOutputTail: "",
-    timer: null,
-    busyDelayTimer: null,
-    modeHint: null,
-    agentFamilyHint: null,
-  };
-  readinessByPty.set(ptyId, st);
-  return st;
-}
-
-function clearReadinessTimer(st: PtyReadyState): void {
-  if (!st.timer) return;
-  clearTimeout(st.timer);
-  st.timer = null;
-}
-
-function clearBusyDelayTimer(st: PtyReadyState): void {
-  if (!st.busyDelayTimer) return;
-  clearTimeout(st.busyDelayTimer);
-  st.busyDelayTimer = null;
-}
-
-function scheduleBusyDelay(ptyId: string, reason: string): void {
-  const st = ensureReadiness(ptyId);
-  if (st.busyDelayTimer) return;
-  st.busyDelayTimer = setTimeout(() => {
-    st.busyDelayTimer = null;
-    // Prompt output arrived during the delay window; keep the PTY ready.
-    const promptFresh = st.lastPromptAt > 0 && Date.now() - st.lastPromptAt <= READINESS_BUSY_DELAY_MS + 40;
-    if (promptFresh) return;
-    setPtyReadiness(ptyId, "busy", reason);
-  }, READINESS_BUSY_DELAY_MS);
-}
-
-function updateInputLineBuffer(ptyId: string, data: string): boolean {
-  let line = inputLineByPty.get(ptyId) ?? "";
-  let submitted = false;
-  for (const ch of data) {
-    if (ch === "\r" || ch === "\n") {
-      if (line.trim().length > 0) submitted = true;
-      line = "";
-      continue;
-    }
-    if (ch === "\u0008" || ch === "\u007f") {
-      line = line.slice(0, -1);
-      continue;
-    }
-    if (ch === "\u0015") {
-      line = "";
-      continue;
-    }
-    // Ignore escape/control sequences from navigation keys; only keep visible text.
-    if (ch <= "\u001f" || ch === "\u007f") continue;
-    line += ch;
-    if (line.length > 2000) line = line.slice(-1000);
-  }
-  inputLineByPty.set(ptyId, line);
-  return submitted;
-}
-
-function setPtyReadiness(
-  ptyId: string,
-  state: PtyReadinessState,
-  reason: string,
-  emitEvent = true,
-  indicatorOverride?: PtyReadinessIndicator,
-): void {
-  const st = ensureReadiness(ptyId);
-  const indicator =
-    state === "ready" ? "ready" : state === "busy" ? "busy" : (indicatorOverride ?? st.indicator);
-  if (st.state === state && st.reason === reason && st.indicator === indicator) return;
-  st.state = state;
-  st.indicator = indicator;
-  st.reason = reason;
-  st.updatedAt = Date.now();
-  if (!emitEvent) return;
-  const cwd = ptys.getSummary(ptyId)?.cwd ?? null;
-  broadcast({ type: "pty_ready", ptyId, state, indicator, reason, ts: st.updatedAt, cwd });
-}
-
-function outputLooksLikePrompt(chunk: string): boolean {
-  const cleaned = stripAnsi(chunk).replaceAll("\r", "\n");
-  const tail = cleaned.slice(-800);
-  if (/proceed \(y\)\?\s*$/i.test(tail)) return true;
-  if (/(password|username|login):\s*$/i.test(tail)) return true;
-
-  const recentLines = tail
-    .split("\n")
-    .map((line) => line.replaceAll("\u00a0", " ").trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .slice(-8);
-
-  for (const line of recentLines) {
-    if (/^[^\n]{0,180}[$#%]\s?$/.test(line)) return true;
-    if (/^[^\n]{0,180}(?:>|>>|>>>|❯|›)\s?$/u.test(line)) return true;
-    if (/^[^\n]{0,180}\s(?:>|>>|>>>|❯|›)\s?$/u.test(line)) return true;
-    // Some fullscreen CLIs (e.g. codex/claude) keep helper/footer lines after the prompt.
-    if (/^\s*(?:❯|›)\s+\S.{0,240}$/u.test(line)) return true;
-  }
-
-  return false;
-}
-
-function outputHasVisibleText(chunk: string): boolean {
-  const visible = stripAnsi(chunk)
-    .replaceAll("\u00a0", " ")
-    .replace(/[\u0000-\u001f\u007f]/g, "")
-    .trim();
-  return visible.length > 0;
-}
-
-function agentUnknownDecision(
-  st: PtyReadyState,
-  now: number,
-  unknownReason: string,
-): { state: PtyReadinessState; reason: string; promoteInMs: number | null } {
-  if (st.lastOutputAt <= 0) {
-    return { state: "unknown", reason: unknownReason, promoteInMs: READINESS_AGENT_UNKNOWN_TO_READY_MS };
-  }
-  const quietMs = now - st.lastOutputAt;
-  if (quietMs >= READINESS_AGENT_UNKNOWN_TO_READY_MS) {
-    return { state: "ready", reason: "agent:settled", promoteInMs: null };
-  }
-  return { state: "unknown", reason: unknownReason, promoteInMs: READINESS_AGENT_UNKNOWN_TO_READY_MS - quietMs };
-}
-
-function setAgentUnknownOrReady(
-  ptyId: string,
-  st: PtyReadyState,
-  now: number,
-  unknownReason: string,
-  emitEvent = true,
-): void {
-  const decision = agentUnknownDecision(st, now, unknownReason);
-  setPtyReadiness(ptyId, decision.state, decision.reason, emitEvent);
-  if (emitEvent && decision.promoteInMs != null) {
-    scheduleReadinessRecompute(ptyId, Math.max(READINESS_QUIET_MS, decision.promoteInMs + 10));
+  if (READINESS_TRACE_LOG) {
+    fastify.log.info(
+      {
+        ptyId: evt.ptyId,
+        state: evt.state,
+        indicator: evt.indicator,
+        reason: evt.reason,
+        source: evt.source,
+        ts: evt.ts,
+      },
+      "readiness decision",
+    );
   }
 }
 
-async function tmuxSessionShowsPrompt(
-  ptyId: string,
-  tmuxSession: string,
-  mode: SessionMode,
-  agentFamily: AgentFamily | null,
-): Promise<boolean> {
-  const snapshot = await tmuxCapturePaneVisible(tmuxSession);
-  if (!snapshot) return false;
-  const promptVisible =
-    mode === "agent"
-      ? outputShowsAgentPromptMarker(snapshot, agentFamily) || (agentFamily === "other" && outputLooksLikePrompt(snapshot))
-      : outputLooksLikePrompt(snapshot);
-  if (!promptVisible) return false;
-  ensureReadiness(ptyId).lastPromptAt = Date.now();
-  return true;
-}
 
-function scheduleReadinessRecompute(ptyId: string, delayMs = READINESS_QUIET_MS): void {
-  const st = ensureReadiness(ptyId);
-  clearReadinessTimer(st);
-  st.timer = setTimeout(() => {
-    st.timer = null;
-    void recomputeReadiness(ptyId);
-  }, Math.max(10, delayMs));
-}
-
-function markReadyOutput(ptyId: string, chunk: string): void {
-  const st = ensureReadiness(ptyId);
-  const summary = ptys.getSummary(ptyId);
-  const now = Date.now();
-  const classifiedMode = classifySessionMode(summary, summary?.activeProcess ?? null);
-  const agentSignalWindow = mergeAgentOutputTail(st.recentAgentOutputTail, chunk);
-  let mode = effectiveSessionMode(st, summary, classifiedMode, now);
-  let agentFamily = mode === "agent" ? (detectAgentFamily(summary, summary?.activeProcess ?? null) ?? st.agentFamilyHint) : null;
-  const inferredFromOutput = inferAgentFamilyFromOutput(agentSignalWindow);
-  if (mode !== "agent" && inferredFromOutput) {
-    mode = "agent";
-    st.modeHint = "agent";
-    agentFamily = inferredFromOutput;
-  } else if (mode !== "other") {
-    st.modeHint = mode;
-  }
-  if (agentFamily) st.agentFamilyHint = agentFamily;
-  st.recentAgentOutputTail = mode === "agent" ? agentSignalWindow : "";
-  const agentSignal = mode === "agent" ? detectAgentOutputSignal(agentSignalWindow, agentFamily) : "none";
-  if (agentSignal === "busy") {
-    clearBusyDelayTimer(st);
-    st.lastOutputAt = now;
-    st.lastPromptAt = 0;
-    setPtyReadiness(ptyId, "busy", `agent:busy-marker${agentFamily ? `:${agentFamily}` : ""}`);
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  if (agentSignal === "prompt") {
-    clearBusyDelayTimer(st);
-    st.lastOutputAt = now;
-    st.lastPromptAt = now;
-    setPtyReadiness(ptyId, "unknown", `agent:prompt-marker${agentFamily ? `:${agentFamily}` : ""}`);
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  const promptLike = outputLooksLikePrompt(chunk);
-  if (!promptLike && !outputHasVisibleText(chunk)) return;
-  st.lastOutputAt = now;
-  if (mode === "agent") {
-    st.lastPromptAt = 0;
-    if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "agent:output");
-    else setPtyReadiness(ptyId, "busy", "agent:output");
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  if (promptLike) {
-    clearBusyDelayTimer(st);
-    st.lastPromptAt = now;
-    // Prompt redraws can stream continuously; keep these sessions marked ready.
-    setPtyReadiness(ptyId, "ready", "prompt");
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  // Delay busy slightly so prompt redraw chunks don't flash busy, while sustained output still flips to busy.
-  if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "output");
-  else setPtyReadiness(ptyId, "busy", "output");
-  scheduleReadinessRecompute(ptyId);
-}
-
-function markReadyInput(ptyId: string, data: string): void {
-  const st = ensureReadiness(ptyId);
-  clearBusyDelayTimer(st);
-  st.lastOutputAt = Date.now();
-  const submittedCommand = updateInputLineBuffer(ptyId, data);
-  st.lastPromptAt = 0;
-  if (submittedCommand) st.recentAgentOutputTail = "";
-  if (submittedCommand) {
-    // Command submission with no immediate output (e.g. "sleep 1") should still show busy.
-    scheduleBusyDelay(ptyId, "input:command");
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  // Keep ready sessions stable while user types; recompute switches to busy when output resumes.
-  if (st.state !== "ready") setPtyReadiness(ptyId, "busy", "input");
-  scheduleReadinessRecompute(ptyId);
-}
-
-function markReadyExited(ptyId: string): void {
-  const st = ensureReadiness(ptyId);
-  clearReadinessTimer(st);
-  clearBusyDelayTimer(st);
-  inputLineByPty.delete(ptyId);
-  st.recentAgentOutputTail = "";
-  setPtyReadiness(ptyId, "busy", "exited");
-}
-
-async function recomputeReadiness(ptyId: string): Promise<void> {
-  const st = ensureReadiness(ptyId);
-  const summary = ptys.getSummary(ptyId);
-  if (!summary || summary.status !== "running") {
-    setPtyReadiness(ptyId, "busy", "exited");
-    return;
-  }
-
-  const now = Date.now();
-  let activeProcess: string | null = summary.activeProcess ?? null;
-  if (summary.backend === "tmux" && summary.tmuxSession) {
-    const [proc, liveCwd] = await Promise.all([
-      tmuxPaneActiveProcess(summary.tmuxSession),
-      tmuxPaneCurrentPath(summary.tmuxSession),
-    ]);
-    activeProcess = proc;
-    if (liveCwd) ptys.updateCwd(ptyId, liveCwd);
-  } else {
-    const pid = ptys.getPid(ptyId);
-    if (pid) {
-      try {
-        const liveCwd = await fs.readlink(`/proc/${pid}/cwd`);
-        if (liveCwd) ptys.updateCwd(ptyId, liveCwd);
-      } catch {
-        // Process may have exited; ignore.
-      }
-    }
-  }
-  const mode = classifySessionMode(summary, activeProcess);
-  const effectiveMode = effectiveSessionMode(st, summary, mode, now);
-  const agentFamily =
-    effectiveMode === "agent" ? (detectAgentFamily(summary, activeProcess) ?? st.agentFamilyHint) : null;
-  st.modeHint = effectiveMode;
-  st.agentFamilyHint = agentFamily;
-
-  const sinceOutput = now - st.lastOutputAt;
-  if (st.lastOutputAt > 0 && sinceOutput < READINESS_QUIET_MS) {
-    // Avoid re-marking busy immediately after a prompt marker redraw.
-    const promptJustSeen = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_BUSY_DELAY_MS + 80;
-    if (promptJustSeen) {
-      scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
-      return;
-    }
-    if (effectiveMode !== "agent" && summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
-      if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, effectiveMode, agentFamily)) {
-        setPtyReadiness(ptyId, "ready", "prompt-visible");
-        scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
-        return;
-      }
-    }
-    setPtyReadiness(ptyId, "busy", effectiveMode === "agent" ? "agent:output" : "output");
-    scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
-    return;
-  }
-
-  const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
-  if (promptFresh) {
-    if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-stable");
-    else setPtyReadiness(ptyId, "ready", "prompt");
-    return;
-  }
-
-  if (summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
-    if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, effectiveMode, agentFamily)) {
-      if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-visible");
-      else setPtyReadiness(ptyId, "ready", "prompt-visible");
-      return;
-    }
-    setPtyReadiness(ptyId, "busy", `process:${normalizeProcessName(activeProcess)}`);
-    return;
-  }
-
-  if (summary.backend === "tmux" && summary.tmuxSession && !activeProcess) {
-    if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession, effectiveMode, agentFamily)) {
-      if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:prompt-visible");
-      else setPtyReadiness(ptyId, "ready", "prompt-visible");
-      return;
-    }
-    setPtyReadiness(ptyId, "unknown", "tmux:process-unresolved");
-    return;
-  }
-
-  if (summary.backend === "tmux" && (!activeProcess || isShellProcess(activeProcess))) {
-    if (effectiveMode === "agent") setAgentUnknownOrReady(ptyId, st, now, "agent:idle-shell");
-    else setPtyReadiness(ptyId, "ready", "idle-shell");
-    return;
-  }
-
-  if (effectiveMode === "agent") {
-    setAgentUnknownOrReady(ptyId, st, now, "agent:idle");
-    return;
-  }
-  setPtyReadiness(ptyId, "unknown", "unknown");
-}
-
-async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
-  return Promise.all(
-    items.map(async (p) => {
-      const st = ensureReadiness(p.id);
-      if (p.status !== "running") {
-        clearReadinessTimer(st);
-        clearBusyDelayTimer(st);
-        setPtyReadiness(p.id, "busy", "exited", false);
-        return {
-          ...p,
-          activeProcess: p.activeProcess ?? null,
-          ready: false,
-          readyState: "busy",
-          readyIndicator: "busy",
-          readyReason: "exited",
-        };
-      }
-      const isTmux = p.backend === "tmux" && p.tmuxSession;
-      const [activeProcess, liveCwd] = isTmux
-        ? await Promise.all([tmuxPaneActiveProcess(p.tmuxSession!), tmuxPaneCurrentPath(p.tmuxSession!)])
-        : [null, null];
-      const effectiveCwd = liveCwd ?? p.cwd;
-      const now = Date.now();
-      const mode = classifySessionMode(p, activeProcess);
-      const effectiveMode = effectiveSessionMode(st, p, mode, now);
-      const agentFamily = effectiveMode === "agent" ? (detectAgentFamily(p, activeProcess) ?? st.agentFamilyHint) : null;
-      st.modeHint = effectiveMode;
-      st.agentFamilyHint = agentFamily;
-      const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
-      if (promptFresh) {
-        if (effectiveMode === "agent") {
-          const decision = agentUnknownDecision(st, now, "agent:prompt-stable");
-          setPtyReadiness(p.id, decision.state, decision.reason, false);
-        }
-        else setPtyReadiness(p.id, "ready", "prompt", false);
-      } else if (p.backend === "tmux" && p.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
-        if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession, effectiveMode, agentFamily)) {
-          if (effectiveMode === "agent") {
-            const decision = agentUnknownDecision(st, now, "agent:prompt-visible");
-            setPtyReadiness(p.id, decision.state, decision.reason, false);
-          }
-          else setPtyReadiness(p.id, "ready", "prompt-visible", false);
-        } else {
-          setPtyReadiness(p.id, "busy", `process:${normalizeProcessName(activeProcess)}`, false);
-        }
-      } else if (p.backend === "tmux" && p.tmuxSession && !activeProcess) {
-        if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession, effectiveMode, agentFamily)) {
-          if (effectiveMode === "agent") {
-            const decision = agentUnknownDecision(st, now, "agent:prompt-visible");
-            setPtyReadiness(p.id, decision.state, decision.reason, false);
-          }
-          else setPtyReadiness(p.id, "ready", "prompt-visible", false);
-        } else {
-          setPtyReadiness(p.id, "unknown", "tmux:process-unresolved", false);
-        }
-      } else if (p.backend === "tmux") {
-        if (effectiveMode === "agent") {
-          const decision = agentUnknownDecision(st, now, "agent:idle-shell");
-          setPtyReadiness(p.id, decision.state, decision.reason, false);
-        }
-        else setPtyReadiness(p.id, "ready", "idle-shell", false);
-      } else if (effectiveMode === "agent") {
-        const decision = agentUnknownDecision(st, now, "agent:idle");
-        setPtyReadiness(p.id, decision.state, decision.reason, false);
-      } else {
-        setPtyReadiness(p.id, "unknown", "unknown", false);
-      }
-      return {
-        ...p,
-        activeProcess,
-        cwd: effectiveCwd,
-        ready: st.state === "ready",
-        readyState: st.state,
-        readyIndicator: st.indicator,
-        readyReason: st.reason,
-      };
-    }),
-  );
-}
+const readinessEngine = new ReadinessEngine({
+  ptys,
+  emitReadiness: ({ ptyId, state, indicator, reason, ts, cwd, source }) => {
+    recordReadinessTrace({ ptyId, state, indicator, reason, source, ts, cwd });
+    broadcast({ type: "pty_ready", ptyId, state, indicator, reason, ts, cwd });
+  },
+});
 
 async function listPtys(): Promise<PtySummary[]> {
-  return withActiveProcesses(mergePtys(ptys.list(), store.listSessions()));
+  return readinessEngine.withActiveProcesses(mergePtys(ptys.list(), store.listSessions()));
 }
 
 async function broadcastPtyList(): Promise<void> {
@@ -720,7 +214,7 @@ async function loadTriggersAndBroadcast(reason: string): Promise<void> {
 ptys.on("output", (ptyId: string, data: string) => {
   const summary = ptys.getSummary(ptyId);
   const out = summary?.backend === "tmux" ? stripAlternateScreenSequences(data) : data;
-  markReadyOutput(ptyId, out);
+  readinessEngine.markOutput(ptyId, out);
   hub.queuePtyOutput(ptyId, out);
   triggerEngine.onOutput(
     ptyId,
@@ -754,7 +248,7 @@ function stripAlternateScreenSequences(s: string): string {
 ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   const summary = ptys.getSummary(ptyId);
   if (summary) store.upsertSession(summary);
-  markReadyExited(ptyId);
+  readinessEngine.markExited(ptyId);
   broadcast({ type: "pty_exit", ptyId, code, signal });
 
   // If this PTY is an attachment to a persistent tmux session, try to reattach.
@@ -804,6 +298,15 @@ fastify.get("/api/session", async (_req, reply) => {
 
 fastify.get("/api/ptys", async () => {
   return { ptys: await listPtys() };
+});
+
+fastify.get("/api/readiness/trace", async (req) => {
+  const q = req.query as Record<string, unknown>;
+  const ptyId = typeof q.ptyId === "string" && q.ptyId.trim().length > 0 ? q.ptyId.trim() : null;
+  const parsedLimit = Number(q.limit);
+  const limit = Number.isInteger(parsedLimit) ? Math.max(1, Math.min(2000, parsedLimit)) : 200;
+  const filtered = ptyId ? readinessTrace.filter((evt) => evt.ptyId === ptyId) : readinessTrace;
+  return { events: filtered.slice(-limit) };
 });
 
 fastify.get("/api/tmux/sessions", async () => {
@@ -995,7 +498,7 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   after.exitCode = after.exitCode ?? null;
   after.exitSignal = after.exitSignal ?? null;
   store.upsertSession(after);
-  markReadyExited(id);
+  readinessEngine.markExited(id);
   await broadcastPtyList();
   return { ok: true };
 });
@@ -1213,7 +716,7 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "input") {
-      markReadyInput(msg.ptyId, msg.data);
+      readinessEngine.markInput(msg.ptyId, msg.data);
       ptys.write(msg.ptyId, msg.data);
       return;
     }
