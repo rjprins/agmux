@@ -698,7 +698,7 @@ function renderList(): void {
     } else if (title && title !== process) {
       secondaryText = `${title}  ${readyLabel}`;
     } else {
-      secondaryText = `${title ? p.name : shortId(p.id)}  ${readyLabel}`;
+      secondaryText = `${p.name}  ${readyLabel}`;
     }
     secondary.textContent = secondaryText;
 
