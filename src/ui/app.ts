@@ -69,6 +69,7 @@ tmuxSessionSelect.disabled = true;
 
 type TermState = {
   ptyId: string;
+  backend: "pty" | "tmux" | undefined;
   container: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
@@ -120,7 +121,7 @@ function startAssetReloadPoller(): void {
   void tick();
 }
 
-function createTermState(ptyId: string): TermState {
+function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
   const container = document.createElement("div");
   container.className = "term-pane hidden";
   container.dataset.ptyId = ptyId;
@@ -138,7 +139,7 @@ function createTermState(ptyId: string): TermState {
       cursor: "#ffcc66",
       selectionBackground: "rgba(255, 204, 102, 0.25)",
     },
-    scrollback: TERMINAL_SCROLLBACK_LINES,
+    scrollback: backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -153,8 +154,8 @@ function createTermState(ptyId: string): TermState {
       if (ev.ctrlKey) return;
       const dy = ev.deltaY;
       if (!Number.isFinite(dy) || dy === 0) return;
-      const summary = ptys.find((p) => p.id === ptyId);
-      if (summary?.backend === "tmux") {
+      const st = terms.get(ptyId);
+      if (st?.backend === "tmux") {
         ev.preventDefault();
         const lines = Math.max(1, Math.round(Math.abs(dy) / 40));
         sendWsMessage({
@@ -187,13 +188,23 @@ function createTermState(ptyId: string): TermState {
     renderList();
   });
 
-  return { ptyId, container, term, fit, lastResize: null };
+  return { ptyId, backend, container, term, fit, lastResize: null };
 }
 
-function ensureTerm(ptyId: string): TermState {
+function ensureTerm(ptyId: string, backend?: "pty" | "tmux"): TermState {
   const existing = terms.get(ptyId);
-  if (existing) return existing;
-  const created = createTermState(ptyId);
+  if (existing) {
+    if (backend && existing.backend !== backend) {
+      existing.backend = backend;
+      const target = backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES;
+      if (existing.term.options.scrollback !== target) {
+        existing.term.options.scrollback = target;
+        if (backend === "tmux") existing.term.clear();
+      }
+    }
+    return existing;
+  }
+  const created = createTermState(ptyId, backend);
   terms.set(ptyId, created);
   return created;
 }
@@ -355,9 +366,11 @@ function onServerMsg(msg: ServerMsg): void {
     }
     for (const [ptyId, st] of terms) {
       const p = ptys.find((x) => x.id === ptyId);
+      if (p?.backend) st.backend = p.backend;
       const targetScrollback = p?.backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES;
       if (st.term.options.scrollback !== targetScrollback) {
         st.term.options.scrollback = targetScrollback;
+        if (targetScrollback === 0) st.term.clear();
       }
     }
 
@@ -366,7 +379,8 @@ function onServerMsg(msg: ServerMsg): void {
     return;
   }
   if (msg.type === "pty_output") {
-    const st = ensureTerm(msg.ptyId);
+    const backend = ptys.find((p) => p.id === msg.ptyId)?.backend;
+    const st = ensureTerm(msg.ptyId, backend);
     st.term.write(msg.data);
     return;
   }
@@ -700,7 +714,8 @@ function renderList(): void {
 
 function setActive(ptyId: string): void {
   activePtyId = ptyId;
-  ensureTerm(ptyId);
+  const backend = ptys.find((p) => p.id === ptyId)?.backend;
+  ensureTerm(ptyId, backend);
   updateTerminalVisibility();
   subscribeIfNeeded(ptyId);
   requestAnimationFrame(() => {
