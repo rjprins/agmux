@@ -319,23 +319,28 @@ async function tmuxPaneMeta(name: string): Promise<{ command: string; panePid: n
 async function ttyForegroundCommand(tty: string, panePid: number | null): Promise<string | null> {
   try {
     const ttyArg = tty.startsWith("/dev/") ? tty.slice("/dev/".length) : tty;
-    const { stdout } = await execFileAsync("ps", ["-o", "pid=,tpgid=,comm=", "-t", ttyArg]);
+    const { stdout } = await execFileAsync("ps", ["-o", "pid=,pgid=,tpgid=,comm=", "-t", ttyArg]);
     const rows = stdout
       .split("\n")
       .map((line) => line.trim())
       .filter(Boolean)
       .map((line) => {
-        const m = line.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+        const m = line.match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
         if (!m) return null;
-        return { pid: Number(m[1]), tpgid: Number(m[2]), comm: m[3].trim() };
+        return { pid: Number(m[1]), pgid: Number(m[2]), tpgid: Number(m[3]), comm: m[4].trim() };
       })
-      .filter((r): r is { pid: number; tpgid: number; comm: string } => r != null);
+      .filter((r): r is { pid: number; pgid: number; tpgid: number; comm: string } => r != null);
 
+    // Prefer the foreground process group leader (pid === tpgid) that isn't a shell.
     for (const r of rows) {
       if (r.pid === r.tpgid && !isShellCommand(r.comm)) return r.comm;
     }
+    // Fall back to any non-shell process in the foreground group (pgid === tpgid),
+    // e.g. other members of a pipeline. This excludes background helpers like
+    // gitstatusd that the shell spawns automatically.
     for (const r of rows) {
       if (panePid != null && r.pid === panePid) continue;
+      if (r.pgid !== r.tpgid) continue;
       if (!isShellCommand(r.comm)) return r.comm;
     }
     return null;
