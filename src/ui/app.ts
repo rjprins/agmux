@@ -932,13 +932,6 @@ function renderList(): void {
     primary.className = "primary";
     primary.textContent = process;
     primaryRow.appendChild(readyDot);
-    if (readyInfo.state === "unknown") {
-      const unknownDot = document.createElement("span");
-      unknownDot.className = "ready-unknown-dot";
-      unknownDot.title = `PTY state is unknown${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
-      unknownDot.setAttribute("aria-label", "PTY state is unknown");
-      primaryRow.appendChild(unknownDot);
-    }
     if (cwdLabel) {
       const cwdEl = document.createElement("span");
       cwdEl.className = "cwd-label";

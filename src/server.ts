@@ -153,21 +153,19 @@ type PtyReadyState = {
   lastPromptAt: number;
   timer: NodeJS.Timeout | null;
   busyDelayTimer: NodeJS.Timeout | null;
-  shellHooksInstalled: boolean;
   modeHint: SessionMode | null;
   agentFamilyHint: AgentFamily | null;
 };
 
 const readinessByPty = new Map<string, PtyReadyState>();
+const inputLineByPty = new Map<string, string>();
 const READINESS_QUIET_MS = 220;
 const READINESS_PROMPT_WINDOW_MS = 15_000;
 const READINESS_BUSY_DELAY_MS = 120;
-const SHELL_HOOK_MARKER = /\x1b]133;(AT_BUSY|AT_READY)(?:;[^\x07\x1b]*)?(?:\x07|\x1b\\)/g;
 const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 const AGENT_PROCESS_NAMES = new Set(["codex", "claude", "aider", "goose", "opencode", "cursor-agent"]);
 
 type SessionMode = "shell" | "agent" | "other";
-type ShellKind = "bash" | "zsh" | "fish";
 
 function normalizeProcessName(name: string): string {
   const trimmed = name.trim();
@@ -213,13 +211,6 @@ function classifySessionMode(summary: PtySummary | null, activeProcess: string |
   return "other";
 }
 
-function shellKindFromValue(value: string | null | undefined): ShellKind | null {
-  if (!value) return null;
-  const name = normalizeProcessName(value);
-  if (name === "bash" || name === "zsh" || name === "fish") return name;
-  return null;
-}
-
 function ensureReadiness(ptyId: string): PtyReadyState {
   let st = readinessByPty.get(ptyId);
   if (st) return st;
@@ -232,7 +223,6 @@ function ensureReadiness(ptyId: string): PtyReadyState {
     lastPromptAt: 0,
     timer: null,
     busyDelayTimer: null,
-    shellHooksInstalled: false,
     modeHint: null,
     agentFamilyHint: null,
   };
@@ -252,71 +242,6 @@ function clearBusyDelayTimer(st: PtyReadyState): void {
   st.busyDelayTimer = null;
 }
 
-function parseShellHookSignal(chunk: string): "ready" | "busy" | null {
-  SHELL_HOOK_MARKER.lastIndex = 0;
-  let out: "ready" | "busy" | null = null;
-  let m: RegExpExecArray | null;
-  while ((m = SHELL_HOOK_MARKER.exec(chunk)) != null) {
-    out = m[1] === "AT_READY" ? "ready" : "busy";
-  }
-  return out;
-}
-
-function stripShellHookMarkers(chunk: string): string {
-  SHELL_HOOK_MARKER.lastIndex = 0;
-  return chunk.replace(SHELL_HOOK_MARKER, "");
-}
-
-function shellHookInstallScript(kind: ShellKind): string {
-  if (kind === "bash") {
-    return [
-      "__agent_tide_precmd() { printf '\\033]133;AT_READY\\a'; }",
-      "PS0=$'\\033]133;AT_BUSY\\a'",
-      "PROMPT_COMMAND=\"__agent_tide_precmd${PROMPT_COMMAND:+;$PROMPT_COMMAND}\"",
-      "__agent_tide_precmd",
-      "",
-    ].join("\n");
-  }
-  if (kind === "zsh") {
-    return [
-      "autoload -Uz add-zsh-hook 2>/dev/null",
-      "__agent_tide_preexec() { printf '\\033]133;AT_BUSY\\a'; }",
-      "__agent_tide_precmd() { printf '\\033]133;AT_READY\\a'; }",
-      "if whence -w add-zsh-hook >/dev/null 2>&1; then",
-      "  add-zsh-hook preexec __agent_tide_preexec 2>/dev/null",
-      "  add-zsh-hook precmd __agent_tide_precmd 2>/dev/null",
-      "else",
-      "  preexec_functions+=(__agent_tide_preexec)",
-      "  precmd_functions+=(__agent_tide_precmd)",
-      "fi",
-      "__agent_tide_precmd",
-      "",
-    ].join("\n");
-  }
-  return [
-    "functions -q __agent_tide_preexec; or function __agent_tide_preexec --on-event fish_preexec; printf '\\033]133;AT_BUSY\\a'; end",
-    "functions -q __agent_tide_prompt; or function __agent_tide_prompt --on-event fish_prompt; printf '\\033]133;AT_READY\\a'; end",
-    "emit fish_prompt",
-    "",
-  ].join("\n");
-}
-
-function installShellHooksForPty(ptyId: string, shellValue: string | null | undefined): void {
-  const st = ensureReadiness(ptyId);
-  if (st.shellHooksInstalled) return;
-  const shellKind = shellKindFromValue(shellValue);
-  if (!shellKind) return;
-  st.shellHooksInstalled = true;
-  const script = shellHookInstallScript(shellKind);
-  setTimeout(() => {
-    try {
-      ptys.write(ptyId, script);
-    } catch {
-      // best effort hook install
-    }
-  }, 40);
-}
-
 function scheduleBusyDelay(ptyId: string, reason: string): void {
   const st = ensureReadiness(ptyId);
   if (st.busyDelayTimer) return;
@@ -327,6 +252,32 @@ function scheduleBusyDelay(ptyId: string, reason: string): void {
     if (promptFresh) return;
     setPtyReadiness(ptyId, "busy", reason);
   }, READINESS_BUSY_DELAY_MS);
+}
+
+function updateInputLineBuffer(ptyId: string, data: string): boolean {
+  let line = inputLineByPty.get(ptyId) ?? "";
+  let submitted = false;
+  for (const ch of data) {
+    if (ch === "\r" || ch === "\n") {
+      if (line.trim().length > 0) submitted = true;
+      line = "";
+      continue;
+    }
+    if (ch === "\u0008" || ch === "\u007f") {
+      line = line.slice(0, -1);
+      continue;
+    }
+    if (ch === "\u0015") {
+      line = "";
+      continue;
+    }
+    // Ignore escape/control sequences from navigation keys; only keep visible text.
+    if (ch <= "\u001f" || ch === "\u007f") continue;
+    line += ch;
+    if (line.length > 2000) line = line.slice(-1000);
+  }
+  inputLineByPty.set(ptyId, line);
+  return submitted;
 }
 
 function setPtyReadiness(
@@ -410,31 +361,12 @@ function markReadyOutput(ptyId: string, chunk: string): void {
   const st = ensureReadiness(ptyId);
   const summary = ptys.getSummary(ptyId);
   const now = Date.now();
-  const hookSignal = parseShellHookSignal(chunk);
-  const cleanChunk = stripShellHookMarkers(chunk);
   const classifiedMode = classifySessionMode(summary, summary?.activeProcess ?? null);
   const mode = classifiedMode === "other" && summary?.backend === "tmux" && st.modeHint ? st.modeHint : classifiedMode;
   const agentFamily = mode === "agent" ? (detectAgentFamily(summary, summary?.activeProcess ?? null) ?? st.agentFamilyHint) : null;
   if (mode !== "other") st.modeHint = mode;
   if (agentFamily) st.agentFamilyHint = agentFamily;
-  if (hookSignal === "ready") {
-    clearBusyDelayTimer(st);
-    st.lastOutputAt = now;
-    st.lastPromptAt = now;
-    setPtyReadiness(ptyId, "ready", "hook:prompt");
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  if (hookSignal === "busy") {
-    clearBusyDelayTimer(st);
-    st.lastOutputAt = now;
-    st.lastPromptAt = 0;
-    if (st.state === "ready" || st.state === "unknown") scheduleBusyDelay(ptyId, "hook:preexec");
-    else setPtyReadiness(ptyId, "busy", "hook:preexec");
-    scheduleReadinessRecompute(ptyId);
-    return;
-  }
-  const agentSignal = mode === "agent" ? detectAgentOutputSignal(cleanChunk, agentFamily) : "none";
+  const agentSignal = mode === "agent" ? detectAgentOutputSignal(chunk, agentFamily) : "none";
   if (agentSignal === "busy") {
     clearBusyDelayTimer(st);
     st.lastOutputAt = now;
@@ -451,8 +383,8 @@ function markReadyOutput(ptyId: string, chunk: string): void {
     scheduleReadinessRecompute(ptyId);
     return;
   }
-  const promptLike = outputLooksLikePrompt(cleanChunk);
-  if (!promptLike && !outputHasVisibleText(cleanChunk)) return;
+  const promptLike = outputLooksLikePrompt(chunk);
+  if (!promptLike && !outputHasVisibleText(chunk)) return;
   st.lastOutputAt = now;
   if (mode === "agent") {
     st.lastPromptAt = 0;
@@ -475,11 +407,18 @@ function markReadyOutput(ptyId: string, chunk: string): void {
   scheduleReadinessRecompute(ptyId);
 }
 
-function markReadyInput(ptyId: string): void {
+function markReadyInput(ptyId: string, data: string): void {
   const st = ensureReadiness(ptyId);
   clearBusyDelayTimer(st);
   st.lastOutputAt = Date.now();
+  const submittedCommand = updateInputLineBuffer(ptyId, data);
   st.lastPromptAt = 0;
+  if (submittedCommand) {
+    // Command submission with no immediate output (e.g. "sleep 1") should still show busy.
+    scheduleBusyDelay(ptyId, "input:command");
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
   // Keep ready sessions stable while user types; recompute switches to busy when output resumes.
   if (st.state !== "ready") setPtyReadiness(ptyId, "busy", "input");
   scheduleReadinessRecompute(ptyId);
@@ -489,6 +428,7 @@ function markReadyExited(ptyId: string): void {
   const st = ensureReadiness(ptyId);
   clearReadinessTimer(st);
   clearBusyDelayTimer(st);
+  inputLineByPty.delete(ptyId);
   setPtyReadiness(ptyId, "busy", "exited");
 }
 
@@ -519,9 +459,6 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
         // Process may have exited; ignore.
       }
     }
-  }
-  if (summary.name.startsWith("shell:")) {
-    installShellHooksForPty(ptyId, summary.name.slice("shell:".length));
   }
   const mode = classifySessionMode(summary, activeProcess);
   const agentFamily = mode === "agent" ? detectAgentFamily(summary, activeProcess) : null;
@@ -610,9 +547,6 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
         ? await Promise.all([tmuxPaneActiveProcess(p.tmuxSession!), tmuxPaneCurrentPath(p.tmuxSession!)])
         : [null, null];
       const effectiveCwd = liveCwd ?? p.cwd;
-      if (p.name.startsWith("shell:")) {
-        installShellHooksForPty(p.id, p.name.slice("shell:".length));
-      }
       const mode = classifySessionMode(p, activeProcess);
       const agentFamily = mode === "agent" ? detectAgentFamily(p, activeProcess) : null;
       st.modeHint = mode;
@@ -876,7 +810,6 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
       cols: 120,
       rows: 30,
     });
-    installShellHooksForPty(summary.id, shell);
     store.upsertSession(summary);
     broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
     return { id: summary.id };
@@ -903,7 +836,6 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     cols: 120,
     rows: 30,
   });
-  installShellHooksForPty(summary.id, shell);
   store.upsertSession(summary);
   await broadcastPtyList();
   return { id: summary.id };
@@ -1196,7 +1128,7 @@ wss.on("connection", (ws) => {
       return;
     }
     if (msg.type === "input") {
-      markReadyInput(msg.ptyId);
+      markReadyInput(msg.ptyId, msg.data);
       ptys.write(msg.ptyId, msg.data);
       return;
     }

@@ -198,8 +198,6 @@ button:disabled {
 }
 
 .pty-item.state-ready {
-  border-color: color-mix(in srgb, var(--pty-color, var(--accent)) 40%, rgba(95, 209, 140, 0.4));
-  box-shadow: 0 0 0 1px rgba(95, 209, 140, 0.2) inset;
   background: linear-gradient(
     92deg,
     color-mix(in srgb, var(--pty-color, var(--accent)) 7%, rgba(95, 209, 140, 0.06)),
@@ -208,8 +206,6 @@ button:disabled {
 }
 
 .pty-item.active.state-ready {
-  border-left: 3px solid var(--pty-color, var(--accent));
-  box-shadow: 0 0 6px color-mix(in srgb, var(--pty-color, var(--accent)) 25%, rgba(95, 209, 140, 0.3));
   background: linear-gradient(
     92deg,
     color-mix(in srgb, var(--pty-color, var(--accent)) 10%, rgba(95, 209, 140, 0.08)),
@@ -218,13 +214,11 @@ button:disabled {
 }
 
 .pty-item.state-busy {
-  border-left-color: color-mix(in srgb, var(--pty-color, var(--accent)) 55%, #ffb870);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .pty-item.state-unknown {
-  border-style: dashed;
-  border-left-color: color-mix(in srgb, var(--pty-color, var(--accent)) 50%, #d8c172);
-  box-shadow: 0 0 0 1px rgba(216, 193, 114, 0.18) inset;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .pty-item.highlight {
@@ -289,16 +283,6 @@ button:disabled {
   border-top-color: #ffb870;
   box-shadow: none;
   animation: spin 0.75s linear infinite;
-}
-
-.pty-item .ready-unknown-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  display: inline-block;
-  flex: 0 0 auto;
-  background: #d8c172;
-  box-shadow: 0 0 0 2px rgba(216, 193, 114, 0.16);
 }
 
 @keyframes spin {
