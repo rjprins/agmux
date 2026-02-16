@@ -348,12 +348,8 @@ function removeTerm(ptyId: string): void {
   st.container.remove();
   terms.delete(ptyId);
   ptyTitles.delete(ptyId);
-  ptyLastInput.delete(ptyId);
-  ptyInputHistory.delete(ptyId);
   ptyInputLineBuffers.delete(ptyId);
-  ptyInputProcessHints.delete(ptyId);
   ptyReady.delete(ptyId);
-  savePtyInputMeta();
 }
 
 function wsUrl(): string {
@@ -485,7 +481,8 @@ function onServerMsg(msg: ServerMsg): void {
 
     // Drop terminals for sessions that are no longer running.
     const running = new Set(ptys.filter((p) => p.status === "running").map((p) => p.id));
-    prunePtyInputMeta(running);
+    const allKnown = new Set(ptys.map((p) => p.id));
+    prunePtyInputMeta(allKnown);
     for (const p of ptys) {
       if (typeof p.ready !== "boolean") continue;
       ptyReady.set(p.id, { ready: p.ready, reason: String(p.readyReason ?? "") });
@@ -725,7 +722,7 @@ function renderInputContextBar(): void {
     li.textContent = "No inputs yet";
     inputHistoryListEl.appendChild(li);
   } else {
-    for (let i = history.length - 1; i >= 0; i--) {
+    for (let i = 0; i < history.length; i++) {
       const li = document.createElement("li");
       li.textContent = history[i];
       li.title = history[i];
