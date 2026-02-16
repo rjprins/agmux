@@ -347,6 +347,61 @@ test("tmux non-shell prompt with footer line stays ready", async ({ page }) => {
   }
 });
 
+test("escape key is delivered to tmux session promptly", async ({ page }) => {
+  const hasTmux = await commandAvailable("tmux", ["-V"]);
+  test.skip(!hasTmux, "requires tmux");
+
+  const sessionName = `agent_tide_e2e_esc_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  let ptyId: string | null = null;
+
+  // Create a tmux session running cat -v, which echoes Escape as ^[.
+  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "cat", "-v"]);
+
+  try {
+    await page.goto("/?nosup=1");
+    const token = await readSessionToken(page);
+    // Attaching applies tmuxApplySessionUiOptions which sets escape-time 10ms.
+    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
+      data: { name: sessionName },
+    });
+    expect(attachRes.ok()).toBeTruthy();
+    const attachJson = (await attachRes.json()) as { id?: unknown };
+    ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
+    if (!ptyId) throw new Error("attach-tmux did not return a PTY id");
+
+    const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+    await expect(item).toHaveCount(1, { timeout: 10_000 });
+    await item.click();
+
+    // Wait for the terminal to be ready.
+    await page.waitForTimeout(500);
+    const xterm = page.locator(".term-pane:not(.hidden) .xterm");
+    await xterm.click();
+
+    // Press Escape — cat -v should echo ^[.
+    await page.keyboard.press("Escape");
+
+    // ^[ must appear within 2s (with 500ms escape-time it would be delayed,
+    // but with 10ms it should appear almost instantly).
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const d = (window as any).__agentTide?.dumpActive;
+            return typeof d === "function" ? String(d()) : "";
+          }),
+        { timeout: 5_000 },
+      )
+      .toContain("^[");
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+    await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
+  }
+});
+
 test("reopening running tmux PTY after refresh shows output without wheel scroll", async ({ page }) => {
   await page.goto("/?nosup=1");
   await page.getByRole("button", { name: "New PTY" }).click();

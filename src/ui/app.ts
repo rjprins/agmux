@@ -55,6 +55,26 @@ const eventsEl = $("events");
 
 let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
+
+const ACTIVE_PTY_KEY = "agent-tide:activePty";
+
+function saveActivePty(ptyId: string | null): void {
+  if (!ptyId) { localStorage.removeItem(ACTIVE_PTY_KEY); return; }
+  const p = ptys.find((x) => x.id === ptyId);
+  localStorage.setItem(ACTIVE_PTY_KEY, JSON.stringify({
+    ptyId, tmuxSession: p?.tmuxSession ?? null,
+  }));
+}
+
+function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null } | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_PTY_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    return typeof v.ptyId === "string" ? { ptyId: v.ptyId, tmuxSession: v.tmuxSession ?? null } : null;
+  } catch { return null; }
+}
+
 const ptyTitles = new Map<string, string>();
 const ptyLastInput = new Map<string, string>();
 const ptyInputLineBuffers = new Map<string, string>();
@@ -350,6 +370,7 @@ function onServerMsg(msg: ServerMsg): void {
       const active = ptys.find((p) => p.id === activePtyId);
       if (!active || active.status !== "running") {
         activePtyId = null;
+        saveActivePty(null);
       }
     }
 
@@ -635,6 +656,7 @@ async function killPty(ptyId: string): Promise<void> {
 
   if (activePtyId === ptyId) {
     activePtyId = null;
+    saveActivePty(null);
   }
   removeTerm(ptyId);
   updateTerminalVisibility();
@@ -739,6 +761,7 @@ function renderList(): void {
 
 function setActive(ptyId: string): void {
   activePtyId = ptyId;
+  saveActivePty(ptyId);
   const backend = ptys.find((p) => p.id === ptyId)?.backend;
   ensureTerm(ptyId, backend);
   updateTerminalVisibility();
@@ -938,6 +961,20 @@ void (async () => {
     addEvent(`Failed to initialize session: ${errorMessage(err)}`);
   }
   await refreshList();
+
+  // Restore previously active PTY from localStorage.
+  if (!activePtyId) {
+    const saved = loadSavedActivePty();
+    if (saved) {
+      const running = ptys.filter((p) => p.status === "running");
+      const target =
+        running.find((p) => p.id === saved.ptyId) ??
+        (saved.tmuxSession
+          ? running.find((p) => p.backend === "tmux" && p.tmuxSession === saved.tmuxSession)
+          : null);
+      if (target) setActive(target.id);
+    }
+  }
 })();
 
 // Minimal debug hooks for e2e tests and local inspection.

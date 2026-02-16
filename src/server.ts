@@ -252,7 +252,13 @@ function markReadyOutput(ptyId: string, chunk: string): void {
   const promptLike = outputLooksLikePrompt(chunk);
   if (!promptLike && !outputHasVisibleText(chunk)) return;
   st.lastOutputAt = now;
-  if (promptLike) st.lastPromptAt = now;
+  if (promptLike) {
+    st.lastPromptAt = now;
+    // Prompt redraws can stream continuously; keep these sessions marked ready.
+    setPtyReadiness(ptyId, true, "prompt");
+    scheduleReadinessRecompute(ptyId);
+    return;
+  }
   setPtyReadiness(ptyId, false, "output");
   scheduleReadinessRecompute(ptyId);
 }
@@ -310,6 +316,13 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
 
   const sinceOutput = now - st.lastOutputAt;
   if (st.lastOutputAt > 0 && sinceOutput < READINESS_QUIET_MS) {
+    if (summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
+      if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession)) {
+        setPtyReadiness(ptyId, true, "prompt-visible");
+        scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
+        return;
+      }
+    }
     setPtyReadiness(ptyId, false, "output");
     scheduleReadinessRecompute(ptyId, READINESS_QUIET_MS - sinceOutput + 5);
     return;
@@ -646,6 +659,11 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
     return { error: `tmux session exists on ${located}, not ${requestedServer}` };
   }
   const server: TmuxServer = located;
+  try {
+    await tmuxApplySessionUiOptions(name, server);
+  } catch {
+    // Ignore best-effort option sync; attach can continue.
+  }
 
   const summary = ptys.spawn({
     name: `tmux:${name}`,
