@@ -114,9 +114,14 @@ function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null } | n
   } catch { return null; }
 }
 
+type HistoryEntry = {
+  text: string;
+  bufferLine: number;
+};
+
 const ptyTitles = new Map<string, string>();
 const ptyLastInput = new Map<string, string>();
-const ptyInputHistory = new Map<string, string[]>();
+const ptyInputHistory = new Map<string, HistoryEntry[]>();
 const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
 type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator; reason: string };
@@ -132,7 +137,7 @@ function readinessFromSummary(p: PtySummary): PtyReadyInfo {
 
 function savePtyInputMeta(): void {
   try {
-    const payload: Record<string, { lastInput?: string; processHint?: string; history?: string[] }> = {};
+    const payload: Record<string, { lastInput?: string; processHint?: string; history?: Array<{ text: string; bufferLine: number }> }> = {};
     const ptyIds = new Set<string>([...ptyLastInput.keys(), ...ptyInputProcessHints.keys(), ...ptyInputHistory.keys()]);
     for (const ptyId of ptyIds) {
       const lastInput = ptyLastInput.get(ptyId);
@@ -177,8 +182,17 @@ function loadPtyInputMeta(): void {
       if (typeof rec.lastInput === "string" && rec.lastInput.trim()) ptyLastInput.set(ptyId, rec.lastInput);
       if (typeof rec.processHint === "string" && rec.processHint.trim()) ptyInputProcessHints.set(ptyId, rec.processHint);
       if (Array.isArray(rec.history)) {
-        const entries = rec.history.filter((x): x is string => typeof x === "string" && x.trim().length > 0).slice(-MAX_INPUT_HISTORY);
-        if (entries.length > 0) ptyInputHistory.set(ptyId, entries);
+        const entries: HistoryEntry[] = [];
+        for (const x of rec.history) {
+          if (typeof x === "string" && x.trim().length > 0) {
+            // Backward compat: old format stored plain strings.
+            entries.push({ text: x, bufferLine: 0 });
+          } else if (x && typeof x === "object" && typeof (x as any).text === "string" && (x as any).text.trim().length > 0) {
+            entries.push({ text: (x as any).text, bufferLine: typeof (x as any).bufferLine === "number" ? (x as any).bufferLine : 0 });
+          }
+        }
+        const trimmed = entries.slice(-MAX_INPUT_HISTORY);
+        if (trimmed.length > 0) ptyInputHistory.set(ptyId, trimmed);
       }
     }
   } catch {
@@ -700,13 +714,24 @@ function truncateText(s: string, max = 68): string {
   return `${s.slice(0, Math.max(1, max - 3))}...`;
 }
 
-function appendPtyInputHistory(ptyId: string, input: string): void {
-  const entry = truncateText(input, 220);
+function appendPtyInputHistory(ptyId: string, input: string, bufferLine: number): void {
+  const text = truncateText(input, 220);
   const prev = ptyInputHistory.get(ptyId) ?? [];
-  if (prev.at(-1) === entry) return;
-  const next = [...prev, entry];
+  if (prev.length > 0 && prev[prev.length - 1].text === text) return;
+  const next = [...prev, { text, bufferLine }];
   if (next.length > MAX_INPUT_HISTORY) next.splice(0, next.length - MAX_INPUT_HISTORY);
   ptyInputHistory.set(ptyId, next);
+}
+
+function scrollToHistoryLine(ptyId: string, bufferLine: number): void {
+  const st = terms.get(ptyId);
+  if (!st || st.backend === "tmux") return;
+  if (bufferLine <= 0) return;
+  const buf = st.term.buffer.active;
+  // If the line has been discarded from scrollback, do nothing.
+  const firstAvailable = buf.length - (buf.baseY + st.term.rows);
+  if (bufferLine < firstAvailable) return;
+  st.term.scrollToLine(bufferLine);
 }
 
 function renderInputContextBar(): void {
@@ -723,9 +748,20 @@ function renderInputContextBar(): void {
   inputContextEl.classList.remove("hidden");
 
   const history = ptyInputHistory.get(activePtyId) ?? [];
-  const latest = ptyLastInput.get(activePtyId) ?? history.at(-1) ?? "(none yet)";
+  const lastEntry = history.length > 0 ? history[history.length - 1] : null;
+  const latest = ptyLastInput.get(activePtyId) ?? lastEntry?.text ?? "(none yet)";
   inputContextLastEl.textContent = latest;
   inputContextLastEl.title = latest;
+
+  // Make the "last input" element clickable to scroll to the most recent command.
+  const lastPtyId = activePtyId;
+  if (lastEntry && lastEntry.bufferLine > 0) {
+    inputContextLastEl.classList.add("clickable");
+    inputContextLastEl.onclick = () => scrollToHistoryLine(lastPtyId, lastEntry.bufferLine);
+  } else {
+    inputContextLastEl.classList.remove("clickable");
+    inputContextLastEl.onclick = null;
+  }
 
   inputHistoryLabelEl.textContent = `History (${history.length})`;
   inputContextToggleEl.setAttribute("aria-expanded", inputHistoryExpanded ? "true" : "false");
@@ -742,9 +778,16 @@ function renderInputContextBar(): void {
     inputHistoryListEl.appendChild(li);
   } else {
     for (let i = 0; i < history.length; i++) {
+      const entry = history[i];
       const li = document.createElement("li");
-      li.textContent = history[i];
-      li.title = history[i];
+      li.textContent = entry.text;
+      li.title = entry.text;
+      if (entry.bufferLine > 0) {
+        li.classList.add("clickable");
+        const ptyId = activePtyId!;
+        const line = entry.bufferLine;
+        li.addEventListener("click", () => scrollToHistoryLine(ptyId, line));
+      }
       inputHistoryListEl.appendChild(li);
     }
   }
@@ -793,14 +836,17 @@ function trackUserInput(ptyId: string, data: string): void {
     .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
     .replace(/\x1b./g, "");
 
+  const st = terms.get(ptyId);
+  const buf = st?.term.buffer.active;
   let line = ptyInputLineBuffers.get(ptyId) ?? "";
   let changed = false;
   for (const ch of cleaned) {
     if (ch === "\r" || ch === "\n") {
       const normalized = compactWhitespace(line);
       if (normalized) {
+        const bufferLine = buf ? buf.baseY + buf.cursorY : 0;
         ptyLastInput.set(ptyId, truncateText(normalized));
-        appendPtyInputHistory(ptyId, normalized);
+        appendPtyInputHistory(ptyId, normalized, bufferLine);
         const proc = inferProcessFromInput(normalized);
         if (proc) ptyInputProcessHints.set(ptyId, proc);
         changed = true;

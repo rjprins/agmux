@@ -464,6 +464,27 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+.input-history-list li.clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: -1px -4px;
+}
+
+.input-history-list li.clickable:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+}
+
+.input-context-last.clickable {
+  cursor: pointer;
+}
+
+.input-context-last.clickable:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
 .terminal {
   margin: 0;
   padding: 0;
