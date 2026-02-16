@@ -446,7 +446,7 @@ button:disabled {
 .input-history-list {
   margin: 8px 0 0;
   padding: 0 0 0 18px;
-  max-height: 190px;
+  max-height: 110px;
   overflow: auto;
   display: grid;
   gap: 4px;
