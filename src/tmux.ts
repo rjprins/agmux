@@ -276,6 +276,21 @@ export async function tmuxScrollHistory(
   ]);
 }
 
+export async function tmuxCapturePaneVisible(name: string): Promise<string | null> {
+  const server = await tmuxLocateSession(name);
+  if (!server) return null;
+  try {
+    const { stdout } = await tmuxExec(server, ["capture-pane", "-p", "-e", "-J", "-t", name]);
+    const lines = stdout.replaceAll("\r", "").split("\n");
+    while (lines.length > 0 && lines[0].trim().length === 0) lines.shift();
+    while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) lines.pop();
+    const cleaned = lines.join("\n");
+    return cleaned.length > 0 ? cleaned : null;
+  } catch {
+    return null;
+  }
+}
+
 const SHELL_COMMANDS = new Set([
   "sh",
   "bash",

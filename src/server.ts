@@ -14,6 +14,7 @@ import { TriggerLoader } from "./triggers/loader.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxAttachArgs,
+  tmuxCapturePaneVisible,
   tmuxCheckSessionConfig,
   tmuxKillSession,
   tmuxListSessions,
@@ -650,6 +651,21 @@ wss.on("connection", (ws) => {
 
     if (msg.type === "subscribe") {
       client.subscribed.add(msg.ptyId);
+      const summary = ptys.getSummary(msg.ptyId);
+      if (summary?.backend === "tmux" && summary.tmuxSession) {
+        void tmuxCapturePaneVisible(summary.tmuxSession)
+          .then((snapshot) => {
+            if (!snapshot || ws.readyState !== ws.OPEN) return;
+            send(ws, {
+              type: "pty_output",
+              ptyId: msg.ptyId,
+              data: snapshot.endsWith("\n") ? snapshot : `${snapshot}\n`,
+            });
+          })
+          .catch(() => {
+            // ignore best-effort snapshot for tmux attach
+          });
+      }
       return;
     }
     if (msg.type === "input") {

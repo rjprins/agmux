@@ -197,3 +197,50 @@ test("pty list shows running subprocess name", async ({ page }) => {
     }
   }
 });
+
+test("reopening running tmux PTY after refresh shows output without wheel scroll", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  const token = await readSessionToken(page);
+  const ptysRes = await page.request.get(`/api/ptys?token=${encodeURIComponent(token)}`);
+  const ptysJson = (await ptysRes.json()) as { ptys?: Array<{ id?: string; backend?: string }> };
+  const backend = ptysJson.ptys?.find((p) => p.id === ptyId)?.backend;
+  test.skip(backend !== "tmux", "requires tmux backend");
+
+  const marker = "__refresh-visible-marker__";
+
+  try {
+    const xterm = page.locator(".term-pane:not(.hidden) .xterm");
+    await xterm.click();
+    await page.keyboard.type(`echo ${marker}`);
+    await page.keyboard.press("Enter");
+
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const d = (window as any).__agentTide?.dumpActive;
+            return typeof d === "function" ? String(d()) : "";
+          }),
+        { timeout: 30_000 },
+      )
+      .toContain(marker);
+
+    await page.reload();
+    await page.locator(`.pty-item[data-pty-id="${ptyId}"]`).click();
+
+    await expect
+      .poll(
+        async () => page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? ""),
+        { timeout: 10_000 },
+      )
+      .toContain(marker);
+  } finally {
+    if (ptyId) {
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+  }
+});

@@ -58,14 +58,10 @@ const ptyInputProcessHints = new Map<string, string>();
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
-const btnRefreshTmux = $("btn-refresh-tmux") as HTMLButtonElement;
-const btnAttachTmux = $("btn-attach-tmux") as HTMLButtonElement;
 const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
-const tmuxWarningsEl = $("tmux-session-warnings");
 btnNew.disabled = true;
 btnReloadTriggers.disabled = true;
-btnRefreshTmux.disabled = true;
-btnAttachTmux.disabled = true;
+tmuxSessionSelect.disabled = true;
 
 type TermState = {
   ptyId: string;
@@ -392,25 +388,16 @@ function selectedTmuxSession(): TmuxSessionInfo | null {
   return tmuxSessions.find((s) => tmuxSessionKey(s) === key) ?? null;
 }
 
-function setTmuxWarnings(lines: string[]): void {
-  tmuxWarningsEl.textContent = "";
-  for (const line of lines) {
-    const el = document.createElement("div");
-    el.textContent = line;
-    tmuxWarningsEl.appendChild(el);
-  }
-}
-
 async function refreshTmuxSessions(): Promise<void> {
   const prev = tmuxSessionSelect.value;
   const res = await authFetch("/api/tmux/sessions", { cache: "no-store" });
   if (!res.ok) {
-    setTmuxWarnings([`Failed to list tmux sessions: ${await readApiError(res)}`]);
+    addEvent(`Failed to list tmux sessions: ${await readApiError(res)}`);
     return;
   }
   const json = (await res.json()) as { sessions?: unknown };
   if (!Array.isArray(json.sessions)) {
-    setTmuxWarnings(["Failed to parse tmux session list"]);
+    addEvent("Failed to parse tmux session list");
     return;
   }
 
@@ -423,8 +410,7 @@ async function refreshTmuxSessions(): Promise<void> {
     opt.textContent = "(no tmux sessions)";
     tmuxSessionSelect.appendChild(opt);
     tmuxSessionSelect.value = "";
-    btnAttachTmux.disabled = true;
-    setTmuxWarnings(["No tmux sessions available"]);
+    tmuxSessionSelect.disabled = true;
     return;
   }
 
@@ -439,34 +425,31 @@ async function refreshTmuxSessions(): Promise<void> {
   tmuxSessionSelect.value = tmuxSessions.some((s) => tmuxSessionKey(s) === prev)
     ? prev
     : tmuxSessionKey(tmuxSessions[0]);
-  btnAttachTmux.disabled = false;
-  await checkSelectedTmuxSession();
+  tmuxSessionSelect.disabled = false;
 }
 
-async function checkSelectedTmuxSession(): Promise<void> {
-  const selected = selectedTmuxSession();
-  if (!selected) {
-    setTmuxWarnings(["No tmux session selected"]);
-    btnAttachTmux.disabled = true;
-    return;
-  }
-  btnAttachTmux.disabled = false;
+async function fetchTmuxSessionWarnings(selected: TmuxSessionInfo): Promise<string[]> {
   const qs = new URLSearchParams({
     name: selected.name,
     server: selected.server,
   });
   const res = await authFetch(`/api/tmux/check?${qs.toString()}`, { cache: "no-store" });
   if (!res.ok) {
-    setTmuxWarnings([`Failed to check tmux config: ${await readApiError(res)}`]);
-    return;
+    addEvent(`Failed to check tmux config: ${await readApiError(res)}`);
+    return [];
   }
   const json = (await res.json()) as { checks?: TmuxSessionCheck };
-  const warnings = Array.isArray(json.checks?.warnings) ? json.checks.warnings : [];
-  if (warnings.length === 0) {
-    setTmuxWarnings(["No risky tmux settings detected"]);
-    return;
-  }
-  setTmuxWarnings(warnings.map((w) => `Warning: ${w}`));
+  return Array.isArray(json.checks?.warnings) ? json.checks.warnings : [];
+}
+
+async function checkSelectedTmuxSessionAndMaybeWarn(): Promise<void> {
+  const selected = selectedTmuxSession();
+  if (!selected) return;
+  const warnings = await fetchTmuxSessionWarnings(selected);
+  if (warnings.length === 0) return;
+  window.alert(
+    `Selected tmux session has problematic settings:\n\n${warnings.map((w) => `- ${w}`).join("\n")}`,
+  );
 }
 
 function addEvent(text: string): void {
@@ -718,9 +701,15 @@ async function newShell(): Promise<void> {
   setActive(json.id);
 }
 
-async function attachTmuxSession(): Promise<void> {
-  const selected = selectedTmuxSession();
-  if (!selected) return;
+async function attachTmuxSession(selected: TmuxSessionInfo): Promise<void> {
+  const existing = ptys.find(
+    (p) => p.status === "running" && p.backend === "tmux" && (p.tmuxSession ?? "") === selected.name,
+  );
+  if (existing) {
+    addEvent(`Using existing tmux ${selected.name}`);
+    setActive(existing.id);
+    return;
+  }
   const res = await authFetch("/api/ptys/attach-tmux", {
     method: "POST",
     headers: authHeaders({ "content-type": "application/json" }),
@@ -742,21 +731,19 @@ btnNew.addEventListener("click", () => {
   });
 });
 
-btnRefreshTmux.addEventListener("click", () => {
-  refreshTmuxSessions().catch((err) => {
-    setTmuxWarnings([`Failed to refresh tmux sessions: ${errorMessage(err)}`]);
-  });
-});
-
-btnAttachTmux.addEventListener("click", () => {
-  attachTmuxSession().catch((err) => {
-    addEvent(`Attach tmux failed: ${errorMessage(err)}`);
-  });
-});
-
 tmuxSessionSelect.addEventListener("change", () => {
-  checkSelectedTmuxSession().catch((err) => {
-    setTmuxWarnings([`tmux check failed: ${errorMessage(err)}`]);
+  const selected = selectedTmuxSession();
+  if (!selected) return;
+  checkSelectedTmuxSessionAndMaybeWarn()
+    .then(() => attachTmuxSession(selected))
+    .catch((err) => {
+      addEvent(`Attach tmux failed: ${errorMessage(err)}`);
+    });
+});
+
+tmuxSessionSelect.addEventListener("focus", () => {
+  refreshTmuxSessions().catch((err) => {
+    addEvent(`Failed to refresh tmux sessions: ${errorMessage(err)}`);
   });
 });
 
@@ -811,7 +798,6 @@ void (async () => {
     connectWs();
     btnNew.disabled = false;
     btnReloadTriggers.disabled = false;
-    btnRefreshTmux.disabled = false;
     await refreshTmuxSessions();
   } catch (err) {
     addEvent(`Failed to initialize session: ${errorMessage(err)}`);
