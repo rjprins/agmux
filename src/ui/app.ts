@@ -101,6 +101,74 @@ const ptyLastInput = new Map<string, string>();
 const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
 const ptyReady = new Map<string, { ready: boolean; reason: string }>();
+const PTY_INPUT_META_KEY = "agent-tide:ptyInputMeta";
+
+function savePtyInputMeta(): void {
+  try {
+    const payload: Record<string, { lastInput?: string; processHint?: string }> = {};
+    const ptyIds = new Set<string>([...ptyLastInput.keys(), ...ptyInputProcessHints.keys()]);
+    for (const ptyId of ptyIds) {
+      const lastInput = ptyLastInput.get(ptyId);
+      const processHint = ptyInputProcessHints.get(ptyId);
+      if (!lastInput && !processHint) continue;
+      payload[ptyId] = {};
+      if (lastInput) payload[ptyId].lastInput = lastInput;
+      if (processHint) payload[ptyId].processHint = processHint;
+    }
+    if (Object.keys(payload).length === 0) {
+      sessionStorage.removeItem(PTY_INPUT_META_KEY);
+      // Cleanup legacy shared storage value from older builds.
+      localStorage.removeItem(PTY_INPUT_META_KEY);
+      return;
+    }
+    sessionStorage.setItem(PTY_INPUT_META_KEY, JSON.stringify(payload));
+    // Cleanup legacy shared storage value from older builds.
+    localStorage.removeItem(PTY_INPUT_META_KEY);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function loadPtyInputMeta(): void {
+  try {
+    // sessionStorage is tab-scoped: each browser tab remembers its own PTY hints.
+    // Fall back to legacy localStorage once, then migrate and clear it.
+    const raw = sessionStorage.getItem(PTY_INPUT_META_KEY) ?? localStorage.getItem(PTY_INPUT_META_KEY);
+    if (!raw) return;
+    if (!sessionStorage.getItem(PTY_INPUT_META_KEY)) {
+      sessionStorage.setItem(PTY_INPUT_META_KEY, raw);
+    }
+    localStorage.removeItem(PTY_INPUT_META_KEY);
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return;
+    for (const [ptyId, meta] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!ptyId || typeof ptyId !== "string") continue;
+      if (!meta || typeof meta !== "object") continue;
+      const rec = meta as { lastInput?: unknown; processHint?: unknown };
+      if (typeof rec.lastInput === "string" && rec.lastInput.trim()) ptyLastInput.set(ptyId, rec.lastInput);
+      if (typeof rec.processHint === "string" && rec.processHint.trim()) ptyInputProcessHints.set(ptyId, rec.processHint);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function prunePtyInputMeta(ptyIds: Set<string>): void {
+  let changed = false;
+  for (const ptyId of [...ptyLastInput.keys()]) {
+    if (ptyIds.has(ptyId)) continue;
+    ptyLastInput.delete(ptyId);
+    changed = true;
+  }
+  for (const ptyId of [...ptyInputProcessHints.keys()]) {
+    if (ptyIds.has(ptyId)) continue;
+    ptyInputProcessHints.delete(ptyId);
+    changed = true;
+  }
+  if (changed) savePtyInputMeta();
+}
+
+loadPtyInputMeta();
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
@@ -266,6 +334,7 @@ function removeTerm(ptyId: string): void {
   ptyInputLineBuffers.delete(ptyId);
   ptyInputProcessHints.delete(ptyId);
   ptyReady.delete(ptyId);
+  savePtyInputMeta();
 }
 
 function wsUrl(): string {
@@ -397,6 +466,7 @@ function onServerMsg(msg: ServerMsg): void {
 
     // Drop terminals for sessions that are no longer running.
     const running = new Set(ptys.filter((p) => p.status === "running").map((p) => p.id));
+    prunePtyInputMeta(running);
     for (const p of ptys) {
       if (typeof p.ready !== "boolean") continue;
       ptyReady.set(p.id, { ready: p.ready, reason: String(p.readyReason ?? "") });
@@ -664,7 +734,10 @@ function trackUserInput(ptyId: string, data: string): void {
     if (line.length > 512) line = line.slice(-512);
   }
   ptyInputLineBuffers.set(ptyId, line);
-  if (changed) renderList();
+  if (changed) {
+    savePtyInputMeta();
+    renderList();
+  }
 }
 
 async function killPty(ptyId: string): Promise<void> {

@@ -489,3 +489,33 @@ test("each browser tab restores its own active PTY after reload", async ({ page 
     if (page2) await page2.close();
   }
 });
+
+test("ready PTY keeps last input visible after reload", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const marker = "__last_input_ready__";
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  if (!ptyId) throw new Error("missing PTY id");
+
+  try {
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await page.keyboard.type(`echo ${marker}`);
+    await page.keyboard.press("Enter");
+
+    const activeSecondary = page.locator(".pty-item.active .secondary");
+    await expect(activeSecondary).toContainText(`> echo ${marker}`, { timeout: 10_000 });
+    await expect(page.locator(".pty-item.active .ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    await page.reload();
+
+    await expect(page.locator(`.pty-item[data-pty-id="${ptyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(`.pty-item[data-pty-id="${ptyId}"] .secondary`)).toContainText(`> echo ${marker}`, {
+      timeout: 10_000,
+    });
+  } finally {
+    const token = await readSessionToken(page);
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  }
+});
