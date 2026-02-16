@@ -824,6 +824,69 @@ const ro = new ResizeObserver(() => {
 ro.observe(terminalEl);
 window.addEventListener("resize", () => fitAndResizeActive());
 
+// --- Keybindings ---
+
+function runningPtys(): PtySummary[] {
+  return ptys.filter((p) => p.status === "running");
+}
+
+function switchPtyByOffset(offset: number): void {
+  const running = runningPtys();
+  if (running.length === 0) return;
+  const idx = running.findIndex((p) => p.id === activePtyId);
+  const next = (idx + offset + running.length) % running.length;
+  setActive(running[next].id);
+}
+
+function switchToNextReady(): void {
+  const running = runningPtys();
+  if (running.length === 0) return;
+  const idx = Math.max(0, running.findIndex((p) => p.id === activePtyId));
+  for (let i = 1; i <= running.length; i++) {
+    const candidate = running[(idx + i) % running.length];
+    const readyInfo = ptyReady.get(candidate.id);
+    if (readyInfo?.ready) {
+      setActive(candidate.id);
+      return;
+    }
+  }
+}
+
+document.addEventListener(
+  "keydown",
+  (ev: KeyboardEvent) => {
+    if (!ev.ctrlKey || !ev.shiftKey || ev.altKey || ev.metaKey) return;
+    switch (ev.code) {
+      case "BracketRight":
+        ev.preventDefault();
+        ev.stopPropagation();
+        switchPtyByOffset(1);
+        return;
+      case "BracketLeft":
+        ev.preventDefault();
+        ev.stopPropagation();
+        switchPtyByOffset(-1);
+        return;
+      case "KeyT":
+        ev.preventDefault();
+        ev.stopPropagation();
+        newShell().catch(() => {});
+        return;
+      case "KeyW":
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (activePtyId) killPty(activePtyId).catch(() => {});
+        return;
+      case "Space":
+        ev.preventDefault();
+        ev.stopPropagation();
+        switchToNextReady();
+        return;
+    }
+  },
+  { capture: true },
+);
+
 void (async () => {
   try {
     await fetchSessionToken();
