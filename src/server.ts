@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
@@ -28,7 +29,7 @@ import {
 } from "./tmux.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
-const PORT = Number(process.env.PORT ?? 4821);
+const PORT = Number(process.env.PORT ?? 0);
 const PUBLIC_DIR = path.resolve("public");
 const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agent-tide.db");
 const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
@@ -950,9 +951,36 @@ fastify.server.on("upgrade", (req, socket, head) => {
   }
 });
 
+function openBrowser(url: string): void {
+  const plat = process.platform;
+  if (plat === "darwin") {
+    execFile("open", [url], () => {});
+  } else if (plat === "win32") {
+    execFile("cmd", ["/c", "start", url], () => {});
+  } else {
+    execFile("xdg-open", [url], () => {});
+  }
+}
+
 // Boot
 await loadTriggersAndBroadcast("startup");
 triggerLoader.watch(() => void loadTriggersAndBroadcast("watch"));
 await restorePersistentTmuxSessions();
 
 await fastify.listen({ host: HOST, port: PORT });
+
+// Resolve actual port (important when PORT=0 for random assignment).
+const listenAddress = fastify.server.address();
+const actualPort = typeof listenAddress === "object" && listenAddress ? listenAddress.port : PORT;
+
+// Update allowed WebSocket origins with the real port.
+WS_ALLOWED_ORIGINS.add(`http://127.0.0.1:${actualPort}`);
+WS_ALLOWED_ORIGINS.add(`http://localhost:${actualPort}`);
+WS_ALLOWED_ORIGINS.add(`http://[::1]:${actualPort}`);
+
+const appUrl = `http://${HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST}:${actualPort}`;
+fastify.log.info(`agent-tide ready at ${appUrl}`);
+
+if (process.env.AGENT_TIDE_NO_OPEN !== "1") {
+  openBrowser(appUrl);
+}

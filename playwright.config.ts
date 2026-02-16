@@ -22,7 +22,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `AGENT_TIDE_SHELL=bash AGENT_TIDE_SHELL_BACKEND=pty DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
+    command: `AGENT_TIDE_SHELL=bash AGENT_TIDE_SHELL_BACKEND=pty AGENT_TIDE_NO_OPEN=1 DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
     url: appUrl,
     reuseExistingServer: false,
     timeout: 60_000,

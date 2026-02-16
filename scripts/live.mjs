@@ -1,14 +1,25 @@
-import { spawn } from "node:child_process";
+import { spawn, execFile, execSync } from "node:child_process";
+import { createServer } from "node:net";
 import path from "node:path";
 import process from "node:process";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
 
 const repo = process.cwd();
 const supDir = path.join(repo, "supervisor");
 
-const appPort = Number(process.env.APP_PORT ?? 4821);
-const supPort = Number(process.env.SUP_PORT ?? 4822);
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+    srv.on("error", reject);
+  });
+}
+
+const appPort = process.env.APP_PORT ? Number(process.env.APP_PORT) : await findFreePort();
+const supPort = process.env.SUP_PORT ? Number(process.env.SUP_PORT) : await findFreePort();
 
 function checkPortAvailable(port) {
   try {
@@ -30,8 +41,9 @@ function checkPortAvailable(port) {
   }
 }
 
-checkPortAvailable(appPort);
-checkPortAvailable(supPort);
+// Only check explicitly requested ports; auto-discovered ones are known-free.
+if (process.env.APP_PORT) checkPortAvailable(appPort);
+if (process.env.SUP_PORT) checkPortAvailable(supPort);
 
 const goCache = process.env.GOCACHE ?? "/tmp/go-build-cache";
 try {
@@ -57,7 +69,24 @@ const child = spawn("go", args, {
   env: {
     ...process.env,
     GOCACHE: goCache,
+    // Prevent the Node server from opening a browser on every supervisor restart.
+    AGENT_TIDE_NO_OPEN: "1",
   },
 });
 
 child.on("exit", (code) => process.exit(code ?? 1));
+
+// Open the browser once from the launcher.
+const appUrl = `http://127.0.0.1:${appPort}`;
+// eslint-disable-next-line no-console
+console.log(`app: ${appUrl}`);
+
+if (process.env.AGENT_TIDE_NO_OPEN !== "1") {
+  const open =
+    process.platform === "darwin"
+      ? ["open", [appUrl]]
+      : process.platform === "win32"
+        ? ["cmd", ["/c", "start", appUrl]]
+        : ["xdg-open", [appUrl]];
+  execFile(open[0], open[1], () => {});
+}
