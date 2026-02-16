@@ -447,7 +447,8 @@ button:disabled {
   margin: 8px 0 0;
   padding: 0 0 0 18px;
   max-height: 110px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   display: grid;
   gap: 4px;
 }
