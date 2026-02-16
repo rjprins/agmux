@@ -21,7 +21,7 @@ await build({
 });
 
 // xterm ships its own CSS; keep it in /public so our minimal static server can serve it.
-await fs.copyFile(path.resolve("node_modules/xterm/css/xterm.css"), outXtermCss);
+await fs.copyFile(path.resolve("node_modules/@xterm/xterm/css/xterm.css"), outXtermCss);
 
 // eslint-disable-next-line no-console
 console.log(`Built ${path.relative(process.cwd(), out)}`);
