@@ -50,7 +50,7 @@ const $ = (id: string) => document.getElementById(id)!;
 
 const listEl = $("pty-list");
 const terminalEl = $("terminal");
-const eventsEl = $("events");
+const eventsEl = document.getElementById("events");
 const inputContextEl = $("input-context");
 const inputContextLastEl = $("input-context-last");
 const inputHistoryListEl = $("input-history-list");
@@ -620,6 +620,7 @@ async function checkSelectedTmuxSessionAndMaybeWarn(): Promise<void> {
 }
 
 function addEvent(text: string): void {
+  if (!eventsEl) return;
   const el = document.createElement("div");
   el.className = "event";
   el.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
