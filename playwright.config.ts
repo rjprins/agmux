@@ -1,8 +1,13 @@
 import { defineConfig } from "@playwright/test";
 
-const appPort = Number(process.env.E2E_APP_PORT ?? 4931);
+function randomPort(): number {
+  // Ephemeral range 49152–65535, avoid collisions with the dev server (4821).
+  return 49152 + Math.floor(Math.random() * (65535 - 49152));
+}
+
+const appPort = Number(process.env.E2E_APP_PORT || 0) || randomPort();
 const appUrl = `http://127.0.0.1:${appPort}`;
-const dbPath = process.env.E2E_DB_PATH ?? "/tmp/agent-tide-e2e.db";
+const dbPath = process.env.E2E_DB_PATH ?? `/tmp/agent-tide-e2e-${appPort}.db`;
 
 export default defineConfig({
   testDir: "e2e",
