@@ -220,6 +220,14 @@ export async function tmuxApplySessionUiOptions(
 
   // We use tmux only for persistence; keep the user experience "plain shell".
   // These options are per-session so we don't mutate other sessions.
+  try {
+    // xterm.js sends complete escape sequences atomically over WebSocket, so
+    // tmux doesn't need to wait to disambiguate bare Escape from sequences.
+    // The default 500ms makes Escape feel broken in vim/neovim.
+    await tmuxByServer(server, ["set-option", "-s", "escape-time", "10"]);
+  } catch {
+    // ignore
+  }
   await tmuxByServer(server, ["set-option", "-t", name, "status", "off"]);
   await tmuxByServer(server, ["set-option", "-t", name, "mouse", "off"]);
   await tmuxByServer(server, ["set-option", "-t", name, "prefix", "None"]);
