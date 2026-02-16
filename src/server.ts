@@ -182,7 +182,8 @@ function setPtyReadiness(ptyId: string, ready: boolean, reason: string, emitEven
   st.reason = reason;
   st.updatedAt = Date.now();
   if (!emitEvent) return;
-  broadcast({ type: "pty_ready", ptyId, ready, reason, ts: st.updatedAt });
+  const cwd = ptys.getSummary(ptyId)?.cwd ?? null;
+  broadcast({ type: "pty_ready", ptyId, ready, reason, ts: st.updatedAt, cwd });
 }
 
 function outputLooksLikePrompt(chunk: string): boolean {
@@ -208,6 +209,14 @@ function outputLooksLikePrompt(chunk: string): boolean {
   return false;
 }
 
+function outputHasVisibleText(chunk: string): boolean {
+  const visible = stripAnsi(chunk)
+    .replaceAll("\u00a0", " ")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim();
+  return visible.length > 0;
+}
+
 async function tmuxSessionShowsPrompt(ptyId: string, tmuxSession: string): Promise<boolean> {
   const snapshot = await tmuxCapturePaneVisible(tmuxSession);
   if (!snapshot || !outputLooksLikePrompt(snapshot)) return false;
@@ -227,8 +236,10 @@ function scheduleReadinessRecompute(ptyId: string, delayMs = READINESS_QUIET_MS)
 function markReadyOutput(ptyId: string, chunk: string): void {
   const st = ensureReadiness(ptyId);
   const now = Date.now();
+  const promptLike = outputLooksLikePrompt(chunk);
+  if (!promptLike && !outputHasVisibleText(chunk)) return;
   st.lastOutputAt = now;
-  if (outputLooksLikePrompt(chunk)) st.lastPromptAt = now;
+  if (promptLike) st.lastPromptAt = now;
   setPtyReadiness(ptyId, false, "output");
   scheduleReadinessRecompute(ptyId);
 }
@@ -258,7 +269,22 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
   const now = Date.now();
   let activeProcess: string | null = summary.activeProcess ?? null;
   if (summary.backend === "tmux" && summary.tmuxSession) {
-    activeProcess = await tmuxPaneActiveProcess(summary.tmuxSession);
+    const [proc, liveCwd] = await Promise.all([
+      tmuxPaneActiveProcess(summary.tmuxSession),
+      tmuxPaneCurrentPath(summary.tmuxSession),
+    ]);
+    activeProcess = proc;
+    if (liveCwd) ptys.updateCwd(ptyId, liveCwd);
+  } else {
+    const pid = ptys.getPid(ptyId);
+    if (pid) {
+      try {
+        const liveCwd = await fs.readlink(`/proc/${pid}/cwd`);
+        if (liveCwd) ptys.updateCwd(ptyId, liveCwd);
+      } catch {
+        // Process may have exited; ignore.
+      }
+    }
   }
 
   const sinceOutput = now - st.lastOutputAt;

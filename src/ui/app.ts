@@ -41,7 +41,7 @@ type ServerMsg =
   | { type: "pty_list"; ptys: PtySummary[] }
   | { type: "pty_output"; ptyId: string; data: string }
   | { type: "pty_exit"; ptyId: string; code: number | null; signal: string | null }
-  | { type: "pty_ready"; ptyId: string; ready: boolean; reason: string; ts: number }
+  | { type: "pty_ready"; ptyId: string; ready: boolean; reason: string; ts: number; cwd?: string | null }
   | { type: "trigger_fired"; ptyId: string; trigger: string; match: string; line: string; ts: number }
   | { type: "pty_highlight"; ptyId: string; reason: string; ttlMs: number }
   | { type: "trigger_error"; ptyId: string; trigger: string; ts: number; message: string };
@@ -392,6 +392,10 @@ function onServerMsg(msg: ServerMsg): void {
   }
   if (msg.type === "pty_ready") {
     ptyReady.set(msg.ptyId, { ready: msg.ready, reason: msg.reason });
+    if (msg.cwd != null) {
+      const p = ptys.find((x) => x.id === msg.ptyId);
+      if (p) p.cwd = msg.cwd;
+    }
     renderList();
     return;
   }

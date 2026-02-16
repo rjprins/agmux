@@ -116,6 +116,16 @@ export class PtyManager extends EventEmitter {
     }
   }
 
+  updateCwd(id: PtyId, cwd: string): void {
+    const s = this.sessions.get(id);
+    if (s) s.summary.cwd = cwd;
+  }
+
+  getPid(id: PtyId): number | null {
+    const s = this.sessions.get(id);
+    return s ? s.pty.pid : null;
+  }
+
   kill(id: PtyId): boolean {
     const s = this.sessions.get(id);
     if (!s) return false;

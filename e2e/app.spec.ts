@@ -212,6 +212,37 @@ test("pty list shows running subprocess name", async ({ page }) => {
   }
 });
 
+test("pty list item shows current working directory", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  const token = await readSessionToken(page);
+
+  try {
+    const active = page.locator(".pty-item.active");
+
+    // The cwd label should appear once readiness recomputes.
+    await expect(active.locator(".cwd-label")).toHaveCount(1, { timeout: 10_000 });
+    const cwdText = await active.locator(".cwd-label").textContent();
+    expect(cwdText?.trim().length).toBeGreaterThan(0);
+
+    // cd to /tmp and verify the cwd label updates.
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await page.keyboard.type("cd /tmp");
+    await page.keyboard.press("Enter");
+
+    await expect(active.locator(".cwd-label")).toContainText("tmp", { timeout: 10_000 });
+    // Full path should be in the tooltip.
+    await expect(active.locator(".cwd-label")).toHaveAttribute("title", /\/tmp/, { timeout: 10_000 });
+  } finally {
+    if (ptyId) {
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+  }
+});
+
 test("pty readiness flips busy to ready around subprocess execution", async ({ page }) => {
   await page.goto("/?nosup=1");
   await page.getByRole("button", { name: "New PTY" }).click();
@@ -267,6 +298,46 @@ test("tmux non-shell interactive prompt stays ready after reload", async ({ page
     const reloadedItem = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
     await expect(reloadedItem).toHaveCount(1, { timeout: 10_000 });
     await expect(reloadedItem.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+    await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
+  }
+});
+
+test("tmux non-shell prompt with footer line stays ready", async ({ page }) => {
+  const hasTmux = await commandAvailable("tmux", ["-V"]);
+  const hasPython = await commandAvailable("python3", ["--version"]);
+  test.skip(!hasTmux || !hasPython, "requires tmux and python3");
+
+  const sessionName = `agent_tide_e2e_footer_prompt_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  let ptyId: string | null = null;
+
+  const script =
+    "import sys,time; print('› Ask anything'); print('  100% context left'); sys.stdout.flush(); " +
+    "[(sys.stdout.write('\\\\x1b[?25l\\\\x1b[?25h'), sys.stdout.flush(), time.sleep(0.05)) for _ in range(320)]; input()";
+  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "python3", "-u", "-c", script]);
+
+  try {
+    await page.goto("/?nosup=1");
+    const token = await readSessionToken(page);
+    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
+      data: { name: sessionName },
+    });
+    expect(attachRes.ok()).toBeTruthy();
+    const attachJson = (await attachRes.json()) as { id?: unknown };
+    ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
+    if (!ptyId) throw new Error("attach-tmux did not return a PTY id");
+
+    const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+    await expect(item).toHaveCount(1, { timeout: 10_000 });
+    await expect(item.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    // Keep this above the server prompt window to verify prompt detection via pane capture.
+    await page.waitForTimeout(16_000);
+    await expect(item.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
   } finally {
     if (ptyId) {
       const token = await readSessionToken(page);
