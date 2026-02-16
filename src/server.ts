@@ -191,10 +191,17 @@ function outputLooksLikePrompt(chunk: string): boolean {
   if (/(password|username|login):\s*$/i.test(tail)) return true;
   const lastLine = tail.split("\n").at(-1)?.trimEnd() ?? "";
   if (!lastLine) return false;
-  if (/^[^>\n]{0,140}[$#%]\s?$/.test(lastLine)) return true;
-  if (/^[^>\n]{0,140}>\s?$/.test(lastLine)) return true;
-  if (/^[^>\n]{0,140}❯\s?$/.test(lastLine)) return true;
+  if (/^[^\n]{0,180}[$#%]\s?$/.test(lastLine)) return true;
+  if (/^[^\n]{0,180}(?:>|>>|>>>|❯|›)\s?$/.test(lastLine)) return true;
+  if (/^[^\n]{0,180}\s(?:>|>>|>>>|❯|›)\s?$/.test(lastLine)) return true;
   return false;
+}
+
+async function tmuxSessionShowsPrompt(ptyId: string, tmuxSession: string): Promise<boolean> {
+  const snapshot = await tmuxCapturePaneVisible(tmuxSession);
+  if (!snapshot || !outputLooksLikePrompt(snapshot)) return false;
+  ensureReadiness(ptyId).lastPromptAt = Date.now();
+  return true;
 }
 
 function scheduleReadinessRecompute(ptyId: string, delayMs = READINESS_QUIET_MS): void {
@@ -241,10 +248,6 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
   let activeProcess: string | null = summary.activeProcess ?? null;
   if (summary.backend === "tmux" && summary.tmuxSession) {
     activeProcess = await tmuxPaneActiveProcess(summary.tmuxSession);
-    if (activeProcess && !isShellProcess(activeProcess)) {
-      setPtyReadiness(ptyId, false, `process:${normalizeProcessName(activeProcess)}`);
-      return;
-    }
   }
 
   const sinceOutput = now - st.lastOutputAt;
@@ -257,6 +260,15 @@ async function recomputeReadiness(ptyId: string): Promise<void> {
   const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
   if (promptFresh) {
     setPtyReadiness(ptyId, true, "prompt");
+    return;
+  }
+
+  if (summary.backend === "tmux" && summary.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
+    if (await tmuxSessionShowsPrompt(ptyId, summary.tmuxSession)) {
+      setPtyReadiness(ptyId, true, "prompt-visible");
+      return;
+    }
+    setPtyReadiness(ptyId, false, `process:${normalizeProcessName(activeProcess)}`);
     return;
   }
 
@@ -278,18 +290,20 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
         return { ...p, activeProcess: p.activeProcess ?? null, ready: false, readyReason: "exited" };
       }
       const activeProcess = p.backend === "tmux" && p.tmuxSession ? await tmuxPaneActiveProcess(p.tmuxSession) : null;
-      if (activeProcess && !isShellProcess(activeProcess)) {
-        setPtyReadiness(p.id, false, `process:${normalizeProcessName(activeProcess)}`, false);
-      } else {
-        const now = Date.now();
-        const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
-        if (promptFresh) {
-          setPtyReadiness(p.id, true, "prompt", false);
-        } else if (p.backend === "tmux") {
-          setPtyReadiness(p.id, true, "idle-shell", false);
+      const now = Date.now();
+      const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
+      if (promptFresh) {
+        setPtyReadiness(p.id, true, "prompt", false);
+      } else if (p.backend === "tmux" && p.tmuxSession && activeProcess && !isShellProcess(activeProcess)) {
+        if (await tmuxSessionShowsPrompt(p.id, p.tmuxSession)) {
+          setPtyReadiness(p.id, true, "prompt-visible", false);
         } else {
-          setPtyReadiness(p.id, false, "unknown", false);
+          setPtyReadiness(p.id, false, `process:${normalizeProcessName(activeProcess)}`, false);
         }
+      } else if (p.backend === "tmux") {
+        setPtyReadiness(p.id, true, "idle-shell", false);
+      } else {
+        setPtyReadiness(p.id, false, "unknown", false);
       }
       return { ...p, activeProcess, ready: st.ready, readyReason: st.reason };
     }),

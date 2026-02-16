@@ -661,6 +661,7 @@ function renderList(): void {
     const inputPreview = ptyLastInput.get(p.id) ?? "";
     const readyInfo = ptyReady.get(p.id) ?? { ready: Boolean(p.ready), reason: String(p.readyReason ?? "") };
     const readyLabel = readyInfo.ready ? "ready" : "busy";
+    const cwdLabel = compactWhitespace(p.cwd ?? "");
 
     const primaryRow = document.createElement("div");
     primaryRow.className = "primary-row";
@@ -679,13 +680,16 @@ function renderList(): void {
 
     const secondary = document.createElement("div");
     secondary.className = "secondary";
+    let secondaryText = "";
     if (inputPreview) {
-      secondary.textContent = `> ${inputPreview}  ${readyLabel}`;
+      secondaryText = `> ${inputPreview}  ${readyLabel}`;
     } else if (title && title !== process) {
-      secondary.textContent = `${title}  ${readyLabel}`;
+      secondaryText = `${title}  ${readyLabel}`;
     } else {
-      secondary.textContent = `${title ? p.name : shortId(p.id)}  ${readyLabel}`;
+      secondaryText = `${title ? p.name : shortId(p.id)}  ${readyLabel}`;
     }
+    secondary.textContent = cwdLabel ? `${secondaryText}  ·  ${cwdLabel}` : secondaryText;
+    if (cwdLabel) secondary.title = `cwd: ${cwdLabel}`;
 
     main.appendChild(primaryRow);
     main.appendChild(secondary);

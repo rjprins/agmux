@@ -1,4 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 async function readSessionToken(page: Page): Promise<string> {
   const res = await page.request.get("/api/session");
@@ -7,6 +11,15 @@ async function readSessionToken(page: Page): Promise<string> {
     throw new Error("missing session token");
   }
   return json.token;
+}
+
+async function commandAvailable(command: string, args: string[]): Promise<boolean> {
+  try {
+    await execFileAsync(command, args);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test("can create a PTY and fires proceed trigger", async ({ page }) => {
@@ -218,6 +231,48 @@ test("pty readiness flips busy to ready around subprocess execution", async ({ p
       const token = await readSessionToken(page);
       await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
     }
+  }
+});
+
+test("tmux non-shell interactive prompt stays ready after reload", async ({ page }) => {
+  const hasTmux = await commandAvailable("tmux", ["-V"]);
+  const hasPython = await commandAvailable("python3", ["--version"]);
+  test.skip(!hasTmux || !hasPython, "requires tmux and python3");
+
+  const sessionName = `agent_tide_e2e_prompt_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  let ptyId: string | null = null;
+
+  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "python3", "-q"]);
+
+  try {
+    await page.goto("/?nosup=1");
+    const token = await readSessionToken(page);
+    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
+      data: { name: sessionName },
+    });
+    expect(attachRes.ok()).toBeTruthy();
+    const attachJson = (await attachRes.json()) as { id?: unknown };
+    ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
+    if (!ptyId) throw new Error("attach-tmux did not return a PTY id");
+
+    const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+    await expect(item).toHaveCount(1, { timeout: 10_000 });
+    await expect(item.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    // Keep this above the server prompt window to catch stale busy regressions.
+    await page.waitForTimeout(16_000);
+    await expect(item.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    await page.reload();
+    const reloadedItem = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+    await expect(reloadedItem).toHaveCount(1, { timeout: 10_000 });
+    await expect(reloadedItem.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+    await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
   }
 });
 
