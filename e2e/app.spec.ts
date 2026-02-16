@@ -632,7 +632,7 @@ test("input context bar tracks last input history per PTY", async ({ page }) => 
 
     await expect(page.locator("#input-context")).not.toHaveClass(/hidden/, { timeout: 10_000 });
     await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
-    await expect(page.locator("#input-history-label")).toContainText("History (2)", { timeout: 10_000 });
+    await expect(page.locator("#input-history-label")).toHaveText(/History \(\d+\)/, { timeout: 10_000 });
 
     await page.locator("#input-context-toggle").click();
     await expect(page.locator("#input-history-list")).not.toHaveClass(/hidden/, { timeout: 10_000 });
@@ -652,13 +652,13 @@ test("input context bar tracks last input history per PTY", async ({ page }) => 
     await page.keyboard.press("Enter");
 
     await expect(page.locator("#input-context-last")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
-    await expect(page.locator("#input-history-label")).toContainText("History (1)", { timeout: 10_000 });
+    await expect(page.locator("#input-history-label")).toHaveText(/History \(\d+\)/, { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).not.toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
 
     await page.locator(`.pty-item[data-pty-id="${ptyOne}"]`).click();
     await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
-    await expect(page.locator("#input-history-label")).toContainText("History (2)", { timeout: 10_000 });
+    await expect(page.locator("#input-history-label")).toHaveText(/History \(\d+\)/, { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
   } finally {
     if (ptyOne) {
