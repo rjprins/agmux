@@ -52,9 +52,10 @@ const listEl = $("pty-list");
 const terminalEl = $("terminal");
 const eventsEl = document.getElementById("events");
 const inputContextEl = $("input-context");
+const inputContextToggleEl = $("input-context-toggle");
 const inputContextLastEl = $("input-context-last");
+const inputHistoryLabelEl = $("input-history-label");
 const inputHistoryListEl = $("input-history-list");
-const btnInputHistory = $("btn-input-history") as HTMLButtonElement;
 
 let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
@@ -654,7 +655,7 @@ function hashHue(s: string): number {
 }
 
 function ptyColor(ptyId: string): string {
-  return `hsl(${hashHue(ptyId)} 85% 62%)`;
+  return `hsl(${hashHue(ptyId)} 85% 72%)`;
 }
 
 function shortId(ptyId: string): string {
@@ -696,21 +697,22 @@ function renderInputContextBar(): void {
   if (!activePtyId) {
     inputContextEl.classList.add("hidden");
     inputContextLastEl.textContent = "(none yet)";
+    inputHistoryLabelEl.textContent = "History (0)";
+    inputContextToggleEl.setAttribute("aria-expanded", "false");
     inputHistoryListEl.classList.add("hidden");
     inputHistoryListEl.textContent = "";
-    btnInputHistory.disabled = true;
     return;
   }
 
   inputContextEl.classList.remove("hidden");
-  btnInputHistory.disabled = false;
 
   const history = ptyInputHistory.get(activePtyId) ?? [];
   const latest = ptyLastInput.get(activePtyId) ?? history.at(-1) ?? "(none yet)";
   inputContextLastEl.textContent = latest;
   inputContextLastEl.title = latest;
 
-  btnInputHistory.textContent = history.length > 0 ? `History (${history.length})` : "History";
+  inputHistoryLabelEl.textContent = `History (${history.length})`;
+  inputContextToggleEl.setAttribute("aria-expanded", inputHistoryExpanded ? "true" : "false");
 
   if (!inputHistoryExpanded) {
     inputHistoryListEl.classList.add("hidden");
@@ -1015,10 +1017,20 @@ btnReloadTriggers.addEventListener("click", async () => {
   addEvent("Requested trigger reload");
 });
 
-btnInputHistory.addEventListener("click", () => {
+function toggleInputHistory(): void {
   if (!activePtyId) return;
   inputHistoryExpanded = !inputHistoryExpanded;
   renderInputContextBar();
+}
+
+inputContextToggleEl.addEventListener("click", () => {
+  toggleInputHistory();
+});
+
+inputContextToggleEl.addEventListener("keydown", (ev) => {
+  if (ev.key !== "Enter" && ev.key !== " ") return;
+  ev.preventDefault();
+  toggleInputHistory();
 });
 
 function subscribeIfNeeded(ptyId: string): void {

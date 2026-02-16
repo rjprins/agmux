@@ -138,11 +138,13 @@ type PtyReadyState = {
   lastOutputAt: number;
   lastPromptAt: number;
   timer: NodeJS.Timeout | null;
+  busyDelayTimer: NodeJS.Timeout | null;
 };
 
 const readinessByPty = new Map<string, PtyReadyState>();
 const READINESS_QUIET_MS = 220;
 const READINESS_PROMPT_WINDOW_MS = 15_000;
+const READINESS_BUSY_DELAY_MS = 120;
 const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 
 function normalizeProcessName(name: string): string {
@@ -165,6 +167,7 @@ function ensureReadiness(ptyId: string): PtyReadyState {
     lastOutputAt: 0,
     lastPromptAt: 0,
     timer: null,
+    busyDelayTimer: null,
   };
   readinessByPty.set(ptyId, st);
   return st;
@@ -174,6 +177,24 @@ function clearReadinessTimer(st: PtyReadyState): void {
   if (!st.timer) return;
   clearTimeout(st.timer);
   st.timer = null;
+}
+
+function clearBusyDelayTimer(st: PtyReadyState): void {
+  if (!st.busyDelayTimer) return;
+  clearTimeout(st.busyDelayTimer);
+  st.busyDelayTimer = null;
+}
+
+function scheduleBusyDelay(ptyId: string, reason: string): void {
+  const st = ensureReadiness(ptyId);
+  if (st.busyDelayTimer) return;
+  st.busyDelayTimer = setTimeout(() => {
+    st.busyDelayTimer = null;
+    // Prompt output arrived during the delay window; keep the PTY ready.
+    const promptFresh = st.lastPromptAt > 0 && Date.now() - st.lastPromptAt <= READINESS_BUSY_DELAY_MS + 40;
+    if (promptFresh) return;
+    setPtyReadiness(ptyId, false, reason);
+  }, READINESS_BUSY_DELAY_MS);
 }
 
 function setPtyReadiness(ptyId: string, ready: boolean, reason: string, emitEvent = true): void {
@@ -241,19 +262,22 @@ function markReadyOutput(ptyId: string, chunk: string): void {
   if (!promptLike && !outputHasVisibleText(chunk)) return;
   st.lastOutputAt = now;
   if (promptLike) {
+    clearBusyDelayTimer(st);
     st.lastPromptAt = now;
     // Prompt redraws can stream continuously; keep these sessions marked ready.
     setPtyReadiness(ptyId, true, "prompt");
     scheduleReadinessRecompute(ptyId);
     return;
   }
-  // Avoid brief busy flashes for tiny output bursts that are immediately followed by a prompt redraw.
-  if (!st.ready) setPtyReadiness(ptyId, false, "output");
+  // Delay busy slightly so prompt redraw chunks don't flash busy, while sustained output still flips to busy.
+  if (st.ready) scheduleBusyDelay(ptyId, "output");
+  else setPtyReadiness(ptyId, false, "output");
   scheduleReadinessRecompute(ptyId);
 }
 
 function markReadyInput(ptyId: string): void {
   const st = ensureReadiness(ptyId);
+  clearBusyDelayTimer(st);
   st.lastOutputAt = Date.now();
   st.lastPromptAt = 0;
   // Keep prompt sessions ready while typing; recompute will switch to busy if execution actually continues.
@@ -264,6 +288,7 @@ function markReadyInput(ptyId: string): void {
 function markReadyExited(ptyId: string): void {
   const st = ensureReadiness(ptyId);
   clearReadinessTimer(st);
+  clearBusyDelayTimer(st);
   setPtyReadiness(ptyId, false, "exited");
 }
 

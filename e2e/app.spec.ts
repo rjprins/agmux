@@ -328,6 +328,30 @@ test("pty readiness does not flash busy for immediate prompt commands", async ({
   }
 });
 
+test("pty readiness flips to busy during sustained output", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  try {
+    const active = page.locator(".pty-item.active");
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+
+    await page.keyboard.type("for i in $(seq 1 30); do echo $i; sleep 0.05; done");
+    await page.keyboard.press("Enter");
+
+    await expect(active.locator(".ready-dot.busy")).toHaveCount(1, { timeout: 6_000 });
+    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 12_000 });
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+  }
+});
+
 test("tmux non-shell interactive prompt stays ready after reload", async ({ page }) => {
   const hasTmux = await commandAvailable("tmux", ["-V"]);
   const hasPython = await commandAvailable("python3", ["--version"]);
@@ -608,8 +632,9 @@ test("input context bar tracks last input history per PTY", async ({ page }) => 
 
     await expect(page.locator("#input-context")).not.toHaveClass(/hidden/, { timeout: 10_000 });
     await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
+    await expect(page.locator("#input-history-label")).toContainText("History (2)", { timeout: 10_000 });
 
-    await page.getByRole("button", { name: "History" }).click();
+    await page.locator("#input-context-toggle").click();
     await expect(page.locator("#input-history-list")).not.toHaveClass(/hidden/, { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("pwd", { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
@@ -627,11 +652,13 @@ test("input context bar tracks last input history per PTY", async ({ page }) => 
     await page.keyboard.press("Enter");
 
     await expect(page.locator("#input-context-last")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
+    await expect(page.locator("#input-history-label")).toContainText("History (1)", { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).not.toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
 
     await page.locator(`.pty-item[data-pty-id="${ptyOne}"]`).click();
     await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
+    await expect(page.locator("#input-history-label")).toContainText("History (2)", { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
   } finally {
     if (ptyOne) {

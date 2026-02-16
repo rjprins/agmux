@@ -34,10 +34,17 @@
       <main class="main">
         <section class="terminal-wrap">
           <div id="input-context" class="input-context hidden">
-            <div class="input-context-row">
+            <div
+              id="input-context-toggle"
+              class="input-context-row"
+              role="button"
+              tabindex="0"
+              aria-expanded="false"
+              aria-controls="input-history-list"
+            >
               <span class="input-context-label">Last input</span>
               <code id="input-context-last" class="input-context-last">(none yet)</code>
-              <button id="btn-input-history" type="button" class="input-context-btn">History</button>
+              <span id="input-history-label" class="input-history-label">History (0)</span>
             </div>
             <ol id="input-history-list" class="input-history-list hidden"></ol>
           </div>

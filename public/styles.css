@@ -186,13 +186,15 @@ button:disabled {
   cursor: pointer;
   position: relative;
   border-left: 3px solid var(--pty-color, rgba(255, 255, 255, 0.25));
+  opacity: 0.65;
 }
 
 .pty-item.active {
-  border-color: color-mix(in srgb, var(--pty-color, var(--accent)) 55%, rgba(255, 255, 255, 0.08));
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--pty-color, var(--accent)) 50%, rgba(255, 255, 255, 0.15));
   border-left: 3px solid var(--pty-color, var(--accent));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pty-color, var(--accent)) 25%, transparent) inset;
-  background: color-mix(in srgb, var(--pty-color, var(--accent)) 12%, rgba(255, 255, 255, 0.04));
+  box-shadow: 0 0 6px color-mix(in srgb, var(--pty-color, var(--accent)) 30%, transparent);
+  background: color-mix(in srgb, var(--pty-color, var(--accent)) 8%, rgba(255, 255, 255, 0.03));
 }
 
 .pty-item.state-ready {
@@ -207,11 +209,11 @@ button:disabled {
 
 .pty-item.active.state-ready {
   border-left: 3px solid var(--pty-color, var(--accent));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--pty-color, var(--accent)) 22%, rgba(95, 209, 140, 0.45)) inset;
+  box-shadow: 0 0 6px color-mix(in srgb, var(--pty-color, var(--accent)) 25%, rgba(95, 209, 140, 0.3));
   background: linear-gradient(
     92deg,
-    color-mix(in srgb, var(--pty-color, var(--accent)) 16%, rgba(95, 209, 140, 0.16)),
-    rgba(255, 255, 255, 0.06)
+    color-mix(in srgb, var(--pty-color, var(--accent)) 10%, rgba(95, 209, 140, 0.08)),
+    rgba(255, 255, 255, 0.03)
   );
 }
 
@@ -385,6 +387,18 @@ button:disabled {
   align-items: center;
   gap: 10px;
   min-width: 0;
+  border-radius: 8px;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.input-context-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.input-context-row:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.24);
+  outline-offset: 1px;
 }
 
 .input-context-label {
@@ -407,10 +421,9 @@ button:disabled {
   flex: 1 1 auto;
 }
 
-.input-context-btn {
-  padding: 6px 10px;
+.input-history-label {
+  color: var(--muted);
   font-size: 12px;
-  border-radius: 8px;
   flex: 0 0 auto;
 }
 
