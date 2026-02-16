@@ -1,5 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -126,7 +128,6 @@ const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
 type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator; reason: string };
 const ptyReady = new Map<string, PtyReadyInfo>();
-const PTY_INPUT_META_KEY = "agent-tide:ptyInputMeta";
 const MAX_INPUT_HISTORY = 40;
 
 function readinessFromSummary(p: PtySummary): PtyReadyInfo {
@@ -135,92 +136,68 @@ function readinessFromSummary(p: PtySummary): PtyReadyInfo {
   return { state, indicator, reason: String(p.readyReason ?? "") };
 }
 
-function savePtyInputMeta(): void {
-  try {
-    const payload: Record<string, { lastInput?: string; processHint?: string; history?: Array<{ text: string; bufferLine: number }> }> = {};
-    const ptyIds = new Set<string>([...ptyLastInput.keys(), ...ptyInputProcessHints.keys(), ...ptyInputHistory.keys()]);
-    for (const ptyId of ptyIds) {
+const pendingHistorySaves = new Set<string>();
+let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
+const HISTORY_SAVE_DEBOUNCE_MS = 500;
+
+function savePtyInputMeta(changedPtyId?: string): void {
+  if (changedPtyId) pendingHistorySaves.add(changedPtyId);
+  if (historySaveTimer) return;
+  historySaveTimer = setTimeout(() => {
+    historySaveTimer = null;
+    const ids = [...pendingHistorySaves];
+    pendingHistorySaves.clear();
+    for (const ptyId of ids) {
       const lastInput = ptyLastInput.get(ptyId);
       const processHint = ptyInputProcessHints.get(ptyId);
       const history = ptyInputHistory.get(ptyId) ?? [];
-      if (!lastInput && !processHint && history.length === 0) continue;
-      payload[ptyId] = {};
-      if (lastInput) payload[ptyId].lastInput = lastInput;
-      if (processHint) payload[ptyId].processHint = processHint;
-      if (history.length > 0) payload[ptyId].history = history;
+      void authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/input-history`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lastInput, processHint, history }),
+      }).catch(() => {
+        // ignore save failures
+      });
     }
-    if (Object.keys(payload).length === 0) {
-      sessionStorage.removeItem(PTY_INPUT_META_KEY);
-      // Cleanup legacy shared storage value from older builds.
-      localStorage.removeItem(PTY_INPUT_META_KEY);
-      return;
-    }
-    sessionStorage.setItem(PTY_INPUT_META_KEY, JSON.stringify(payload));
-    // Cleanup legacy shared storage value from older builds.
-    localStorage.removeItem(PTY_INPUT_META_KEY);
-  } catch {
-    // ignore storage failures
-  }
+  }, HISTORY_SAVE_DEBOUNCE_MS);
 }
 
-function loadPtyInputMeta(): void {
-  try {
-    // sessionStorage is tab-scoped: each browser tab remembers its own PTY hints.
-    // Fall back to legacy localStorage once, then migrate and clear it.
-    const raw = sessionStorage.getItem(PTY_INPUT_META_KEY) ?? localStorage.getItem(PTY_INPUT_META_KEY);
-    if (!raw) return;
-    if (!sessionStorage.getItem(PTY_INPUT_META_KEY)) {
-      sessionStorage.setItem(PTY_INPUT_META_KEY, raw);
+async function loadPtyInputMeta(): Promise<void> {
+  const res = await authFetch("/api/input-history");
+  if (!res.ok) return;
+  const json = (await res.json()) as { history?: Record<string, unknown> };
+  const data = json.history;
+  if (!data || typeof data !== "object") return;
+  for (const [ptyId, meta] of Object.entries(data)) {
+    if (!ptyId || !meta || typeof meta !== "object") continue;
+    const rec = meta as { lastInput?: unknown; processHint?: unknown; history?: unknown };
+    if (typeof rec.lastInput === "string" && rec.lastInput.trim()) ptyLastInput.set(ptyId, rec.lastInput);
+    if (typeof rec.processHint === "string" && rec.processHint.trim()) ptyInputProcessHints.set(ptyId, rec.processHint);
+    if (Array.isArray(rec.history)) {
+      const entries: HistoryEntry[] = rec.history
+        .filter((x: any) => x && typeof x.text === "string" && x.text.trim().length > 0)
+        .map((x: any) => ({ text: x.text, bufferLine: typeof x.bufferLine === "number" ? x.bufferLine : 0 }));
+      if (entries.length > 0) ptyInputHistory.set(ptyId, entries.slice(-MAX_INPUT_HISTORY));
     }
-    localStorage.removeItem(PTY_INPUT_META_KEY);
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return;
-    for (const [ptyId, meta] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!ptyId || typeof ptyId !== "string") continue;
-      if (!meta || typeof meta !== "object") continue;
-      const rec = meta as { lastInput?: unknown; processHint?: unknown; history?: unknown };
-      if (typeof rec.lastInput === "string" && rec.lastInput.trim()) ptyLastInput.set(ptyId, rec.lastInput);
-      if (typeof rec.processHint === "string" && rec.processHint.trim()) ptyInputProcessHints.set(ptyId, rec.processHint);
-      if (Array.isArray(rec.history)) {
-        const entries: HistoryEntry[] = [];
-        for (const x of rec.history) {
-          if (typeof x === "string" && x.trim().length > 0) {
-            // Backward compat: old format stored plain strings.
-            entries.push({ text: x, bufferLine: 0 });
-          } else if (x && typeof x === "object" && typeof (x as any).text === "string" && (x as any).text.trim().length > 0) {
-            entries.push({ text: (x as any).text, bufferLine: typeof (x as any).bufferLine === "number" ? (x as any).bufferLine : 0 });
-          }
-        }
-        const trimmed = entries.slice(-MAX_INPUT_HISTORY);
-        if (trimmed.length > 0) ptyInputHistory.set(ptyId, trimmed);
-      }
-    }
-  } catch {
-    // ignore storage failures
   }
 }
 
 function prunePtyInputMeta(ptyIds: Set<string>): void {
-  let changed = false;
   for (const ptyId of [...ptyLastInput.keys()]) {
     if (ptyIds.has(ptyId)) continue;
     ptyLastInput.delete(ptyId);
-    changed = true;
   }
   for (const ptyId of [...ptyInputProcessHints.keys()]) {
     if (ptyIds.has(ptyId)) continue;
     ptyInputProcessHints.delete(ptyId);
-    changed = true;
   }
   for (const ptyId of [...ptyInputHistory.keys()]) {
     if (ptyIds.has(ptyId)) continue;
     ptyInputHistory.delete(ptyId);
-    changed = true;
   }
-  if (changed) savePtyInputMeta();
 }
 
-loadPtyInputMeta();
+// Input history is loaded from the server after auth; see boot sequence below.
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
@@ -290,7 +267,6 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
   terminalEl.appendChild(container);
 
   const term = new Terminal({
-    convertEol: true,
     cursorBlink: true,
     fontSize: 13,
     fontFamily:
@@ -305,33 +281,27 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
+  term.loadAddon(new WebLinksAddon());
   term.open(container);
+  try { term.loadAddon(new WebglAddon()); } catch { /* fallback to DOM renderer */ }
 
-  // Ensure trackpad/mouse wheel scrolling works even if the native DOM scrollbar
-  // isn't available (or gets stuck due to layout/CSS quirks).
+  // For tmux PTYs, intercept wheel events and scroll tmux history instead.
   container.addEventListener(
     "wheel",
     (ev) => {
-      // Let the browser handle zoom.
       if (ev.ctrlKey) return;
+      const st = terms.get(ptyId);
+      if (st?.backend !== "tmux") return;
       const dy = ev.deltaY;
       if (!Number.isFinite(dy) || dy === 0) return;
-      const st = terms.get(ptyId);
-      if (st?.backend === "tmux") {
-        ev.preventDefault();
-        const lines = Math.max(1, Math.round(Math.abs(dy) / 40));
-        sendWsMessage({
-          type: "tmux_control",
-          ptyId,
-          direction: dy > 0 ? "down" : "up",
-          lines,
-        });
-        return;
-      }
       ev.preventDefault();
-      // Heuristic: translate pixel deltas to a small number of lines.
-      const lines = Math.max(1, Math.round(Math.abs(dy) / 80));
-      term.scrollLines(dy > 0 ? lines : -lines);
+      const lines = Math.max(1, Math.round(Math.abs(dy) / 40));
+      sendWsMessage({
+        type: "tmux_control",
+        ptyId,
+        direction: dy > 0 ? "down" : "up",
+        lines,
+      });
     },
     { passive: false, capture: true },
   );
@@ -340,6 +310,22 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
     if (activePtyId !== ptyId) return;
     trackUserInput(ptyId, data);
     sendWsMessage({ type: "input", ptyId, data });
+  });
+
+  const copyToast = document.createElement("div");
+  copyToast.className = "copy-toast";
+  copyToast.textContent = "Copied";
+  container.appendChild(copyToast);
+  let copyToastTimer = 0;
+
+  term.onSelectionChange(() => {
+    const sel = term.getSelection();
+    if (!sel) return;
+    navigator.clipboard.writeText(sel).then(() => {
+      clearTimeout(copyToastTimer);
+      copyToast.classList.add("visible");
+      copyToastTimer = window.setTimeout(() => copyToast.classList.remove("visible"), 800);
+    }).catch(() => {});
   });
 
   term.onTitleChange((title) => {
@@ -868,7 +854,7 @@ function trackUserInput(ptyId: string, data: string): void {
   }
   ptyInputLineBuffers.set(ptyId, line);
   if (changed) {
-    savePtyInputMeta();
+    savePtyInputMeta(ptyId);
     renderList();
     renderInputContextBar();
   }
@@ -1180,7 +1166,7 @@ document.addEventListener(
         ev.stopPropagation();
         newShell().catch(() => {});
         return;
-      case "KeyW":
+      case "KeyQ":
         ev.preventDefault();
         ev.stopPropagation();
         if (activePtyId) killPty(activePtyId).catch(() => {});
@@ -1209,7 +1195,8 @@ keysPopup.innerHTML = `
   <div class="keys-popup-title">Keybindings</div>
   <table>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>\`</kbd></td><td>New shell</td></tr>
-    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>W</kbd></td><td>Close PTY</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd></td><td>Close PTY</td></tr>
+    <tr><td>Select text</td><td>Copy to clipboard</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>]</kbd></td><td>Next PTY</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>[</kbd></td><td>Previous PTY</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd></td><td>Next ready PTY</td></tr>
@@ -1233,6 +1220,7 @@ document.addEventListener("keydown", (ev) => {
 void (async () => {
   try {
     await fetchSessionToken();
+    await loadPtyInputMeta();
     connectWs();
     btnNew.disabled = false;
     btnReloadTriggers.disabled = false;
