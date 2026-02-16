@@ -10,6 +10,7 @@ type PtyBuffers = {
 };
 
 export class TriggerEngine {
+  private static readonly MAX_PARTIAL_CHARS = 64 * 1024;
   private triggers: Trigger[] = [];
   private lastFireByKey = new Map<string, number>();
   private buffers = new Map<PtyId, PtyBuffers>();
@@ -33,6 +34,9 @@ export class TriggerEngine {
 
     // Line buffer for line-scope triggers.
     buf.partial += sanitizedChunk;
+    if (buf.partial.length > TriggerEngine.MAX_PARTIAL_CHARS) {
+      buf.partial = buf.partial.slice(-TriggerEngine.MAX_PARTIAL_CHARS);
+    }
     let idx: number;
     while ((idx = buf.partial.indexOf("\n")) !== -1) {
       const line = buf.partial.slice(0, idx + 1);
@@ -84,4 +88,3 @@ export class TriggerEngine {
     }
   }
 }
-

@@ -148,10 +148,6 @@
           msg.className = "msg";
           msg.textContent = c.subject;
 
-          const meta = document.createElement("div");
-          meta.className = "time";
-          meta.textContent = new Date(c.ts * 1000).toLocaleString();
-
           const btn = document.createElement("button");
           btn.className = "danger";
           btn.textContent = "Rollback";

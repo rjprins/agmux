@@ -19,6 +19,17 @@
           <button id="btn-new" type="button">New PTY</button>
           <button id="btn-reload-triggers" type="button">Reload triggers</button>
         </div>
+        <div class="tmux-attach">
+          <div class="section-title">Attach tmux session</div>
+          <div class="row">
+            <select id="tmux-session-select" aria-label="tmux session list"></select>
+          </div>
+          <div class="row">
+            <button id="btn-refresh-tmux" type="button">Refresh tmux</button>
+            <button id="btn-attach-tmux" type="button">Attach</button>
+          </div>
+          <div id="tmux-session-warnings" class="tmux-warnings"></div>
+        </div>
 
         <div class="section">
           <div class="section-title">PTYs</div>

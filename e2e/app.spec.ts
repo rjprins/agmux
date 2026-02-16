@@ -1,4 +1,13 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+
+async function readSessionToken(page: Page): Promise<string> {
+  const res = await page.request.get("/api/session");
+  const json = (await res.json()) as { token?: unknown };
+  if (typeof json.token !== "string" || json.token.length === 0) {
+    throw new Error("missing session token");
+  }
+  return json.token;
+}
 
 test("can create a PTY and fires proceed trigger", async ({ page }) => {
   await page.goto("/?nosup=1");
@@ -44,7 +53,8 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
   // Cleanup: kill the PTY/tmux session so e2e runs don't leak sessions.
   const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
   if (ptyId) {
-    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill`);
+    const token = await readSessionToken(page);
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
   }
 });
 
@@ -65,7 +75,7 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
 
   // Produce enough output to have scrollback.
   await page.locator(".term-pane:not(.hidden) .xterm").click();
-  await page.keyboard.type("for i in $(seq 1 1200); do echo line-$i; done");
+  await page.keyboard.type("for i in $(seq 1 8000); do echo line-$i; done");
   await page.keyboard.press("Enter");
 
   await expect
@@ -77,26 +87,93 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
         }),
       { timeout: 30_000 },
     )
-    .toContain("line-1200");
+    .toContain("line-8000");
 
-  // Force to bottom, then wheel up and verify viewportY decreases.
+  // Force to bottom, then wheel up and verify visible viewport changes.
   await page.evaluate(() => (window as any).__agentTide?.scrollToBottomActive?.());
-  const bottomInfo = await page.evaluate(() => (window as any).__agentTide?.bufferActiveInfo?.());
-  expect(bottomInfo?.baseY ?? 0).toBeGreaterThan(0);
-  expect(bottomInfo?.viewportY ?? 0).toBeGreaterThan(0);
+  const bottomViewport = await page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? "");
 
-  await page.locator(".term-pane:not(.hidden) .xterm").hover();
-  await page.mouse.wheel(0, -1400);
+  await page.evaluate(() => {
+    const el = document.querySelector(".term-pane:not(.hidden)") as HTMLElement | null;
+    if (!el) return;
+    for (let i = 0; i < 8; i++) {
+      el.dispatchEvent(
+        new WheelEvent("wheel", {
+          deltaY: -1000,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    }
+  });
 
   await expect
-    .poll(async () => page.evaluate(() => (window as any).__agentTide?.bufferActiveInfo?.()?.viewportY ?? 0), {
+    .poll(async () => page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? ""), {
       timeout: 5_000,
     })
-    .toBeLessThan(bottomInfo.viewportY);
+    .not.toBe(bottomViewport);
 
   // Cleanup (avoid leaking tmux sessions in e2e).
   const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
   if (ptyId) {
-    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill`);
+    const token = await readSessionToken(page);
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  }
+});
+
+test("scroll up after cat reveals the cat command", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 520 });
+  await page.goto("/?nosup=1");
+
+  // Constrain the terminal height so scrollback is needed even with modest output.
+  await page.addStyleTag({
+    content: `
+      .terminal-wrap { height: 260px !important; }
+      #terminal { height: 240px !important; min-height: 240px !important; }
+    `,
+  });
+
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const xterm = page.locator(".term-pane:not(.hidden) .xterm");
+  await xterm.click();
+
+  // Create a file with enough lines to push the cat command off-screen,
+  // but stay well within the 5000-line scrollback limit.
+  await page.keyboard.type("seq 1 80 > /tmp/e2e-bigfile.txt && cat /tmp/e2e-bigfile.txt");
+  await page.keyboard.press("Enter");
+
+  // Wait for cat output to finish — the shell prompt reappears after "80".
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const d = (window as any).__agentTide?.dumpActive;
+          return typeof d === "function" ? String(d()) : "";
+        }),
+      { timeout: 30_000 },
+    )
+    .toMatch(/\b80\n.*\$/s);
+
+  // At the bottom the cat command should be scrolled out of view.
+  await page.evaluate(() => (window as any).__agentTide?.scrollToBottomActive?.());
+
+  // Scroll up with the mouse wheel to reveal the cat command.
+  await xterm.hover();
+  await page.mouse.wheel(0, -8000);
+
+  await expect
+    .poll(
+      async () => page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? ""),
+      { timeout: 5_000 },
+    )
+    .toContain("cat /tmp/e2e-bigfile.txt");
+
+  // Cleanup.
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  if (ptyId) {
+    const token = await readSessionToken(page);
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
   }
 });

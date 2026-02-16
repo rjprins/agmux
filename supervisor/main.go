@@ -451,16 +451,9 @@ func (s *Supervisor) pollLoop(stop <-chan struct{}) {
 	}
 }
 
-func withCORS(w http.ResponseWriter) {
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "content-type")
-}
-
 func (s *Supervisor) serveEvents(w http.ResponseWriter, r *http.Request) {
-	withCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusNoContent)
+	if r.Method != "GET" {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -509,9 +502,8 @@ func readJSON(r io.Reader, v any) error {
 }
 
 func (s *Supervisor) apiCommits(w http.ResponseWriter, r *http.Request) {
-	withCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusNoContent)
+	if r.Method != "GET" {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 	limit := 50
@@ -565,11 +557,6 @@ func (s *Supervisor) rollbackTo(sha string) error {
 }
 
 func (s *Supervisor) apiRollback(w http.ResponseWriter, r *http.Request) {
-	withCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	if r.Method != "POST" {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
@@ -590,11 +577,6 @@ func (s *Supervisor) apiRollback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Supervisor) apiRollbackLast(w http.ResponseWriter, r *http.Request) {
-	withCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
 	if r.Method != "POST" {
 		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
@@ -613,9 +595,8 @@ func (s *Supervisor) apiRollbackLast(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Supervisor) serveIndex(w http.ResponseWriter, r *http.Request) {
-	withCORS(w)
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusNoContent)
+	if r.Method != "GET" {
+		http.Error(w, `{"error":"method not allowed"}`, http.StatusMethodNotAllowed)
 		return
 	}
 	b, err := webFS.ReadFile("web/index.html")

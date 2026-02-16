@@ -1,6 +1,6 @@
 import Fastify from "fastify";
 import fs from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { WebSocketServer } from "ws";
@@ -12,10 +12,15 @@ import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
 import {
+  tmuxApplySessionUiOptions,
   tmuxAttachArgs,
+  tmuxCheckSessionConfig,
   tmuxKillSession,
+  tmuxListSessions,
   tmuxLocateSession,
   tmuxNewSessionDetached,
+  tmuxScrollHistory,
+  type TmuxServer,
 } from "./tmux.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -23,6 +28,19 @@ const PORT = Number(process.env.PORT ?? 4821);
 const PUBLIC_DIR = path.resolve("public");
 const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agent-tide.db");
 const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
+const AUTH_TOKEN = process.env.AGENT_TIDE_TOKEN ?? randomBytes(32).toString("hex");
+const ALLOW_NON_LOOPBACK_BIND = process.env.AGENT_TIDE_ALLOW_NON_LOOPBACK === "1";
+const WS_ALLOWED_ORIGINS = new Set(
+  [
+    `http://127.0.0.1:${PORT}`,
+    `http://localhost:${PORT}`,
+    `http://[::1]:${PORT}`,
+    ...(process.env.AGENT_TIDE_ALLOWED_ORIGINS ?? "")
+      .split(",")
+      .map((v) => v.trim())
+      .filter((v) => v.length > 0),
+  ].map((v) => v.toLowerCase()),
+);
 
 const fastify = Fastify({ logger: true });
 
@@ -31,6 +49,75 @@ const ptys = new PtyManager();
 const hub = new WsHub();
 const triggerEngine = new TriggerEngine();
 const triggerLoader = new TriggerLoader(TRIGGERS_PATH);
+
+if (!ALLOW_NON_LOOPBACK_BIND && !isLoopbackHost(HOST)) {
+  throw new Error(
+    `Refusing to bind to non-loopback host "${HOST}". Set AGENT_TIDE_ALLOW_NON_LOOPBACK=1 to allow.`,
+  );
+}
+
+function isLoopbackHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function parseTokenFromAuthHeader(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const m = /^Bearer\s+(.+)$/i.exec(value.trim());
+  if (!m) return null;
+  const token = m[1].trim();
+  return token.length > 0 ? token : null;
+}
+
+function parseTokenFromHeaders(headers: Record<string, unknown>): string | null {
+  const direct = headers["x-agent-tide-token"];
+  if (typeof direct === "string" && direct.length > 0) return direct;
+  if (Array.isArray(direct)) {
+    for (const v of direct) {
+      if (typeof v === "string" && v.length > 0) return v;
+    }
+  }
+  const auth = headers.authorization;
+  if (Array.isArray(auth)) {
+    for (const v of auth) {
+      const token = parseTokenFromAuthHeader(v);
+      if (token) return token;
+    }
+    return null;
+  }
+  return parseTokenFromAuthHeader(auth);
+}
+
+function parseTokenFromUrl(rawUrl: string | undefined): string | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl, "http://localhost");
+    const token = url.searchParams.get("token");
+    return token && token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTokenValid(headerToken: string | null, urlToken: string | null): boolean {
+  const token = headerToken ?? urlToken;
+  return token != null && token === AUTH_TOKEN;
+}
+
+function requestNeedsToken(method: string, rawUrl: string | undefined): boolean {
+  const upper = method.toUpperCase();
+  if (upper === "GET" || upper === "HEAD" || upper === "OPTIONS") return false;
+  return (rawUrl ?? "").startsWith("/api/");
+}
+
+function isWsOriginAllowed(origin: string | undefined): boolean {
+  if (!origin || origin.length === 0) return true;
+  return WS_ALLOWED_ORIGINS.has(origin.toLowerCase());
+}
 
 function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
   const byId = new Map<string, PtySummary>();
@@ -61,13 +148,13 @@ async function loadTriggersAndBroadcast(reason: string): Promise<void> {
     triggerEngine.setTriggers(triggerLoader.lastGoodTriggers());
     const message = err instanceof Error ? err.message : String(err);
     fastify.log.error({ err: message }, "Trigger reload failed");
-    hub.broadcast({
+    broadcast({
       type: "trigger_error",
       ptyId: "system",
       trigger: "reload",
       ts: Date.now(),
       message,
-    } as any);
+    });
   }
 }
 
@@ -116,6 +203,11 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
     void (async () => {
       const server = await tmuxLocateSession(summary.tmuxSession!);
       if (!server) return;
+      try {
+        await tmuxApplySessionUiOptions(summary.tmuxSession!, server);
+      } catch {
+        // ignore best-effort session option sync
+      }
       // Small delay to avoid tight loops if tmux is unstable.
       await new Promise((r) => setTimeout(r, 250));
       const re = ptys.spawn({
@@ -136,26 +228,97 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
 });
 
 // REST API
+fastify.addHook("onRequest", async (req, reply) => {
+  if (!requestNeedsToken(req.raw.method ?? "GET", req.raw.url)) return;
+  const headerToken = parseTokenFromHeaders(req.headers as unknown as Record<string, unknown>);
+  const urlToken = parseTokenFromUrl(req.raw.url);
+  if (isTokenValid(headerToken, urlToken)) return;
+  reply.code(401);
+  return { error: "missing or invalid auth token" };
+});
+
+fastify.get("/api/session", async (_req, reply) => {
+  reply.header("Cache-Control", "no-store");
+  return { token: AUTH_TOKEN };
+});
+
 fastify.get("/api/ptys", async () => {
   const live = ptys.list();
   const persisted = store.listSessions();
   return { ptys: mergePtys(live, persisted) };
 });
 
+fastify.get("/api/tmux/sessions", async () => {
+  const sessions = await tmuxListSessions();
+  return { sessions };
+});
+
+fastify.get("/api/tmux/check", async (req, reply) => {
+  const q = req.query as Record<string, unknown>;
+  const name = typeof q.name === "string" ? q.name.trim() : "";
+  const serverRaw = typeof q.server === "string" ? q.server : "";
+  if (!name) {
+    reply.code(400);
+    return { error: "name is required" };
+  }
+  if (serverRaw !== "agent_tide" && serverRaw !== "default") {
+    reply.code(400);
+    return { error: "server must be agent_tide or default" };
+  }
+  const located = await tmuxLocateSession(name);
+  if (located !== serverRaw) {
+    reply.code(404);
+    return { error: "tmux session not found on requested server" };
+  }
+  const checks = await tmuxCheckSessionConfig(name, serverRaw);
+  return { checks };
+});
+
 fastify.post("/api/ptys", async (req, reply) => {
-  const body = (req.body ?? {}) as any;
-  if (typeof body.command !== "string" || body.command.length === 0) {
+  const body = isRecord(req.body) ? req.body : {};
+  const command = typeof body.command === "string" ? body.command.trim() : "";
+  if (command.length === 0) {
     reply.code(400);
     return { error: "command is required" };
   }
+  if (body.args != null && !Array.isArray(body.args)) {
+    reply.code(400);
+    return { error: "args must be an array" };
+  }
+  if (body.cwd != null && typeof body.cwd !== "string") {
+    reply.code(400);
+    return { error: "cwd must be a string" };
+  }
+
+  let env: Record<string, string> | undefined;
+  if (body.env != null) {
+    if (!isRecord(body.env)) {
+      reply.code(400);
+      return { error: "env must be an object" };
+    }
+    const nextEnv: Record<string, string> = {};
+    for (const [k, v] of Object.entries(body.env)) {
+      if (typeof v !== "string") {
+        reply.code(400);
+        return { error: `env.${k} must be a string` };
+      }
+      nextEnv[k] = v;
+    }
+    env = nextEnv;
+  }
+
+  const args = (body.args ?? []).map(String);
+  const cols = Number.isInteger(body.cols) && Number(body.cols) > 0 ? Number(body.cols) : undefined;
+  const rows = Number.isInteger(body.rows) && Number(body.rows) > 0 ? Number(body.rows) : undefined;
+
   const summary = ptys.spawn({
     name: typeof body.name === "string" ? body.name : undefined,
-    command: body.command,
-    args: Array.isArray(body.args) ? body.args.map(String) : [],
+    command,
+    args,
     cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-    env: typeof body.env === "object" && body.env ? body.env : undefined,
-    cols: Number.isFinite(body.cols) ? Number(body.cols) : undefined,
-    rows: Number.isFinite(body.rows) ? Number(body.rows) : undefined,
+    env,
+    cols,
+    rows,
   });
   store.upsertSession(summary);
   broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
@@ -163,11 +326,33 @@ fastify.post("/api/ptys", async (req, reply) => {
 });
 
 // Create an interactive login shell with zero UI configuration.
-fastify.post("/api/ptys/shell", async () => {
+fastify.post("/api/ptys/shell", async (_req, reply) => {
   const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
-  const tmuxSession = `agent_tide_${randomUUID()}`;
-  await tmuxNewSessionDetached(tmuxSession, shell);
+  const backend = process.env.AGENT_TIDE_SHELL_BACKEND ?? "tmux";
 
+  if (backend === "pty") {
+    const summary = ptys.spawn({
+      name: `shell:${path.basename(shell)}`,
+      command: shell,
+      cols: 120,
+      rows: 30,
+    });
+    store.upsertSession(summary);
+    broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+    return { id: summary.id };
+  }
+
+  const tmuxSession = `agent_tide_${randomUUID()}`;
+  try {
+    await tmuxNewSessionDetached(tmuxSession, shell);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("shell must")) {
+      reply.code(400);
+      return { error: message };
+    }
+    throw err;
+  }
   const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
     name,
@@ -175,6 +360,44 @@ fastify.post("/api/ptys/shell", async () => {
     tmuxSession,
     command: "tmux",
     args: tmuxAttachArgs(tmuxSession),
+    cols: 120,
+    rows: 30,
+  });
+  store.upsertSession(summary);
+  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  return { id: summary.id };
+});
+
+fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
+  const body = isRecord(req.body) ? req.body : {};
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const requestedServer = body.server;
+  if (!name) {
+    reply.code(400);
+    return { error: "name is required" };
+  }
+  if (requestedServer != null && requestedServer !== "agent_tide" && requestedServer !== "default") {
+    reply.code(400);
+    return { error: "server must be agent_tide or default" };
+  }
+
+  const located = await tmuxLocateSession(name);
+  if (!located) {
+    reply.code(404);
+    return { error: "tmux session not found" };
+  }
+  if (requestedServer != null && requestedServer !== located) {
+    reply.code(409);
+    return { error: `tmux session exists on ${located}, not ${requestedServer}` };
+  }
+  const server: TmuxServer = located;
+
+  const summary = ptys.spawn({
+    name: `tmux:${name}`,
+    backend: "tmux",
+    tmuxSession: name,
+    command: "tmux",
+    args: tmuxAttachArgs(name, server),
     cols: 120,
     rows: 30,
   });
@@ -230,6 +453,11 @@ async function restorePersistentTmuxSessions(): Promise<void> {
       store.upsertSession(s);
       continue;
     }
+    try {
+      await tmuxApplySessionUiOptions(s.tmuxSession, server);
+    } catch {
+      // ignore best-effort session option sync
+    }
 
     const attached = ptys.spawn({
       id: s.id,
@@ -253,8 +481,23 @@ async function serveStatic(
   const safe = path.normalize(rel).replace(/^(\.\.[/\\])+/, "");
   const filePath = path.join(PUBLIC_DIR, safe);
   if (!filePath.startsWith(PUBLIC_DIR)) return null;
-  const st = await fs.stat(filePath);
-  const data = await fs.readFile(filePath);
+  let st: Awaited<ReturnType<typeof fs.stat>>;
+  try {
+    st = await fs.stat(filePath);
+    if (!st.isFile()) return null;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    throw err;
+  }
+  let data: Buffer;
+  try {
+    data = await fs.readFile(filePath);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR" || code === "EISDIR") return null;
+    throw err;
+  }
   const ext = path.extname(filePath).toLowerCase();
   const type =
     ext === ".html"
@@ -306,19 +549,83 @@ function send(ws: WebSocket, msg: ServerToClientMessage): void {
   ws.send(JSON.stringify(msg));
 }
 
+function parseWsMessage(raw: unknown): ClientToServerMessage | null {
+  let text: string;
+  if (typeof raw === "string") {
+    text = raw;
+  } else if (Buffer.isBuffer(raw)) {
+    text = raw.toString("utf8");
+  } else if (Array.isArray(raw) && raw.every(Buffer.isBuffer)) {
+    text = Buffer.concat(raw).toString("utf8");
+  } else if (raw instanceof ArrayBuffer) {
+    text = Buffer.from(raw).toString("utf8");
+  } else {
+    return null;
+  }
+
+  if (Buffer.byteLength(text, "utf8") > 256 * 1024) {
+    return null;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+
+  if (parsed.type === "subscribe") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    return { type: "subscribe", ptyId: parsed.ptyId };
+  }
+  if (parsed.type === "input") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    if (typeof parsed.data !== "string") return null;
+    if (Buffer.byteLength(parsed.data, "utf8") > 64 * 1024) return null;
+    return { type: "input", ptyId: parsed.ptyId, data: parsed.data };
+  }
+  if (parsed.type === "resize") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    const cols = parsed.cols;
+    const rows = parsed.rows;
+    if (typeof cols !== "number" || typeof rows !== "number") return null;
+    if (!Number.isInteger(cols) || !Number.isInteger(rows)) return null;
+    if (cols < 1 || cols > 1000) return null;
+    if (rows < 1 || rows > 1000) return null;
+    return {
+      type: "resize",
+      ptyId: parsed.ptyId,
+      cols,
+      rows,
+    };
+  }
+  if (parsed.type === "tmux_control") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    const direction = parsed.direction;
+    const lines = parsed.lines;
+    if (direction !== "up" && direction !== "down") return null;
+    if (typeof lines !== "number" || !Number.isInteger(lines)) return null;
+    if (lines < 1 || lines > 200) return null;
+    return {
+      type: "tmux_control",
+      ptyId: parsed.ptyId,
+      direction,
+      lines,
+    };
+  }
+  return null;
+}
+
 wss.on("connection", (ws) => {
   const client = hub.add(ws);
 
   // Initial list.
   send(ws, { type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
 
-  ws.on("message", (buf) => {
-    let msg: ClientToServerMessage;
-    try {
-      msg = JSON.parse(buf.toString("utf-8")) as ClientToServerMessage;
-    } catch {
-      return;
-    }
+  ws.on("message", (raw) => {
+    const msg = parseWsMessage(raw);
+    if (!msg) return;
 
     if (msg.type === "subscribe") {
       client.subscribed.add(msg.ptyId);
@@ -332,6 +639,14 @@ wss.on("connection", (ws) => {
       ptys.resize(msg.ptyId, msg.cols, msg.rows);
       return;
     }
+    if (msg.type === "tmux_control") {
+      const summary = ptys.getSummary(msg.ptyId);
+      if (!summary || summary.backend !== "tmux" || !summary.tmuxSession) return;
+      void tmuxScrollHistory(summary.tmuxSession, msg.direction, msg.lines).catch(() => {
+        // ignore best-effort tmux history control
+      });
+      return;
+    }
   });
 });
 
@@ -339,6 +654,16 @@ fastify.server.on("upgrade", (req, socket, head) => {
   try {
     const url = new URL(req.url ?? "", `http://${req.headers.host ?? "localhost"}`);
     if (url.pathname !== "/ws") {
+      socket.destroy();
+      return;
+    }
+    if (!isWsOriginAllowed(req.headers.origin)) {
+      socket.destroy();
+      return;
+    }
+    const headerToken = parseTokenFromHeaders(req.headers as unknown as Record<string, unknown>);
+    const urlToken = parseTokenFromUrl(req.url);
+    if (!isTokenValid(headerToken, urlToken)) {
       socket.destroy();
       return;
     }

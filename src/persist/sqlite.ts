@@ -135,12 +135,22 @@ export class SqliteStore {
       backend: r.backend === "tmux" ? "tmux" : r.backend === "pty" ? "pty" : undefined,
       tmuxSession: r.tmux_session,
       command: r.command,
-      args: JSON.parse(r.args_json) as string[],
+      args: this.parseArgsJson(r.args_json),
       cwd: r.cwd,
       createdAt: r.created_at,
       status: r.status === "running" ? "running" : "exited",
       exitCode: r.exit_code,
       exitSignal: r.exit_signal,
     }));
+  }
+
+  private parseArgsJson(raw: string): string[] {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      if (!Array.isArray(parsed)) return [];
+      return parsed.map(String);
+    } catch {
+      return [];
+    }
   }
 }

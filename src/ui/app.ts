@@ -4,6 +4,8 @@ import { FitAddon } from "@xterm/addon-fit";
 type PtySummary = {
   id: string;
   name: string;
+  backend?: "pty" | "tmux";
+  tmuxSession?: string | null;
   command: string;
   args: string[];
   cwd: string | null;
@@ -11,6 +13,25 @@ type PtySummary = {
   status: "running" | "exited";
   exitCode?: number | null;
   exitSignal?: string | null;
+};
+
+type TmuxSessionInfo = {
+  name: string;
+  server: "agent_tide" | "default";
+  createdAt: number | null;
+  windows: number | null;
+};
+
+type TmuxSessionCheck = {
+  name: string;
+  server: "agent_tide" | "default";
+  warnings: string[];
+  observed: {
+    mouse: string | null;
+    alternateScreen: string | null;
+    historyLimit: number | null;
+    terminalOverrides: string | null;
+  };
 };
 
 type ServerMsg =
@@ -32,6 +53,15 @@ let activePtyId: string | null = null;
 const ptyTitles = new Map<string, string>();
 
 const btnNew = $("btn-new") as HTMLButtonElement;
+const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
+const btnRefreshTmux = $("btn-refresh-tmux") as HTMLButtonElement;
+const btnAttachTmux = $("btn-attach-tmux") as HTMLButtonElement;
+const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
+const tmuxWarningsEl = $("tmux-session-warnings");
+btnNew.disabled = true;
+btnReloadTriggers.disabled = true;
+btnRefreshTmux.disabled = true;
+btnAttachTmux.disabled = true;
 
 type TermState = {
   ptyId: string;
@@ -43,6 +73,11 @@ type TermState = {
 
 const terms = new Map<string, TermState>();
 const subscribed = new Set<string>();
+let authToken = "";
+let ws: WebSocket | null = null;
+const TERMINAL_SCROLLBACK_LINES = 50_000;
+const TMUX_TERMINAL_SCROLLBACK_LINES = 0;
+let tmuxSessions: TmuxSessionInfo[] = [];
 
 const placeholderEl = document.createElement("div");
 placeholderEl.className = "terminal-placeholder";
@@ -99,7 +134,7 @@ function createTermState(ptyId: string): TermState {
       cursor: "#ffcc66",
       selectionBackground: "rgba(255, 204, 102, 0.25)",
     },
-    scrollback: 5000,
+    scrollback: TERMINAL_SCROLLBACK_LINES,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
@@ -112,11 +147,22 @@ function createTermState(ptyId: string): TermState {
     (ev) => {
       // Let the browser handle zoom.
       if (ev.ctrlKey) return;
-      ev.preventDefault();
-
-      // Heuristic: translate pixel deltas to a small number of lines.
       const dy = ev.deltaY;
       if (!Number.isFinite(dy) || dy === 0) return;
+      const summary = ptys.find((p) => p.id === ptyId);
+      if (summary?.backend === "tmux") {
+        ev.preventDefault();
+        const lines = Math.max(1, Math.round(Math.abs(dy) / 40));
+        sendWsMessage({
+          type: "tmux_control",
+          ptyId,
+          direction: dy > 0 ? "down" : "up",
+          lines,
+        });
+        return;
+      }
+      ev.preventDefault();
+      // Heuristic: translate pixel deltas to a small number of lines.
       const lines = Math.max(1, Math.round(Math.abs(dy) / 80));
       term.scrollLines(dy > 0 ? lines : -lines);
     },
@@ -125,7 +171,7 @@ function createTermState(ptyId: string): TermState {
 
   term.onData((data) => {
     if (activePtyId !== ptyId) return;
-    ws.send(JSON.stringify({ type: "input", ptyId, data }));
+    sendWsMessage({ type: "input", ptyId, data });
   });
 
   term.onTitleChange((title) => {
@@ -162,28 +208,80 @@ function removeTerm(ptyId: string): void {
 
 function wsUrl(): string {
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  return `${proto}://${location.host}/ws`;
+  const tokenPart = authToken ? `?token=${encodeURIComponent(authToken)}` : "";
+  return `${proto}://${location.host}/ws${tokenPart}`;
 }
 
-const ws = new WebSocket(wsUrl());
+function sendWsMessage(msg: unknown): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(msg));
+}
 
-ws.addEventListener("open", () => {
-  addEvent(`WS connected`);
-});
+function authHeaders(init?: HeadersInit): Headers {
+  const headers = new Headers(init);
+  if (authToken) headers.set("x-agent-tide-token", authToken);
+  return headers;
+}
 
-ws.addEventListener("close", () => {
-  addEvent(`WS disconnected`);
-});
+async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  return fetch(input, {
+    ...init,
+    headers: authHeaders(init?.headers),
+  });
+}
 
-ws.addEventListener("message", (ev) => {
-  let msg: ServerMsg;
-  try {
-    msg = JSON.parse(String(ev.data)) as ServerMsg;
-  } catch {
-    return;
+function connectWs(): void {
+  ws = new WebSocket(wsUrl());
+
+  ws.addEventListener("open", () => {
+    addEvent(`WS connected`);
+    for (const ptyId of subscribed) {
+      sendWsMessage({ type: "subscribe", ptyId });
+    }
+  });
+
+  ws.addEventListener("close", () => {
+    addEvent(`WS disconnected`);
+  });
+
+  ws.addEventListener("message", (ev) => {
+    let msg: ServerMsg;
+    try {
+      msg = JSON.parse(String(ev.data)) as ServerMsg;
+    } catch {
+      return;
+    }
+    onServerMsg(msg);
+  });
+}
+
+async function fetchSessionToken(): Promise<void> {
+  const res = await fetch("/api/session", { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error(`session request failed (${res.status})`);
   }
-  onServerMsg(msg);
-});
+  const json = (await res.json()) as { token?: unknown };
+  if (typeof json.token !== "string" || json.token.length === 0) {
+    throw new Error("invalid session token response");
+  }
+  authToken = json.token;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+async function readApiError(res: Response): Promise<string> {
+  try {
+    const json = (await res.json()) as { error?: unknown };
+    if (typeof json.error === "string" && json.error.length > 0) {
+      return json.error;
+    }
+  } catch {
+    // ignore
+  }
+  return `HTTP ${res.status}`;
+}
 
 // Supervisor control plane: tells us when to reload after agent edits.
 (() => {
@@ -239,6 +337,13 @@ function onServerMsg(msg: ServerMsg): void {
     for (const ptyId of terms.keys()) {
       if (!running.has(ptyId)) removeTerm(ptyId);
     }
+    for (const [ptyId, st] of terms) {
+      const p = ptys.find((x) => x.id === ptyId);
+      const targetScrollback = p?.backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES;
+      if (st.term.options.scrollback !== targetScrollback) {
+        st.term.options.scrollback = targetScrollback;
+      }
+    }
 
     updateTerminalVisibility();
     renderList();
@@ -269,6 +374,93 @@ function onServerMsg(msg: ServerMsg): void {
   }
 }
 
+function tmuxSessionKey(s: TmuxSessionInfo): string {
+  return `${s.server}:${s.name}`;
+}
+
+function selectedTmuxSession(): TmuxSessionInfo | null {
+  const key = tmuxSessionSelect.value;
+  if (!key) return null;
+  return tmuxSessions.find((s) => tmuxSessionKey(s) === key) ?? null;
+}
+
+function setTmuxWarnings(lines: string[]): void {
+  tmuxWarningsEl.textContent = "";
+  for (const line of lines) {
+    const el = document.createElement("div");
+    el.textContent = line;
+    tmuxWarningsEl.appendChild(el);
+  }
+}
+
+async function refreshTmuxSessions(): Promise<void> {
+  const prev = tmuxSessionSelect.value;
+  const res = await authFetch("/api/tmux/sessions", { cache: "no-store" });
+  if (!res.ok) {
+    setTmuxWarnings([`Failed to list tmux sessions: ${await readApiError(res)}`]);
+    return;
+  }
+  const json = (await res.json()) as { sessions?: unknown };
+  if (!Array.isArray(json.sessions)) {
+    setTmuxWarnings(["Failed to parse tmux session list"]);
+    return;
+  }
+
+  tmuxSessions = json.sessions as TmuxSessionInfo[];
+  tmuxSessionSelect.textContent = "";
+
+  if (tmuxSessions.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(no tmux sessions)";
+    tmuxSessionSelect.appendChild(opt);
+    tmuxSessionSelect.value = "";
+    btnAttachTmux.disabled = true;
+    setTmuxWarnings(["No tmux sessions available"]);
+    return;
+  }
+
+  for (const s of tmuxSessions) {
+    const opt = document.createElement("option");
+    opt.value = tmuxSessionKey(s);
+    const stamp = s.createdAt ? new Date(s.createdAt).toLocaleTimeString() : "";
+    const win = s.windows == null ? "" : `, ${s.windows}w`;
+    opt.textContent = `${s.name} [${s.server}${win}]${stamp ? ` @ ${stamp}` : ""}`;
+    tmuxSessionSelect.appendChild(opt);
+  }
+  tmuxSessionSelect.value = tmuxSessions.some((s) => tmuxSessionKey(s) === prev)
+    ? prev
+    : tmuxSessionKey(tmuxSessions[0]);
+  btnAttachTmux.disabled = false;
+  await checkSelectedTmuxSession();
+}
+
+async function checkSelectedTmuxSession(): Promise<void> {
+  const selected = selectedTmuxSession();
+  if (!selected) {
+    setTmuxWarnings(["No tmux session selected"]);
+    btnAttachTmux.disabled = true;
+    return;
+  }
+  btnAttachTmux.disabled = false;
+  const qs = new URLSearchParams({
+    name: selected.name,
+    server: selected.server,
+  });
+  const res = await authFetch(`/api/tmux/check?${qs.toString()}`, { cache: "no-store" });
+  if (!res.ok) {
+    setTmuxWarnings([`Failed to check tmux config: ${await readApiError(res)}`]);
+    return;
+  }
+  const json = (await res.json()) as { checks?: TmuxSessionCheck };
+  const warnings = Array.isArray(json.checks?.warnings) ? json.checks.warnings : [];
+  if (warnings.length === 0) {
+    setTmuxWarnings(["No risky tmux settings detected"]);
+    return;
+  }
+  setTmuxWarnings(warnings.map((w) => `Warning: ${w}`));
+}
+
 function addEvent(text: string): void {
   const el = document.createElement("div");
   el.className = "event";
@@ -278,11 +470,21 @@ function addEvent(text: string): void {
 }
 
 async function refreshList(): Promise<void> {
-  const res = await fetch("/api/ptys");
-  const json = (await res.json()) as { ptys: PtySummary[] };
-  ptys = json.ptys;
-  updateTerminalVisibility();
-  renderList();
+  try {
+    const res = await authFetch("/api/ptys", { cache: "no-store" });
+    if (!res.ok) {
+      throw new Error(await readApiError(res));
+    }
+    const json = (await res.json()) as { ptys?: unknown };
+    if (!Array.isArray(json.ptys)) {
+      throw new Error("invalid PTY list response");
+    }
+    ptys = json.ptys as PtySummary[];
+    updateTerminalVisibility();
+    renderList();
+  } catch (err) {
+    addEvent(`Failed to refresh PTYs: ${errorMessage(err)}`);
+  }
 }
 
 function hashHue(s: string): number {
@@ -302,7 +504,11 @@ function shortId(ptyId: string): string {
 }
 
 async function killPty(ptyId: string): Promise<void> {
-  await fetch(`/api/ptys/${encodeURIComponent(ptyId)}/kill`, { method: "POST" });
+  const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/kill`, { method: "POST" });
+  if (!res.ok) {
+    addEvent(`Failed to kill PTY ${ptyId}: ${await readApiError(res)}`);
+    return;
+  }
   addEvent(`Killed PTY ${ptyId}`);
 
   if (activePtyId === ptyId) {
@@ -389,13 +595,31 @@ function highlight(ptyId: string, ttlMs: number): void {
 }
 
 async function newShell(): Promise<void> {
-  const res = await fetch("/api/ptys/shell", { method: "POST" });
+  const res = await authFetch("/api/ptys/shell", { method: "POST" });
   if (!res.ok) {
-    addEvent(`Failed to create PTY (${res.status})`);
+    addEvent(`Failed to create PTY: ${await readApiError(res)}`);
     return;
   }
   const json = (await res.json()) as { id: string };
   addEvent(`Created PTY ${json.id}`);
+  await refreshList();
+  setActive(json.id);
+}
+
+async function attachTmuxSession(): Promise<void> {
+  const selected = selectedTmuxSession();
+  if (!selected) return;
+  const res = await authFetch("/api/ptys/attach-tmux", {
+    method: "POST",
+    headers: authHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({ name: selected.name, server: selected.server }),
+  });
+  if (!res.ok) {
+    addEvent(`Failed to attach tmux ${selected.name}: ${await readApiError(res)}`);
+    return;
+  }
+  const json = (await res.json()) as { id: string };
+  addEvent(`Attached tmux ${selected.name}`);
   await refreshList();
   setActive(json.id);
 }
@@ -406,15 +630,37 @@ btnNew.addEventListener("click", () => {
   });
 });
 
-$("btn-reload-triggers").addEventListener("click", async () => {
-  await fetch("/api/triggers/reload", { method: "POST" });
+btnRefreshTmux.addEventListener("click", () => {
+  refreshTmuxSessions().catch((err) => {
+    setTmuxWarnings([`Failed to refresh tmux sessions: ${errorMessage(err)}`]);
+  });
+});
+
+btnAttachTmux.addEventListener("click", () => {
+  attachTmuxSession().catch((err) => {
+    addEvent(`Attach tmux failed: ${errorMessage(err)}`);
+  });
+});
+
+tmuxSessionSelect.addEventListener("change", () => {
+  checkSelectedTmuxSession().catch((err) => {
+    setTmuxWarnings([`tmux check failed: ${errorMessage(err)}`]);
+  });
+});
+
+btnReloadTriggers.addEventListener("click", async () => {
+  const res = await authFetch("/api/triggers/reload", { method: "POST" });
+  if (!res.ok) {
+    addEvent(`Trigger reload failed: ${await readApiError(res)}`);
+    return;
+  }
   addEvent("Requested trigger reload");
 });
 
 function subscribeIfNeeded(ptyId: string): void {
   if (subscribed.has(ptyId)) return;
   subscribed.add(ptyId);
-  ws.send(JSON.stringify({ type: "subscribe", ptyId }));
+  sendWsMessage({ type: "subscribe", ptyId });
 }
 
 function updateTerminalVisibility(): void {
@@ -438,7 +684,7 @@ function fitAndResizeActive(): void {
   if (st.lastResize && st.lastResize.cols === cols && st.lastResize.rows === rows) return;
 
   st.lastResize = { cols, rows };
-  ws.send(JSON.stringify({ type: "resize", ptyId: activePtyId, cols, rows }));
+  sendWsMessage({ type: "resize", ptyId: activePtyId, cols, rows });
 }
 
 const ro = new ResizeObserver(() => {
@@ -447,9 +693,19 @@ const ro = new ResizeObserver(() => {
 ro.observe(terminalEl);
 window.addEventListener("resize", () => fitAndResizeActive());
 
-refreshList().catch(() => {
-  // ignore
-});
+void (async () => {
+  try {
+    await fetchSessionToken();
+    connectWs();
+    btnNew.disabled = false;
+    btnReloadTriggers.disabled = false;
+    btnRefreshTmux.disabled = false;
+    await refreshTmuxSessions();
+  } catch (err) {
+    addEvent(`Failed to initialize session: ${errorMessage(err)}`);
+  }
+  await refreshList();
+})();
 
 // Minimal debug hooks for e2e tests and local inspection.
 function dumpBuffer(st: TermState, maxLines = 120): string {
@@ -477,12 +733,32 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
     const st = terms.get(activePtyId);
     if (!st) return { baseY: 0, viewportY: 0, length: 0, rows: 0 };
     const b = st.term.buffer.active;
+    const rawBaseY = (b as unknown as { baseY?: unknown }).baseY;
+    const rawViewportY = (b as unknown as { viewportY?: unknown }).viewportY;
+    const baseY = typeof rawBaseY === "number" ? rawBaseY : Math.max(0, b.length - st.term.rows);
+    const viewportY = typeof rawViewportY === "number" ? rawViewportY : baseY;
     return {
-      baseY: b.baseY,
-      viewportY: b.viewportY,
+      baseY,
+      viewportY,
       length: b.length,
       rows: st.term.rows,
     };
+  },
+  dumpViewport: () => {
+    if (!activePtyId) return "";
+    const st = terms.get(activePtyId);
+    if (!st) return "";
+    const buf = st.term.buffer.active;
+    const rawViewportY = (buf as unknown as { viewportY?: unknown }).viewportY;
+    const start = typeof rawViewportY === "number" ? rawViewportY : Math.max(0, buf.length - st.term.rows);
+    const end = start + st.term.rows;
+    const lines: string[] = [];
+    for (let i = start; i < end; i++) {
+      const line = buf.getLine(i);
+      if (!line) continue;
+      lines.push(line.translateToString(true));
+    }
+    return lines.join("\n");
   },
   scrollToBottomActive: () => {
     if (!activePtyId) return;
