@@ -364,6 +364,21 @@ async function ttyForegroundCommand(tty: string, panePid: number | null): Promis
   }
 }
 
+export async function tmuxPaneCurrentPath(name: string): Promise<string | null> {
+  const server = await tmuxLocateSession(name);
+  if (!server) return null;
+  try {
+    const out =
+      server === "default"
+        ? await tmuxDefaultOut(["display-message", "-p", "-t", name, "#{pane_current_path}"])
+        : await tmuxAgentOut(["display-message", "-p", "-t", name, "#{pane_current_path}"]);
+    const p = out.trim();
+    return p.length > 0 ? p : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function tmuxPaneActiveProcess(name: string): Promise<string | null> {
   const meta = await tmuxPaneMeta(name);
   if (!meta || !meta.command) return null;

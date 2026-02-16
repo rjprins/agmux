@@ -676,6 +676,14 @@ function renderList(): void {
     primary.className = "primary";
     primary.textContent = process;
     primaryRow.appendChild(readyDot);
+    if (cwdLabel) {
+      const cwdEl = document.createElement("span");
+      cwdEl.className = "cwd-label";
+      const cwdBasename = cwdLabel.split("/").filter(Boolean).at(-1) ?? cwdLabel;
+      cwdEl.textContent = cwdBasename;
+      cwdEl.title = cwdLabel;
+      primaryRow.appendChild(cwdEl);
+    }
     primaryRow.appendChild(primary);
 
     const secondary = document.createElement("div");
@@ -688,8 +696,7 @@ function renderList(): void {
     } else {
       secondaryText = `${title ? p.name : shortId(p.id)}  ${readyLabel}`;
     }
-    secondary.textContent = cwdLabel ? `${secondaryText}  ·  ${cwdLabel}` : secondaryText;
-    if (cwdLabel) secondary.title = `cwd: ${cwdLabel}`;
+    secondary.textContent = secondaryText;
 
     main.appendChild(primaryRow);
     main.appendChild(secondary);

@@ -24,6 +24,7 @@ import {
   tmuxScrollHistory,
   type TmuxServer,
   tmuxPaneActiveProcess,
+  tmuxPaneCurrentPath,
 } from "./tmux.js";
 
 const HOST = process.env.HOST ?? "127.0.0.1";
@@ -189,11 +190,21 @@ function outputLooksLikePrompt(chunk: string): boolean {
   const tail = cleaned.slice(-800);
   if (/proceed \(y\)\?\s*$/i.test(tail)) return true;
   if (/(password|username|login):\s*$/i.test(tail)) return true;
-  const lastLine = tail.split("\n").at(-1)?.trimEnd() ?? "";
-  if (!lastLine) return false;
-  if (/^[^\n]{0,180}[$#%]\s?$/.test(lastLine)) return true;
-  if (/^[^\n]{0,180}(?:>|>>|>>>|❯|›)\s?$/.test(lastLine)) return true;
-  if (/^[^\n]{0,180}\s(?:>|>>|>>>|❯|›)\s?$/.test(lastLine)) return true;
+
+  const recentLines = tail
+    .split("\n")
+    .map((line) => line.replaceAll("\u00a0", " ").trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .slice(-8);
+
+  for (const line of recentLines) {
+    if (/^[^\n]{0,180}[$#%]\s?$/.test(line)) return true;
+    if (/^[^\n]{0,180}(?:>|>>|>>>|❯|›)\s?$/u.test(line)) return true;
+    if (/^[^\n]{0,180}\s(?:>|>>|>>>|❯|›)\s?$/u.test(line)) return true;
+    // Some fullscreen CLIs (e.g. codex/claude) keep helper/footer lines after the prompt.
+    if (/^\s*(?:❯|›)\s+\S.{0,240}$/u.test(line)) return true;
+  }
+
   return false;
 }
 
@@ -289,7 +300,10 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
         setPtyReadiness(p.id, false, "exited", false);
         return { ...p, activeProcess: p.activeProcess ?? null, ready: false, readyReason: "exited" };
       }
-      const activeProcess = p.backend === "tmux" && p.tmuxSession ? await tmuxPaneActiveProcess(p.tmuxSession) : null;
+      const isTmux = p.backend === "tmux" && p.tmuxSession;
+      const [activeProcess, liveCwd] = isTmux
+        ? await Promise.all([tmuxPaneActiveProcess(p.tmuxSession!), tmuxPaneCurrentPath(p.tmuxSession!)])
+        : [null, null];
       const now = Date.now();
       const promptFresh = st.lastPromptAt > 0 && now - st.lastPromptAt <= READINESS_PROMPT_WINDOW_MS;
       if (promptFresh) {
@@ -305,7 +319,7 @@ async function withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
       } else {
         setPtyReadiness(p.id, false, "unknown", false);
       }
-      return { ...p, activeProcess, ready: st.ready, readyReason: st.reason };
+      return { ...p, activeProcess, cwd: liveCwd ?? p.cwd, ready: st.ready, readyReason: st.reason };
     }),
   );
 }
