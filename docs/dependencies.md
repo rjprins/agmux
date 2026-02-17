@@ -20,9 +20,9 @@
 
 | Agent | Readiness detection |
 |---|---|
-| **Claude Code** | Yes — prompt, thinking, busy markers |
-| **Codex CLI** | Yes — prompt, working markers |
-| Any other CLI | Works, but no automatic readiness detection |
+| **Claude Code** | Yes — pane activity + prompt/permission inference |
+| **Codex CLI** | Yes — pane activity + prompt/permission inference |
+| Any other CLI | Yes — pane activity + prompt/permission inference |
 
 ## Dev only
 

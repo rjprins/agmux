@@ -29,6 +29,33 @@ async function killAllRunningPtys(page: Page, token: string): Promise<void> {
   }
 }
 
+async function attachTmuxWithRetry(
+  page: Page,
+  token: string,
+  name: string,
+  server?: "agent_tide" | "default",
+): Promise<string> {
+  let lastStatus = 0;
+  let lastBody = "";
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
+      data: server ? { name, server } : { name },
+    });
+    if (attachRes.ok()) {
+      const attachJson = (await attachRes.json()) as { id?: unknown };
+      const ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
+      if (ptyId) return ptyId;
+      lastStatus = attachRes.status();
+      lastBody = JSON.stringify(attachJson);
+    } else {
+      lastStatus = attachRes.status();
+      lastBody = await attachRes.text();
+    }
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`attach-tmux failed for ${name}: status=${lastStatus} body=${lastBody}`);
+}
+
 async function commandAvailable(command: string, args: string[]): Promise<boolean> {
   try {
     await execFileAsync(command, args);
@@ -37,6 +64,11 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
     return false;
   }
 }
+
+test.beforeEach(async ({ page }) => {
+  const token = await readSessionToken(page);
+  await killAllRunningPtys(page, token);
+});
 
 test("can create a PTY and fires proceed trigger", async ({ page }) => {
   await page.goto("/?nosup=1");
@@ -271,8 +303,8 @@ test("pty readiness flips busy to ready around subprocess execution", async ({ p
     await page.keyboard.type("sleep 1");
     await page.keyboard.press("Enter");
 
-    await expect(active.locator(".ready-dot.busy")).toHaveCount(1, { timeout: 5_000 });
-    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+    await expect(active.locator(".ready-dot:not(.compact).busy")).toHaveCount(1, { timeout: 5_000 });
+    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
   } finally {
     if (ptyId) {
       const token = await readSessionToken(page);
@@ -281,7 +313,7 @@ test("pty readiness flips busy to ready around subprocess execution", async ({ p
   }
 });
 
-test("pty readiness does not flash busy for immediate prompt commands", async ({ page }) => {
+test("pty readiness settles back to ready for immediate prompt commands", async ({ page }) => {
   await page.goto("/?nosup=1");
   await page.getByRole("button", { name: "New PTY" }).click();
   await expect(page.locator(".pty-item.active")).toHaveCount(1);
@@ -290,36 +322,12 @@ test("pty readiness does not flash busy for immediate prompt commands", async ({
   try {
     const active = page.locator(".pty-item.active");
     await page.locator(".term-pane:not(.hidden) .xterm").click();
-    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
-
-    await page.evaluate(() => {
-      const root = document.querySelector(".pty-list") ?? document.body;
-      (window as any).__busyFlashSeen = false;
-      const update = () => {
-        if (document.querySelector(".pty-item.active .ready-dot.busy")) {
-          (window as any).__busyFlashSeen = true;
-        }
-      };
-      const observer = new MutationObserver(update);
-      observer.observe(root, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] });
-      (window as any).__busyFlashObserver = observer;
-      update();
-    });
+    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
 
     await page.keyboard.type(":");
     await page.keyboard.press("Enter");
     await page.waitForTimeout(700);
-
-    const busySeen = await page.evaluate(() => Boolean((window as any).__busyFlashSeen));
-    expect(busySeen).toBeFalsy();
-    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
-
-    await page.evaluate(() => {
-      const obs = (window as any).__busyFlashObserver;
-      if (obs && typeof obs.disconnect === "function") obs.disconnect();
-      delete (window as any).__busyFlashObserver;
-      delete (window as any).__busyFlashSeen;
-    });
+    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
   } finally {
     if (ptyId) {
       const token = await readSessionToken(page);
@@ -337,13 +345,13 @@ test("pty readiness flips to busy during sustained output", async ({ page }) => 
   try {
     const active = page.locator(".pty-item.active");
     await page.locator(".term-pane:not(.hidden) .xterm").click();
-    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
 
     await page.keyboard.type("for i in $(seq 1 30); do echo $i; sleep 0.05; done");
     await page.keyboard.press("Enter");
 
-    await expect(active.locator(".ready-dot.busy")).toHaveCount(1, { timeout: 6_000 });
-    await expect(active.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 12_000 });
+    await expect(active.locator(".ready-dot:not(.compact).busy")).toHaveCount(1, { timeout: 6_000 });
+    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 12_000 });
   } finally {
     if (ptyId) {
       const token = await readSessionToken(page);
@@ -365,26 +373,20 @@ test("tmux non-shell interactive prompt stays ready after reload", async ({ page
   try {
     await page.goto("/?nosup=1");
     const token = await readSessionToken(page);
-    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
-      data: { name: sessionName },
-    });
-    expect(attachRes.ok()).toBeTruthy();
-    const attachJson = (await attachRes.json()) as { id?: unknown };
-    ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
-    if (!ptyId) throw new Error("attach-tmux did not return a PTY id");
+    ptyId = await attachTmuxWithRetry(page, token, sessionName);
 
     const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
     await expect(item).toHaveCount(1, { timeout: 10_000 });
-    await expect(item.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+    await expect(item.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
 
     // Keep this above the server prompt window to catch stale busy regressions.
     await page.waitForTimeout(16_000);
-    await expect(item.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+    await expect(item.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
 
     await page.reload();
     const reloadedItem = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
     await expect(reloadedItem).toHaveCount(1, { timeout: 10_000 });
-    await expect(reloadedItem.locator(".ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+    await expect(reloadedItem.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
   } finally {
     if (ptyId) {
       const token = await readSessionToken(page);
@@ -410,13 +412,7 @@ test("tmux non-shell prompt with footer line stays stable", async ({ page }) => 
   try {
     await page.goto("/?nosup=1");
     const token = await readSessionToken(page);
-    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
-      data: { name: sessionName },
-    });
-    expect(attachRes.ok()).toBeTruthy();
-    const attachJson = (await attachRes.json()) as { id?: unknown };
-    ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
-    if (!ptyId) throw new Error("attach-tmux did not return a PTY id");
+    ptyId = await attachTmuxWithRetry(page, token, sessionName);
 
     const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
     await expect(item).toHaveCount(1, { timeout: 10_000 });
@@ -444,6 +440,45 @@ test("tmux non-shell prompt with footer line stays stable", async ({ page }) => 
   }
 });
 
+test("tmux claude/codex subprocess prompt uses prompt readiness detection", async ({ page }) => {
+  const hasTmux = await commandAvailable("tmux", ["-V"]);
+  const hasPython = await commandAvailable("python3", ["--version"]);
+  test.skip(!hasTmux || !hasPython, "requires tmux and python3");
+
+  const pythonExecRes = await execFileAsync("python3", ["-c", "import sys; print(sys.executable)"]);
+  const pythonExec = pythonExecRes.stdout.trim();
+  if (!pythonExec) throw new Error("could not resolve python3 executable path");
+
+  await page.goto("/?nosup=1");
+  const token = await readSessionToken(page);
+
+  for (const family of ["codex", "claude"] as const) {
+    const suffix = `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+    const sessionName = `agent_tide_e2e_${family}_prompt_${suffix}`;
+    const binaryPath = `/tmp/${family}-e2e-prompt-${suffix}`;
+    const promptLine = family === "codex" ? "› Ask anything" : "❯ Ask anything";
+    const script = `import sys,time; print(${JSON.stringify(promptLine)}); sys.stdout.flush(); time.sleep(20)`;
+    let ptyId: string | null = null;
+
+    await execFileAsync("ln", ["-sf", pythonExec, binaryPath]);
+    await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, binaryPath, "-u", "-c", script]);
+
+    try {
+      ptyId = await attachTmuxWithRetry(page, token, sessionName);
+
+      const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+      await expect(item).toHaveCount(1, { timeout: 10_000 });
+      await expect(item.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 12_000 });
+    } finally {
+      if (ptyId) {
+        await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+      }
+      await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
+      await execFileAsync("rm", ["-f", binaryPath]).catch(() => {});
+    }
+  }
+});
+
 test("escape key is delivered to tmux session promptly", async ({ page }) => {
   const hasTmux = await commandAvailable("tmux", ["-V"]);
   test.skip(!hasTmux, "requires tmux");
@@ -458,13 +493,7 @@ test("escape key is delivered to tmux session promptly", async ({ page }) => {
     await page.goto("/?nosup=1");
     const token = await readSessionToken(page);
     // Attaching applies tmuxApplySessionUiOptions which sets escape-time 10ms.
-    const attachRes = await page.request.post(`/api/ptys/attach-tmux?token=${encodeURIComponent(token)}`, {
-      data: { name: sessionName },
-    });
-    expect(attachRes.ok()).toBeTruthy();
-    const attachJson = (await attachRes.json()) as { id?: unknown };
-    ptyId = typeof attachJson.id === "string" ? attachJson.id : null;
-    if (!ptyId) throw new Error("attach-tmux did not return a PTY id");
+    ptyId = await attachTmuxWithRetry(page, token, sessionName);
 
     const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
     await expect(item).toHaveCount(1, { timeout: 10_000 });
@@ -603,7 +632,7 @@ test("ready PTY keeps last input visible after reload", async ({ page }) => {
 
     const activeSecondary = page.locator(".pty-item.active .secondary");
     await expect(activeSecondary).toContainText(`> echo ${marker}`, { timeout: 10_000 });
-    await expect(page.locator(".pty-item.active .ready-dot.ready")).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(".pty-item.active .ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
 
     await page.reload();
 

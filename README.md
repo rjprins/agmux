@@ -9,7 +9,7 @@ Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Web-based terminal viewer** — real-time PTY output streamed via WebSockets
 - **tmux-backed sessions** — agent sessions survive server restarts
 - **Trigger system** — pattern-match on terminal output and run custom actions
-- **Readiness detection** — detect when Claude (or other agents) are idle, thinking, or waiting for input
+- **Readiness detection** — detect when sessions are actively working vs waiting for input
 - **Supervisor mode** — auto-commit, auto-reload, and rollback UI for self-editable development
 - **Themeable UI** — 5 built-in themes
 - **Multi-worktree support** — manage multiple git worktrees from one interface

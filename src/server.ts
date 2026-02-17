@@ -9,7 +9,6 @@ import type WebSocket from "ws";
 import { PtyManager } from "./pty/manager.js";
 import { SqliteStore } from "./persist/sqlite.js";
 import { ReadinessEngine, type PtyReadyEvent } from "./readiness/engine.js";
-import { ClaudeLogWatcher } from "./readiness/log-watcher.js";
 import type {
   ClientToServerMessage,
   PtySummary,
@@ -250,12 +249,6 @@ const readinessEngine = new ReadinessEngine({
   },
 });
 
-const logWatcher = new ClaudeLogWatcher({
-  onStateChange: (ptyId, state, reason) => {
-    readinessEngine.markLogState(ptyId, state, reason);
-  },
-});
-
 async function listPtys(): Promise<PtySummary[]> {
   return readinessEngine.withActiveProcesses(ptys.list());
 }
@@ -302,11 +295,6 @@ ptys.on("output", (ptyId: string, data: string) => {
   const out = summary?.backend === "tmux" ? stripAlternateScreenSequences(data) : data;
   readinessEngine.markOutput(ptyId, out);
 
-  const family = readinessEngine.getAgentFamily(ptyId);
-  if (family === "claude" && summary?.cwd) {
-    void logWatcher.startWatching(ptyId, summary.cwd);
-  }
-
   hub.queuePtyOutput(ptyId, out);
   triggerEngine.onOutput(
     ptyId,
@@ -340,8 +328,6 @@ function stripAlternateScreenSequences(s: string): string {
 ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   const summary = ptys.getSummary(ptyId);
   if (summary) store.upsertSession(summary);
-  logWatcher.stopWatching(ptyId);
-  readinessEngine.clearLogState(ptyId);
   readinessEngine.markExited(ptyId);
   fastify.log.info({ ptyId, code, signal }, "pty exited");
   broadcast({ type: "pty_exit", ptyId, code, signal });
