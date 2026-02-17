@@ -242,12 +242,12 @@ export async function tmuxEnsureSession(name: string, shell: string): Promise<vo
 }
 
 /** Create a new window in an existing session. Returns a stable target like "session:@id". */
-export async function tmuxCreateWindow(sessionName: string, shell: string): Promise<string> {
+export async function tmuxCreateWindow(sessionName: string, shell: string, cwd?: string): Promise<string> {
   const safeShell = validateShellExecutable(shell);
-  const out = await tmuxAgentOut([
-    "new-window", "-d", "-t", sessionName, "-P", "-F",
-    "#{session_name}:#{window_id}", "--", safeShell,
-  ]);
+  const args = ["new-window", "-d", "-t", sessionName, "-P", "-F", "#{session_name}:#{window_id}"];
+  if (cwd) args.push("-c", cwd);
+  args.push("--", safeShell);
+  const out = await tmuxAgentOut(args);
   const target = out.trim();
   await tmuxApplySessionUiOptions(target, "agent_tide");
   return target;

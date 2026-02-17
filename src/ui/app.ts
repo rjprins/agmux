@@ -696,6 +696,8 @@ function compactWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
+const AGENT_CHOICES = ["claude", "codex", "aider", "goose", "opencode", "cursor-agent"];
+
 const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 
 function normalizeProcessName(s: string): string {
@@ -891,16 +893,28 @@ async function killPty(ptyId: string): Promise<void> {
   await refreshList();
 }
 
+function normalizeCwdGroupKey(cwd: string): string {
+  const idx = cwd.indexOf("/.worktrees/");
+  if (idx !== -1) return cwd.slice(0, idx);
+  return cwd;
+}
+
+function worktreeName(cwd: string | null): string | null {
+  if (!cwd) return null;
+  const m = cwd.match(/\/\.worktrees\/([^/]+)/);
+  return m ? m[1] : null;
+}
+
 const collapsedGroups = new Set<string>();
 
 function renderList(): void {
   listEl.textContent = "";
 
-  // Group running PTYs by CWD
+  // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo)
   const grouped = new Map<string, PtySummary[]>();
   for (const p of ptys) {
     if (p.status !== "running") continue;
-    const key = p.cwd ?? "";
+    const key = p.cwd ? normalizeCwdGroupKey(p.cwd) : "";
     let arr = grouped.get(key);
     if (!arr) {
       arr = [];
@@ -942,10 +956,15 @@ function renderList(): void {
       }
       header.appendChild(label);
 
-      const count = document.createElement("span");
-      count.className = "group-count";
-      count.textContent = `${grouped.get(key)!.length}`;
-      header.appendChild(count);
+      const launchBtn = document.createElement("button");
+      launchBtn.className = "group-launch";
+      launchBtn.textContent = "+";
+      launchBtn.title = "Launch agent";
+      launchBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openLaunchModal();
+      });
+      header.appendChild(launchBtn);
 
       header.addEventListener("click", () => {
         if (collapsedGroups.has(key)) collapsedGroups.delete(key);

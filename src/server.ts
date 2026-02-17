@@ -409,6 +409,96 @@ fastify.post("/api/ptys", async (req, reply) => {
 });
 
 // Create an interactive login shell with zero UI configuration.
+fastify.get("/api/worktrees", async () => {
+  const wtDir = path.resolve(process.cwd(), ".worktrees");
+  let entries: string[];
+  try {
+    entries = await fs.readdir(wtDir);
+  } catch {
+    return { worktrees: [] };
+  }
+  const worktrees: { name: string; path: string }[] = [];
+  for (const name of entries) {
+    const full = path.join(wtDir, name);
+    try {
+      const st = await fs.stat(full);
+      if (st.isDirectory()) worktrees.push({ name, path: full });
+    } catch {
+      // skip
+    }
+  }
+  return { worktrees };
+});
+
+fastify.post("/api/ptys/launch", async (req, reply) => {
+  const body = isRecord(req.body) ? req.body : {};
+  const agent = typeof body.agent === "string" ? body.agent.trim() : "";
+  const worktree = typeof body.worktree === "string" ? body.worktree.trim() : "";
+  if (!agent) {
+    reply.code(400);
+    return { error: "agent is required" };
+  }
+  if (!worktree) {
+    reply.code(400);
+    return { error: "worktree is required" };
+  }
+
+  let cwd: string;
+  if (worktree === "__new__") {
+    const branch = typeof body.branch === "string" && body.branch.trim()
+      ? body.branch.trim()
+      : `wt-${Date.now()}`;
+    const wtPath = path.resolve(process.cwd(), ".worktrees", branch);
+    await new Promise<void>((resolve, reject) => {
+      execFile("git", ["worktree", "add", wtPath, "-b", branch], { cwd: process.cwd() }, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    cwd = wtPath;
+  } else {
+    cwd = worktree;
+  }
+
+  // Create shell using tmux (reuse /api/ptys/shell logic)
+  const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
+  const SESSION_NAME = "agent_tide";
+  try {
+    await tmuxEnsureSession(SESSION_NAME, shell);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("shell must")) {
+      reply.code(400);
+      return { error: message };
+    }
+    throw err;
+  }
+
+  // Create a new tmux window with the worktree as cwd
+  const tmuxTarget = await tmuxCreateWindow(SESSION_NAME, shell, cwd);
+
+  const name = `shell:${path.basename(shell)}`;
+  const summary = ptys.spawn({
+    name,
+    backend: "tmux",
+    tmuxSession: tmuxTarget,
+    command: "tmux",
+    args: tmuxAttachArgs(tmuxTarget),
+    cols: 120,
+    rows: 30,
+  });
+  store.upsertSession(summary);
+  fastify.log.info({ ptyId: summary.id, agent, cwd, tmuxSession: tmuxTarget }, "launch: shell spawned");
+  await broadcastPtyList();
+
+  // Write the agent launch command into the PTY after a short delay
+  setTimeout(() => {
+    ptys.write(summary.id, `${agent}\n`);
+  }, 300);
+
+  return { id: summary.id };
+});
+
 fastify.post("/api/ptys/shell", async (_req, reply) => {
   const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
   const backend = process.env.AGENT_TIDE_SHELL_BACKEND ?? "tmux";
