@@ -200,7 +200,26 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
+const btnSidebarToggle = $("btn-sidebar-toggle") as HTMLButtonElement;
 btnNew.disabled = true;
+
+let sidebarCollapsed = false;
+function toggleSidebar(): void {
+  sidebarCollapsed = !sidebarCollapsed;
+  const app = document.getElementById("app")!;
+  const sidebar = document.querySelector(".sidebar")!;
+  app.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  sidebar.classList.toggle("collapsed", sidebarCollapsed);
+  btnSidebarToggle.innerHTML = sidebarCollapsed ? "&raquo;" : "&laquo;";
+  btnSidebarToggle.title = sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar";
+  renderList();
+  // Re-fit terminal after sidebar resize transition
+  setTimeout(() => {
+    const st = activePtyId ? terms.get(activePtyId) : null;
+    if (st) st.fit.fit();
+  }, 250);
+}
+btnSidebarToggle.addEventListener("click", toggleSidebar);
 
 type TermState = {
   ptyId: string;
@@ -604,7 +623,6 @@ async function refreshTmuxSessions(): Promise<void> {
   tmuxSessionSelect.value = tmuxSessions.some((s) => tmuxSessionKey(s) === prev)
     ? prev
     : tmuxSessionKey(tmuxSessions[0]);
-  tmuxSessionSelect.disabled = false;
 }
 
 async function fetchTmuxSessionWarnings(selected: TmuxSessionInfo): Promise<string[]> {
@@ -873,6 +891,8 @@ async function killPty(ptyId: string): Promise<void> {
   await refreshList();
 }
 
+const collapsedGroups = new Set<string>();
+
 function renderList(): void {
   listEl.textContent = "";
 
@@ -901,18 +921,41 @@ function renderList(): void {
   const showHeaders = sortedKeys.length >= 1;
 
   for (const key of sortedKeys) {
+    const collapsed = collapsedGroups.has(key);
+
     if (showHeaders) {
       const header = document.createElement("li");
-      header.className = "pty-group-header";
+      header.className = `pty-group-header${collapsed ? " collapsed" : ""}`;
+
+      const chevron = document.createElement("span");
+      chevron.className = "group-chevron";
+      chevron.textContent = collapsed ? "\u25b6" : "\u25bc";
+      header.appendChild(chevron);
+
+      const label = document.createElement("span");
       if (key) {
         const basename = key.split("/").filter(Boolean).at(-1) ?? key;
-        header.textContent = basename;
+        label.textContent = basename;
         header.title = key;
       } else {
-        header.textContent = "Other";
+        label.textContent = "Other";
       }
+      header.appendChild(label);
+
+      const count = document.createElement("span");
+      count.className = "group-count";
+      count.textContent = `${grouped.get(key)!.length}`;
+      header.appendChild(count);
+
+      header.addEventListener("click", () => {
+        if (collapsedGroups.has(key)) collapsedGroups.delete(key);
+        else collapsedGroups.add(key);
+        renderList();
+      });
       listEl.appendChild(header);
     }
+
+    if (collapsed) continue;
 
     for (const p of grouped.get(key)!) {
       const li = document.createElement("li");
@@ -988,6 +1031,12 @@ function renderList(): void {
       row.appendChild(closeBtn);
 
       li.appendChild(row);
+
+      // Compact dot for collapsed sidebar mode (hidden via CSS when expanded).
+      const compactDot = document.createElement("span");
+      compactDot.className = `ready-dot compact ${readyInfo.indicator}`;
+      compactDot.title = `${process} — ${readyStateLabel}`;
+      li.appendChild(compactDot);
 
       li.addEventListener("click", () => setActive(p.id));
       listEl.appendChild(li);
