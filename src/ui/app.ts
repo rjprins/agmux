@@ -720,7 +720,181 @@ function compactWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-const AGENT_CHOICES = ["claude", "codex", "aider", "goose", "opencode", "cursor-agent"];
+const AGENT_CHOICES = ["claude", "codex", "aider", "goose", "opencode", "cursor-agent", "shell"];
+
+function generateBranchName(): string {
+  const now = new Date();
+  const yy = String(now.getFullYear()).slice(2);
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const verbs = ["build", "craft", "debug", "patch", "tune", "refine", "shape", "forge", "spark", "wire"];
+  const nouns = ["otter", "falcon", "comet", "maple", "cedar", "harbor", "reef", "prism", "flint", "ridge"];
+  const verb = verbs[Math.floor(Math.random() * verbs.length)];
+  const noun = nouns[Math.floor(Math.random() * nouns.length)];
+  return `${yy}${mm}${dd}-${verb}-${noun}`;
+}
+
+function openLaunchModal(groupCwd: string): void {
+  // Remove any existing modal
+  document.getElementById("launch-modal-overlay")?.remove();
+
+  const overlay = document.createElement("div");
+  overlay.id = "launch-modal-overlay";
+  overlay.className = "launch-modal-overlay";
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  const modal = document.createElement("div");
+  modal.className = "launch-modal";
+
+  const title = document.createElement("h3");
+  title.textContent = "Launch agent";
+  modal.appendChild(title);
+
+  // Agent select
+  const agentLabel = document.createElement("label");
+  agentLabel.textContent = "Agent";
+  agentLabel.className = "launch-modal-label";
+  const agentSelect = document.createElement("select");
+  agentSelect.className = "launch-modal-select";
+  for (const a of AGENT_CHOICES) {
+    const opt = document.createElement("option");
+    opt.value = a;
+    opt.textContent = a;
+    agentSelect.appendChild(opt);
+  }
+  agentLabel.appendChild(agentSelect);
+  modal.appendChild(agentLabel);
+
+  // Worktree select
+  const wtLabel = document.createElement("label");
+  wtLabel.textContent = "Worktree";
+  wtLabel.className = "launch-modal-label";
+  const wtSelect = document.createElement("select");
+  wtSelect.className = "launch-modal-select";
+
+  // Placeholder while loading
+  const loadingOpt = document.createElement("option");
+  loadingOpt.textContent = "Loading...";
+  loadingOpt.disabled = true;
+  wtSelect.appendChild(loadingOpt);
+  wtLabel.appendChild(wtSelect);
+  modal.appendChild(wtLabel);
+
+  // New worktree branch name (shown when __new__ is selected)
+  const branchLabel = document.createElement("label");
+  branchLabel.textContent = "Branch name (optional)";
+  branchLabel.className = "launch-modal-label launch-modal-branch";
+  const branchInput = document.createElement("input");
+  branchInput.type = "text";
+  branchInput.className = "launch-modal-input";
+  const generatedBranch = generateBranchName();
+  branchInput.placeholder = generatedBranch;
+  branchLabel.appendChild(branchInput);
+  modal.appendChild(branchLabel);
+
+  wtSelect.addEventListener("change", () => {
+    branchLabel.classList.toggle("hidden", wtSelect.value !== "__new__");
+  });
+
+  // Fetch worktrees and populate
+  fetch("/api/worktrees")
+    .then((r) => r.json())
+    .then((data: { worktrees: { name: string; path: string }[] }) => {
+      wtSelect.innerHTML = "";
+
+      // Default: new worktree (first option, selected)
+      const newOpt = document.createElement("option");
+      newOpt.value = "__new__";
+      newOpt.textContent = "+ New worktree";
+      newOpt.selected = true;
+      wtSelect.appendChild(newOpt);
+
+      // If the group has a CWD, offer it as "Current directory"
+      if (groupCwd) {
+        const opt = document.createElement("option");
+        opt.value = groupCwd;
+        opt.textContent = `Current (${groupCwd.split("/").filter(Boolean).at(-1) ?? groupCwd})`;
+        wtSelect.appendChild(opt);
+      }
+
+      for (const wt of data.worktrees) {
+        if (groupCwd && wt.path === groupCwd) continue;
+        const opt = document.createElement("option");
+        opt.value = wt.path;
+        opt.textContent = wt.name;
+        wtSelect.appendChild(opt);
+      }
+    })
+    .catch(() => {
+      wtSelect.innerHTML = "";
+      const newOpt = document.createElement("option");
+      newOpt.value = "__new__";
+      newOpt.textContent = "+ New worktree";
+      newOpt.selected = true;
+      wtSelect.appendChild(newOpt);
+      if (groupCwd) {
+        const opt = document.createElement("option");
+        opt.value = groupCwd;
+        opt.textContent = groupCwd.split("/").filter(Boolean).at(-1) ?? groupCwd;
+        wtSelect.appendChild(opt);
+      }
+    });
+
+  // Buttons
+  const btnRow = document.createElement("div");
+  btnRow.className = "launch-modal-buttons";
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.addEventListener("click", () => overlay.remove());
+  btnRow.appendChild(cancelBtn);
+
+  const launchBtn = document.createElement("button");
+  launchBtn.textContent = "Launch";
+  launchBtn.className = "launch-modal-go";
+  launchBtn.addEventListener("click", () => {
+    const agent = agentSelect.value;
+    const worktree = wtSelect.value;
+    const branch = worktree === "__new__" ? (branchInput.value.trim() || generatedBranch) : undefined;
+
+    if (!agent || !worktree) return;
+
+    launchBtn.disabled = true;
+    launchBtn.textContent = "Launching...";
+
+    authFetch("/api/ptys/launch", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ agent, worktree, branch }),
+    })
+      .then((r) => {
+        if (!r.ok) return r.json().then((d: { error?: string }) => Promise.reject(new Error(d.error ?? "Launch failed")));
+        overlay.remove();
+      })
+      .catch((err: Error) => {
+        launchBtn.disabled = false;
+        launchBtn.textContent = "Launch";
+        alert(err.message);
+      });
+  });
+  btnRow.appendChild(launchBtn);
+  modal.appendChild(btnRow);
+
+  modal.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      launchBtn.click();
+    }
+  });
+
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+
+  // Focus the agent select
+  agentSelect.focus();
+}
 
 const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 
@@ -986,7 +1160,7 @@ function renderList(): void {
       launchBtn.title = "Launch agent";
       launchBtn.addEventListener("click", (e) => {
         e.stopPropagation();
-        openLaunchModal();
+        openLaunchModal(key);
       });
       header.appendChild(launchBtn);
 

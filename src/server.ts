@@ -34,6 +34,19 @@ import {
   type TmuxServer,
 } from "./tmux.js";
 
+import { execFileSync } from "node:child_process";
+
+/** Resolve the top-level git repo root (handles running inside a worktree). */
+const REPO_ROOT = (() => {
+  try {
+    // --git-common-dir returns the shared .git dir even from a worktree
+    const gitCommon = execFileSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { encoding: "utf8" }).trim();
+    return path.dirname(gitCommon);
+  } catch {
+    return process.cwd();
+  }
+})();
+
 const HOST = process.env.HOST ?? "127.0.0.1";
 const DEFAULT_PORT = 4821;
 const requestedPort = Number(process.env.PORT ?? String(DEFAULT_PORT));
@@ -446,7 +459,7 @@ fastify.post("/api/ptys", async (req, reply) => {
 
 // Create an interactive login shell with zero UI configuration.
 fastify.get("/api/worktrees", async () => {
-  const wtDir = path.resolve(process.cwd(), ".worktrees");
+  const wtDir = path.resolve(REPO_ROOT, ".worktrees");
   let entries: string[];
   try {
     entries = await fs.readdir(wtDir);
@@ -484,9 +497,9 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     const branch = typeof body.branch === "string" && body.branch.trim()
       ? body.branch.trim()
       : `wt-${Date.now()}`;
-    const wtPath = path.resolve(process.cwd(), ".worktrees", branch);
+    const wtPath = path.resolve(REPO_ROOT, ".worktrees", branch);
     await new Promise<void>((resolve, reject) => {
-      execFile("git", ["worktree", "add", wtPath, "-b", branch], { cwd: process.cwd() }, (err) => {
+      execFile("git", ["worktree", "add", wtPath, "-b", branch], { cwd: REPO_ROOT }, (err) => {
         if (err) reject(err);
         else resolve();
       });
@@ -528,9 +541,14 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
   await broadcastPtyList();
 
   // Write the agent launch command into the PTY after a short delay
-  setTimeout(() => {
-    ptys.write(summary.id, `${agent}\n`);
-  }, 300);
+  // Skip for "shell" — the user just wants a plain terminal
+  if (agent !== "shell") {
+    setTimeout(() => {
+      // Unset CLAUDECODE so nested Claude Code sessions don't refuse to start
+      const cmd = agent === "claude" ? "claude --trust-workspace" : agent;
+      ptys.write(summary.id, `unset CLAUDECODE; ${cmd}\n`);
+    }, 300);
+  }
 
   return { id: summary.id };
 });

@@ -91,7 +91,8 @@ body {
 }
 .sidebar.collapsed .group-chevron,
 .sidebar.collapsed .pty-group-header > span:not(.group-chevron):not(.group-count),
-.sidebar.collapsed .group-count {
+.sidebar.collapsed .group-count,
+.sidebar.collapsed .group-launch {
   display: none;
 }
 .sidebar.collapsed .pty-group-header::after {
@@ -705,6 +706,117 @@ button:disabled {
 .terminal .xterm-helpers textarea {
   /* Avoid iOS zoom-jank. */
   font-size: 16px;
+}
+
+/* Launch modal */
+.launch-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.launch-modal {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 24px;
+  min-width: 320px;
+  max-width: 420px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.launch-modal h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.launch-modal-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.launch-modal-select,
+.launch-modal-input {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  appearance: none;
+  -webkit-appearance: none;
+}
+
+.launch-modal-select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2399a2c2'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  padding-right: 24px;
+  cursor: pointer;
+}
+
+.launch-modal-select option {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.launch-modal-input::placeholder {
+  color: var(--muted);
+}
+
+.launch-modal-branch.hidden {
+  display: none;
+}
+
+.launch-modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.launch-modal-go {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.launch-modal-go:hover {
+  opacity: 0.9;
+}
+
+.launch-modal-go:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.group-launch {
+  margin-left: auto;
+  padding: 0 6px;
+  font-size: 14px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.group-launch:hover {
+  color: var(--text);
+  background: var(--surface);
 }
 
 @media (max-width: 920px) {
