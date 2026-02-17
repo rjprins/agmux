@@ -679,3 +679,91 @@ test("input context bar tracks last input history per PTY", async ({ page }) => 
     }
   }
 });
+
+test("switching between multiple PTYs keeps each terminal's content distinct", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  const token = await readSessionToken(page);
+
+  const ptys: Array<{ id: string; marker: string }> = [];
+  const markerById = new Map<string, string>();
+  const markers = ["__switch_pty_one__", "__switch_pty_two__", "__switch_pty_three__"];
+
+  const readActivePtyId = async (): Promise<string | null> =>
+    page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+
+  const dumpActiveBuffer = async (): Promise<string> =>
+    page.evaluate(() => {
+      const dump = (window as any).__agentTide?.dumpActive;
+      return typeof dump === "function" ? String(dump()) : "";
+    });
+
+  const assertActiveHasOwnMarkerOnly = async (ptyId: string): Promise<void> => {
+    const marker = markerById.get(ptyId);
+    if (!marker) throw new Error(`missing marker for PTY ${ptyId}`);
+    const otherMarkers = ptys.filter((p) => p.id !== ptyId).map((p) => p.marker);
+
+    await expect(page.locator(`.pty-item[data-pty-id="${ptyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
+    await expect
+      .poll(
+        async () => {
+          const buffer = await dumpActiveBuffer();
+          return buffer.includes(marker) && otherMarkers.every((m) => !buffer.includes(m));
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
+  };
+
+  try {
+    await killAllRunningPtys(page, token);
+
+    for (const marker of markers) {
+      const prevActivePtyId = ptys.length > 0 ? ptys[ptys.length - 1].id : null;
+      await page.getByRole("button", { name: "New PTY" }).click();
+      await expect(page.locator(".pty-item.active")).toHaveCount(1);
+      if (prevActivePtyId) {
+        await expect.poll(readActivePtyId, { timeout: 10_000 }).not.toBe(prevActivePtyId);
+      }
+
+      const ptyId = await readActivePtyId();
+      if (!ptyId) throw new Error("missing PTY id");
+      expect(ptys.map((p) => p.id)).not.toContain(ptyId);
+
+      ptys.push({ id: ptyId, marker });
+      markerById.set(ptyId, marker);
+
+      const xterm = page.locator(`.term-pane[data-pty-id="${ptyId}"]:not(.hidden) .xterm`);
+      await expect(xterm).toBeVisible({ timeout: 10_000 });
+      await xterm.click({ force: true });
+      await page.keyboard.type(`echo ${marker}`);
+      await page.keyboard.press("Enter");
+
+      await assertActiveHasOwnMarkerOnly(ptyId);
+    }
+
+    const firstPtyId = ptys[0]?.id;
+    const lastPtyId = ptys[2]?.id;
+    if (!firstPtyId || !lastPtyId) throw new Error("expected three PTYs");
+
+    await page.locator(`.pty-item[data-pty-id="${firstPtyId}"]`).click();
+    await assertActiveHasOwnMarkerOnly(firstPtyId);
+
+    await page.keyboard.press("Control+Shift+BracketRight");
+    await expect.poll(readActivePtyId, { timeout: 10_000 }).not.toBe(firstPtyId);
+
+    const switchedPtyId = await readActivePtyId();
+    if (!switchedPtyId) throw new Error("missing switched PTY id");
+    await assertActiveHasOwnMarkerOnly(switchedPtyId);
+
+    await page.keyboard.press("Control+Shift+BracketLeft");
+    await expect.poll(readActivePtyId, { timeout: 10_000 }).toBe(firstPtyId);
+    await assertActiveHasOwnMarkerOnly(firstPtyId);
+
+    await page.locator(`.pty-item[data-pty-id="${lastPtyId}"]`).click();
+    await assertActiveHasOwnMarkerOnly(lastPtyId);
+  } finally {
+    for (const p of ptys) {
+      await killPty(page, token, p.id);
+    }
+  }
+});
