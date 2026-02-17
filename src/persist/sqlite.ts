@@ -65,6 +65,12 @@ export class SqliteStore {
         history_json text not null default '[]',
         updated_at integer not null
       );
+
+      create table if not exists preferences (
+        key text primary key,
+        value_json text not null,
+        updated_at integer not null
+      );
     `);
 
     // Backwards-compatible column adds for existing DBs.
@@ -218,6 +224,32 @@ export class SqliteStore {
 
   deleteInputHistory(sessionId: string): void {
     this.db.prepare(`delete from input_history where session_id = ?;`).run(sessionId);
+  }
+
+  getPreference<T = unknown>(key: string): T | undefined {
+    const row = this.db.prepare(`select value_json from preferences where key = ?;`).get(key) as
+      | { value_json: string }
+      | undefined;
+    if (!row) return undefined;
+    try {
+      return JSON.parse(row.value_json) as T;
+    } catch {
+      return undefined;
+    }
+  }
+
+  setPreference(key: string, value: unknown): void {
+    this.db.prepare(`
+      insert into preferences (key, value_json, updated_at)
+      values (@key, @value_json, @updated_at)
+      on conflict(key) do update set
+        value_json=excluded.value_json,
+        updated_at=excluded.updated_at;
+    `).run({
+      key,
+      value_json: JSON.stringify(value),
+      updated_at: Date.now(),
+    });
   }
 
   private parseArgsJson(raw: string): string[] {

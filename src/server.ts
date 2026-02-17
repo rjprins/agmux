@@ -481,6 +481,26 @@ fastify.get("/api/worktrees", async () => {
   return { worktrees };
 });
 
+/** Select values that match CLI defaults and should not be emitted. */
+const FLAG_DEFAULTS: Record<string, Record<string, string>> = {
+  claude: { "--permission-mode": "default" },
+  codex: { "--ask-for-approval": "untrusted", "--sandbox": "read-only" },
+};
+
+/** Build the CLI command from agent name + flag values from the UI. */
+function agentCommand(agent: string, flags: Record<string, string | boolean>): string {
+  const defaults = FLAG_DEFAULTS[agent] ?? {};
+  const parts = [agent];
+  for (const [flag, value] of Object.entries(flags)) {
+    if (typeof value === "boolean") {
+      if (value) parts.push(flag);
+    } else if (typeof value === "string" && value && value !== defaults[flag]) {
+      parts.push(`${flag} ${value}`);
+    }
+  }
+  return parts.join(" ");
+}
+
 fastify.post("/api/ptys/launch", async (req, reply) => {
   const body = isRecord(req.body) ? req.body : {};
   const agent = typeof body.agent === "string" ? body.agent.trim() : "";
@@ -547,14 +567,25 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
   // Write the agent launch command into the PTY after a short delay
   // Skip for "shell" — the user just wants a plain terminal
   if (agent !== "shell") {
+    const flags = isRecord(body.flags) ? body.flags as Record<string, string | boolean> : {};
     setTimeout(() => {
       // Unset CLAUDECODE so nested Claude Code sessions don't refuse to start
-      const cmd = agent === "claude" ? "claude --trust-workspace" : agent;
+      const cmd = agentCommand(agent, flags);
       ptys.write(summary.id, `unset CLAUDECODE; ${cmd}\n`);
     }, 300);
   }
 
+  // Remember the user's launch preferences (per-agent flags)
+  const agentFlags = isRecord(body.flags) ? body.flags : {};
+  const prev = store.getPreference<{ agent?: string; flags?: Record<string, unknown> }>("launch") ?? {};
+  const allFlags = { ...(prev.flags ?? {}), [agent]: agentFlags };
+  store.setPreference("launch", { agent, flags: allFlags });
+
   return { id: summary.id };
+});
+
+fastify.get("/api/launch-preferences", async () => {
+  return store.getPreference("launch") ?? {};
 });
 
 fastify.post("/api/ptys/shell", async (_req, reply) => {
