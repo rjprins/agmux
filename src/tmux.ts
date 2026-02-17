@@ -145,6 +145,10 @@ export async function tmuxCreateLinkedSession(
     }
   }
 
+  // Apply UI options (status off, mouse off, etc.) to the linked session so
+  // the tmux chrome doesn't render inside the xterm.js view.
+  await tmuxApplySessionUiOptions(linked, server);
+
   const attachArgs = server === "default"
     ? ["attach-session", "-t", linked]
     : [...TMUX_BASE_ARGS, "attach-session", "-t", linked];
