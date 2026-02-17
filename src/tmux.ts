@@ -84,6 +84,15 @@ export function tmuxTargetSession(target: string): string {
   return i >= 0 ? target.substring(0, i) : target;
 }
 
+export function tmuxIsLinkedViewSession(name: string, baseSession?: string): boolean {
+  const marker = "_view_";
+  const markerIndex = name.lastIndexOf(marker);
+  if (markerIndex <= 0) return false;
+  if (baseSession && !name.startsWith(`${baseSession}${marker}`)) return false;
+  const suffix = name.slice(markerIndex + marker.length);
+  return /^[0-9]+$/.test(suffix);
+}
+
 export async function tmuxLocateSession(target: string): Promise<TmuxServer | null> {
   const session = tmuxTargetSession(target);
   try {
@@ -389,6 +398,34 @@ export async function tmuxKillSession(name: string): Promise<void> {
     return;
   }
   await tmuxAgent(["kill-session", "-t", name]);
+}
+
+export async function tmuxPruneDetachedLinkedSessions(
+  baseSession: string,
+  server: TmuxServer = "agent_tide",
+): Promise<string[]> {
+  const fmt = "#{session_name}\t#{session_attached}";
+  try {
+    const { stdout } = await tmuxExec(server, ["list-sessions", "-F", fmt]);
+    const lines = stdout.split("\n").map((v) => v.trim()).filter((v) => v.length > 0);
+    const killed: string[] = [];
+    for (const line of lines) {
+      const [nameRaw, attachedRaw] = line.split("\t", 2);
+      const name = (nameRaw ?? "").trim();
+      if (!name || !tmuxIsLinkedViewSession(name, baseSession)) continue;
+      const attached = Number(attachedRaw);
+      if (Number.isFinite(attached) && attached > 0) continue;
+      try {
+        await tmuxByServer(server, ["kill-session", "-t", name]);
+        killed.push(name);
+      } catch {
+        // Session may have disappeared concurrently.
+      }
+    }
+    return killed;
+  } catch {
+    return [];
+  }
 }
 
 export async function tmuxScrollHistory(
