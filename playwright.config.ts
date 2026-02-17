@@ -14,8 +14,10 @@ export default defineConfig({
     baseURL: appUrl,
     browserName: "chromium",
     launchOptions: {
-      // Avoid Playwright browser downloads; use system Chromium.
-      executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH ?? "/usr/bin/chromium",
+      // Use system Chromium if available, otherwise fall back to Playwright's managed browser.
+      ...(process.env.PLAYWRIGHT_CHROMIUM_PATH
+        ? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_PATH }
+        : {}),
     },
   },
   webServer: {
