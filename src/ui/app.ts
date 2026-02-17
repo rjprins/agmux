@@ -878,94 +878,123 @@ async function killPty(ptyId: string): Promise<void> {
 
 function renderList(): void {
   listEl.textContent = "";
+
+  // Group running PTYs by CWD
+  const grouped = new Map<string, PtySummary[]>();
   for (const p of ptys) {
-    if (p.status !== "running") continue; // Don't show killed/exited PTYs.
-
-    const li = document.createElement("li");
-    li.className = "pty-item";
-    li.dataset.ptyId = p.id;
-    li.style.setProperty("--pty-color", ptyColor(p.id));
-    if (p.id === activePtyId) li.classList.add("active");
-
-    const row = document.createElement("div");
-    row.className = "row";
-
-    const main = document.createElement("div");
-    main.className = "mainline";
-
-    const title = (ptyTitles.get(p.id) ?? "").trim();
-    const activeProcess = compactWhitespace(p.activeProcess ?? "");
-    const process =
-      (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name;
-    const inputPreview = ptyLastInput.get(p.id) ?? "";
-    const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
-    li.classList.add(`state-${readyInfo.state}`);
-    const readyStateLabel = readyInfo.state;
-    const cwdLabel = compactWhitespace(p.cwd ?? "");
-
-    const primaryRow = document.createElement("div");
-    primaryRow.className = "primary-row";
-
-    const readyDot = document.createElement("span");
-    readyDot.className = `ready-dot ${readyInfo.indicator}`;
-    readyDot.title = `PTY is ${readyStateLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
-    readyDot.setAttribute("aria-label", `PTY is ${readyStateLabel}`);
-
-    const primary = document.createElement("div");
-    primary.className = "primary";
-    primary.textContent = process;
-    primaryRow.appendChild(readyDot);
-    if (cwdLabel) {
-      const cwdEl = document.createElement("span");
-      cwdEl.className = "cwd-label";
-      const cwdBasename = cwdLabel.split("/").filter(Boolean).at(-1) ?? cwdLabel;
-      cwdEl.textContent = cwdBasename;
-      cwdEl.title = cwdLabel;
-      primaryRow.appendChild(cwdEl);
+    if (p.status !== "running") continue;
+    const key = p.cwd ?? "";
+    let arr = grouped.get(key);
+    if (!arr) {
+      arr = [];
+      grouped.set(key, arr);
     }
-    primaryRow.appendChild(primary);
-    if (title && title !== process) {
-      const titleEl = document.createElement("span");
-      titleEl.className = "title-label";
-      titleEl.textContent = title;
-      titleEl.title = title;
-      primaryRow.appendChild(titleEl);
+    arr.push(p);
+  }
+
+  // Sort: non-empty CWDs alphabetically by basename, empty last
+  const sortedKeys = [...grouped.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    const ba = a.split("/").filter(Boolean).at(-1) ?? a;
+    const bb = b.split("/").filter(Boolean).at(-1) ?? b;
+    return ba.localeCompare(bb);
+  });
+
+  const showHeaders = sortedKeys.length > 1;
+
+  for (const key of sortedKeys) {
+    if (showHeaders) {
+      const header = document.createElement("li");
+      header.className = "pty-group-header";
+      if (key) {
+        const basename = key.split("/").filter(Boolean).at(-1) ?? key;
+        header.textContent = basename;
+        header.title = key;
+      } else {
+        header.textContent = "Other";
+      }
+      listEl.appendChild(header);
     }
 
-    const secondary = document.createElement("div");
-    secondary.className = "secondary";
-    let secondaryText = "";
-    if (inputPreview) {
-      secondaryText = `> ${inputPreview}`;
-    } else if (title && title !== process) {
-      secondaryText = title;
-    } else {
-      secondaryText = p.name;
+    for (const p of grouped.get(key)!) {
+      const li = document.createElement("li");
+      li.className = "pty-item";
+      li.dataset.ptyId = p.id;
+      li.style.setProperty("--pty-color", ptyColor(p.id));
+      if (p.id === activePtyId) li.classList.add("active");
+
+      const row = document.createElement("div");
+      row.className = "row";
+
+      const main = document.createElement("div");
+      main.className = "mainline";
+
+      const title = (ptyTitles.get(p.id) ?? "").trim();
+      const activeProcess = compactWhitespace(p.activeProcess ?? "");
+      const process =
+        (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name;
+      const inputPreview = ptyLastInput.get(p.id) ?? "";
+      const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
+      li.classList.add(`state-${readyInfo.state}`);
+      const readyStateLabel = readyInfo.state;
+
+      const primaryRow = document.createElement("div");
+      primaryRow.className = "primary-row";
+
+      const readyDot = document.createElement("span");
+      readyDot.className = `ready-dot ${readyInfo.indicator}`;
+      readyDot.title = `PTY is ${readyStateLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
+      readyDot.setAttribute("aria-label", `PTY is ${readyStateLabel}`);
+
+      const primary = document.createElement("div");
+      primary.className = "primary";
+      primary.textContent = process;
+      primaryRow.appendChild(readyDot);
+      primaryRow.appendChild(primary);
+      if (title && title !== process) {
+        const titleEl = document.createElement("span");
+        titleEl.className = "title-label";
+        titleEl.textContent = title;
+        titleEl.title = title;
+        primaryRow.appendChild(titleEl);
+      }
+
+      const secondary = document.createElement("div");
+      secondary.className = "secondary";
+      let secondaryText = "";
+      if (inputPreview) {
+        secondaryText = `> ${inputPreview}`;
+      } else if (title && title !== process) {
+        secondaryText = title;
+      } else {
+        secondaryText = p.name;
+      }
+      secondary.textContent = secondaryText;
+
+      main.appendChild(primaryRow);
+      main.appendChild(secondary);
+
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "pty-close";
+      closeBtn.textContent = "x";
+      closeBtn.title = "Close";
+      closeBtn.setAttribute("aria-label", `Close PTY ${process}`);
+      closeBtn.addEventListener("click", async (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        await killPty(p.id);
+      });
+
+      row.appendChild(main);
+      row.appendChild(closeBtn);
+
+      li.appendChild(row);
+
+      li.addEventListener("click", () => setActive(p.id));
+      listEl.appendChild(li);
     }
-    secondary.textContent = secondaryText;
-
-    main.appendChild(primaryRow);
-    main.appendChild(secondary);
-
-    const closeBtn = document.createElement("button");
-    closeBtn.type = "button";
-    closeBtn.className = "pty-close";
-    closeBtn.textContent = "x";
-    closeBtn.title = "Close";
-    closeBtn.setAttribute("aria-label", `Close PTY ${process}`);
-    closeBtn.addEventListener("click", async (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      await killPty(p.id);
-    });
-
-    row.appendChild(main);
-    row.appendChild(closeBtn);
-
-    li.appendChild(row);
-
-    li.addEventListener("click", () => setActive(p.id));
-    listEl.appendChild(li);
   }
 }
 
