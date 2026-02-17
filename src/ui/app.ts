@@ -1007,7 +1007,12 @@ function setActive(ptyId: string): void {
     fitAndResizeActive();
     const st = terms.get(ptyId);
     if (st) {
-      st.term.refresh(0, Math.max(0, st.term.rows - 1));
+      // Force xterm.js to reflow the buffer — a plain refresh() only
+      // re-renders the viewport without recalculating line wrapping,
+      // which leaves garbled output after a page reload.  Scrolling by
+      // +1/−1 triggers a full reflow just like a manual wheel scroll.
+      st.term.scrollLines(1);
+      st.term.scrollLines(-1);
       st.term.focus();
     }
   });
