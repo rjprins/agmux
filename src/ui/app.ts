@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { THEMES, DEFAULT_THEME_KEY, applyTheme, type Theme } from "./themes";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -221,6 +222,34 @@ function toggleSidebar(): void {
 }
 btnSidebarToggle.addEventListener("click", toggleSidebar);
 
+// --- Theme ---
+
+const THEME_KEY = "agent-tide:theme";
+let activeThemeKey = localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_KEY;
+let activeTheme: Theme = THEMES.get(activeThemeKey) ?? THEMES.get(DEFAULT_THEME_KEY)!;
+
+const themeSelect = $("theme-select") as HTMLSelectElement;
+for (const [key, theme] of THEMES) {
+  const opt = document.createElement("option");
+  opt.value = key;
+  opt.textContent = theme.name;
+  themeSelect.appendChild(opt);
+}
+themeSelect.value = activeThemeKey;
+
+// Apply theme to CSS vars immediately (before any terminal creation).
+applyTheme(activeTheme, []);
+
+themeSelect.addEventListener("change", () => {
+  const next = THEMES.get(themeSelect.value);
+  if (!next) return;
+  activeThemeKey = themeSelect.value;
+  activeTheme = next;
+  localStorage.setItem(THEME_KEY, activeThemeKey);
+  applyTheme(activeTheme, terms.values());
+  renderList();
+});
+
 type TermState = {
   ptyId: string;
   backend: "pty" | "tmux" | undefined;
@@ -286,12 +315,7 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
     fontSize: 13,
     fontFamily:
       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-    theme: {
-      background: "#0b0e14",
-      foreground: "#e7ecff",
-      cursor: "#ffcc66",
-      selectionBackground: "rgba(255, 204, 102, 0.25)",
-    },
+    theme: activeTheme.terminal,
     scrollback: backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES,
   });
   const fit = new FitAddon();
@@ -684,7 +708,7 @@ function hashHue(s: string): number {
 }
 
 function ptyColor(ptyId: string): string {
-  return `hsl(${hashHue(ptyId)} 85% 72%)`;
+  return `hsl(${hashHue(ptyId)} ${activeTheme.hashSaturation}% ${activeTheme.hashLightness}%)`;
 }
 
 function shortId(ptyId: string): string {
