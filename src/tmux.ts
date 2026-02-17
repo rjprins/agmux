@@ -122,6 +122,7 @@ export async function tmuxCreateLinkedSession(
   server: TmuxServer = "agent_tide",
 ): Promise<{ linkedSession: string; attachArgs: string[] }> {
   const session = tmuxTargetSession(windowTarget);
+  const windowPart = windowTarget.includes(":") ? windowTarget.slice(windowTarget.indexOf(":") + 1).trim() : "";
   const linked = `${session}_view_${Date.now()}`;
 
   // Create a grouped (linked) session sharing windows with the parent session.
@@ -133,12 +134,15 @@ export async function tmuxCreateLinkedSession(
     await tmuxAgent(newArgs);
   }
 
-  // Select the specific window in this linked session
-  const selectArgs = ["select-window", "-t", `${linked}:${windowTarget.split(":")[1]}`];
-  if (server === "default") {
-    await tmuxDefault(selectArgs);
-  } else {
-    await tmuxAgent(selectArgs);
+  // If caller provided a specific window target (session:window), keep that
+  // active in the linked session. For plain session targets, keep tmux default.
+  if (windowPart.length > 0) {
+    const selectArgs = ["select-window", "-t", `${linked}:${windowPart}`];
+    if (server === "default") {
+      await tmuxDefault(selectArgs);
+    } else {
+      await tmuxAgent(selectArgs);
+    }
   }
 
   const attachArgs = server === "default"
@@ -549,6 +553,24 @@ export async function tmuxPaneCurrentPath(name: string): Promise<string | null> 
         : await tmuxAgentOut(["display-message", "-p", "-t", name, "#{pane_current_path}"]);
     const p = out.trim();
     return p.length > 0 ? p : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function tmuxPaneDimensions(name: string): Promise<{ width: number; height: number } | null> {
+  const server = await tmuxLocateSession(name);
+  if (!server) return null;
+  try {
+    const out =
+      server === "default"
+        ? await tmuxDefaultOut(["display-message", "-p", "-t", name, "#{pane_width}\t#{pane_height}"])
+        : await tmuxAgentOut(["display-message", "-p", "-t", name, "#{pane_width}\t#{pane_height}"]);
+    const [wRaw, hRaw] = out.trim().split("\t", 2);
+    const width = Number.parseInt((wRaw ?? "").trim(), 10);
+    const height = Number.parseInt((hRaw ?? "").trim(), 10);
+    if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+    return { width, height };
   } catch {
     return null;
   }
