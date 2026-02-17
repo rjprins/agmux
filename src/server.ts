@@ -768,9 +768,6 @@ wss.on("connection", (ws) => {
     if (msg.type === "input") {
       readinessEngine.markInput(msg.ptyId, msg.data);
       ptys.write(msg.ptyId, msg.data);
-      const preview = msg.data.length > 200 ? `${msg.data.slice(0, 200)}…` : msg.data;
-      const printable = preview.replace(/[\x00-\x1f]+/g, " ").trim();
-      if (printable) fastify.log.info({ ptyId: msg.ptyId }, `input: ${printable}`);
       return;
     }
     if (msg.type === "resize") {
