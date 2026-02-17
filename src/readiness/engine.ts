@@ -14,6 +14,7 @@ const READINESS_QUIET_MS = 220;
 const READINESS_PROMPT_WINDOW_MS = 15_000;
 const READINESS_BUSY_DELAY_MS = 120;
 const READINESS_AGENT_UNKNOWN_TO_READY_MS = 1_200;
+const LOG_STATE_TTL_MS = 10_000;
 const SHELL_PROCESS_NAMES = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 const AGENT_PROCESS_NAMES = new Set(["codex", "claude", "aider", "goose", "opencode", "cursor-agent"]);
 
@@ -32,6 +33,9 @@ type PtyReadyState = {
   modeHint: SessionMode | null;
   agentFamilyHint: AgentFamily | null;
   lastCwd: string | null;
+  logState: PtyReadinessState | null;
+  logReason: string | null;
+  logUpdatedAt: number;
 };
 
 export type PtyReadyEvent = {
@@ -74,6 +78,13 @@ export class ReadinessEngine {
     }
     if (agentFamily) st.agentFamilyHint = agentFamily;
     st.recentAgentOutputTail = mode === "agent" ? agentSignalWindow : "";
+
+    // If log state is fresh, keep terminal tracking warm but skip readiness state changes.
+    if (st.logState !== null && Date.now() - st.logUpdatedAt < LOG_STATE_TTL_MS) {
+      st.lastOutputAt = now;
+      return;
+    }
+
     const agentSignal = mode === "agent" ? detectAgentOutputSignal(agentSignalWindow, agentFamily) : "none";
     if (agentSignal === "busy") {
       this.clearBusyDelayTimer(st);
@@ -141,6 +152,25 @@ export class ReadinessEngine {
     this.inputLineByPty.delete(ptyId);
     st.recentAgentOutputTail = "";
     this.setPtyReadiness(ptyId, "busy", "exited");
+  }
+
+  markLogState(ptyId: string, state: PtyReadinessState, reason: string): void {
+    const st = this.ensureReadiness(ptyId);
+    st.logState = state;
+    st.logReason = reason;
+    st.logUpdatedAt = Date.now();
+    this.setPtyReadiness(ptyId, state, reason);
+  }
+
+  clearLogState(ptyId: string): void {
+    const st = this.ensureReadiness(ptyId);
+    st.logState = null;
+    st.logReason = null;
+    st.logUpdatedAt = 0;
+  }
+
+  getAgentFamily(ptyId: string): AgentFamily | null {
+    return this.ensureReadiness(ptyId).agentFamilyHint;
   }
 
   async withActiveProcesses(items: PtySummary[]): Promise<PtySummary[]> {
@@ -315,6 +345,9 @@ export class ReadinessEngine {
       modeHint: null,
       agentFamilyHint: null,
       lastCwd: null,
+      logState: null,
+      logReason: null,
+      logUpdatedAt: 0,
     };
     this.readinessByPty.set(ptyId, st);
     return st;
@@ -493,6 +526,12 @@ export class ReadinessEngine {
       return;
     }
 
+    // If log state is fresh, apply it directly and skip terminal-based recompute.
+    if (st.logState !== null && Date.now() - st.logUpdatedAt < LOG_STATE_TTL_MS) {
+      this.setPtyReadiness(ptyId, st.logState, st.logReason!);
+      return;
+    }
+
     const now = Date.now();
     let activeProcess: string | null = summary.activeProcess ?? null;
     if (summary.backend === "tmux" && summary.tmuxSession) {
@@ -587,6 +626,7 @@ export class ReadinessEngine {
   }
 
   private readinessSignalSource(reason: string): string {
+    if (reason.startsWith("log:")) return "jsonl-log";
     if (reason.startsWith("agent:")) return "agent-signal";
     if (reason.startsWith("prompt")) return "prompt-detector";
     if (reason.startsWith("process:")) return "foreground-process";
