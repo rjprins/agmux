@@ -78,16 +78,23 @@ async function tmuxDefaultOut(args: string[]): Promise<string> {
   return stdout;
 }
 
-export async function tmuxLocateSession(name: string): Promise<TmuxServer | null> {
+/** Extract the session name from a tmux target like "session:window". */
+export function tmuxTargetSession(target: string): string {
+  const i = target.indexOf(":");
+  return i >= 0 ? target.substring(0, i) : target;
+}
+
+export async function tmuxLocateSession(target: string): Promise<TmuxServer | null> {
+  const session = tmuxTargetSession(target);
   try {
-    await tmuxAgent(["has-session", "-t", name]);
+    await tmuxAgent(["has-session", "-t", session]);
     return "agent_tide";
   } catch {
     // fall through
   }
 
   try {
-    await tmuxDefault(["has-session", "-t", name]);
+    await tmuxDefault(["has-session", "-t", session]);
     return "default";
   } catch {
     return null;
@@ -101,6 +108,27 @@ export function tmuxAttachArgs(name: string, server: TmuxServer = "agent_tide"):
 
 export async function tmuxHasSession(name: string): Promise<boolean> {
   return (await tmuxLocateSession(name)) != null;
+}
+
+/**
+ * Check whether a tmux target (session:window) exists.
+ * tmux silently falls back to the current window for invalid targets,
+ * so we verify by listing actual windows.
+ */
+export async function tmuxTargetExists(target: string, server: TmuxServer): Promise<boolean> {
+  const session = tmuxTargetSession(target);
+  if (session === target) {
+    // No window specifier — just check the session.
+    try {
+      await tmuxExec(server, ["has-session", "-t", session]);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  // Has a window specifier — verify it's in the actual window list.
+  const windows = await tmuxListWindows(session, server);
+  return windows.some((w) => w.target === target);
 }
 
 async function tmuxListSessionsOn(server: TmuxServer): Promise<TmuxSessionInfo[]> {
@@ -204,6 +232,64 @@ export async function tmuxNewSessionDetached(name: string, shell: string): Promi
   await tmuxApplySessionUiOptions(name, "agent_tide");
 }
 
+/** Ensure the named session exists on the agent_tide server; create if missing. */
+export async function tmuxEnsureSession(name: string, shell: string): Promise<void> {
+  try {
+    await tmuxAgent(["has-session", "-t", name]);
+  } catch {
+    await tmuxNewSessionDetached(name, shell);
+  }
+}
+
+/** Create a new window in an existing session. Returns a stable target like "session:@id". */
+export async function tmuxCreateWindow(sessionName: string, shell: string): Promise<string> {
+  const safeShell = validateShellExecutable(shell);
+  const out = await tmuxAgentOut([
+    "new-window", "-d", "-t", sessionName, "-P", "-F",
+    "#{session_name}:#{window_id}", "--", safeShell,
+  ]);
+  const target = out.trim();
+  await tmuxApplySessionUiOptions(target, "agent_tide");
+  return target;
+}
+
+export type TmuxWindowInfo = {
+  target: string; // e.g. "agent_tide:@3"
+  index: number;
+};
+
+/** List all windows in a session as stable targets. */
+export async function tmuxListWindows(
+  sessionName: string,
+  server: TmuxServer = "agent_tide",
+): Promise<TmuxWindowInfo[]> {
+  const fmt = "#{session_name}:#{window_id}\t#{window_index}";
+  try {
+    const { stdout } = await tmuxExec(server, ["list-windows", "-t", sessionName, "-F", fmt]);
+    return stdout
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [target, idxRaw] = line.split("\t", 2);
+        return { target: (target ?? "").trim(), index: Number(idxRaw) };
+      });
+  } catch {
+    return [];
+  }
+}
+
+/** Kill a single window (not the whole session). */
+export async function tmuxKillWindow(target: string): Promise<void> {
+  const server = await tmuxLocateSession(target);
+  if (!server) return;
+  try {
+    await tmuxByServer(server, ["kill-window", "-t", target]);
+  } catch {
+    // Window may already be gone.
+  }
+}
+
 export async function tmuxApplySessionUiOptions(
   name: string,
   server: TmuxServer = "agent_tide",
@@ -219,7 +305,6 @@ export async function tmuxApplySessionUiOptions(
   }
 
   // We use tmux only for persistence; keep the user experience "plain shell".
-  // These options are per-session so we don't mutate other sessions.
   try {
     // xterm.js sends complete escape sequences atomically over WebSocket, so
     // tmux doesn't need to wait to disambiguate bare Escape from sequences.
@@ -227,6 +312,14 @@ export async function tmuxApplySessionUiOptions(
     await tmuxByServer(server, ["set-option", "-s", "escape-time", "10"]);
   } catch {
     // ignore
+  }
+  try {
+    // Size each window independently to its own attached client rather than
+    // the smallest client across the whole session.
+    await tmuxByServer(server, ["set-option", "-g", "window-size", "latest"]);
+    await tmuxByServer(server, ["set-option", "-g", "aggressive-resize", "on"]);
+  } catch {
+    // tmux < 2.9 may not support window-size; ignore.
   }
   await tmuxByServer(server, ["set-option", "-t", name, "status", "off"]);
   await tmuxByServer(server, ["set-option", "-t", name, "mouse", "off"]);

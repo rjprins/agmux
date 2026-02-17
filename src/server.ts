@@ -22,11 +22,14 @@ import {
   tmuxAttachArgs,
   tmuxCapturePaneVisible,
   tmuxCheckSessionConfig,
-  tmuxKillSession,
+  tmuxCreateWindow,
+  tmuxEnsureSession,
+  tmuxKillWindow,
   tmuxListSessions,
+  tmuxListWindows,
   tmuxLocateSession,
-  tmuxNewSessionDetached,
   tmuxScrollHistory,
+  tmuxTargetExists,
   type TmuxServer,
 } from "./tmux.js";
 
@@ -258,6 +261,8 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
     void (async () => {
       const server = await tmuxLocateSession(summary.tmuxSession!);
       if (!server) return;
+      // Verify the specific window target still exists before reattaching.
+      if (!(await tmuxTargetExists(summary.tmuxSession!, server))) return;
       try {
         await tmuxApplySessionUiOptions(summary.tmuxSession!, server);
       } catch {
@@ -406,54 +411,48 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     return { id: summary.id };
   }
 
-  // Pick a deterministic session name so we reuse existing tmux sessions
-  // instead of leaving orphans behind on every server restart.
-  const sessions = await tmuxListSessions();
-  const takenNames = new Set(sessions.map((s) => s.name));
-  let tmuxSession: string | null = null;
+  // Use a single tmux session with one window per shell.
+  const SESSION_NAME = "agent_tide";
+  try {
+    await tmuxEnsureSession(SESSION_NAME, shell);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.startsWith("shell must")) {
+      reply.code(400);
+      return { error: message };
+    }
+    throw err;
+  }
 
-  // First, try to reuse an existing agent_tide_shell_* session that isn't
-  // already attached by a live PTY.
-  const liveAttached = new Set(
+  // Find a window not currently attached by a live PTY, or create a new one.
+  const windows = await tmuxListWindows(SESSION_NAME);
+  const liveTargets = new Set(
     ptys.list().filter((p) => p.status === "running" && p.backend === "tmux" && p.tmuxSession)
       .map((p) => p.tmuxSession),
   );
-  for (const s of sessions) {
-    if (s.name.startsWith("agent_tide_shell_") && !liveAttached.has(s.name)) {
-      tmuxSession = s.name;
+  let tmuxTarget: string | null = null;
+  for (const w of windows) {
+    if (!liveTargets.has(w.target)) {
+      tmuxTarget = w.target;
       break;
     }
   }
-
-  // If no reusable session, create one with the next available index.
-  if (!tmuxSession) {
-    let idx = 0;
-    while (takenNames.has(`agent_tide_shell_${idx}`)) idx++;
-    tmuxSession = `agent_tide_shell_${idx}`;
-    try {
-      await tmuxNewSessionDetached(tmuxSession, shell);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      if (message.startsWith("shell must")) {
-        reply.code(400);
-        return { error: message };
-      }
-      throw err;
-    }
+  if (!tmuxTarget) {
+    tmuxTarget = await tmuxCreateWindow(SESSION_NAME, shell);
   }
 
   const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
     name,
     backend: "tmux",
-    tmuxSession,
+    tmuxSession: tmuxTarget,
     command: "tmux",
-    args: tmuxAttachArgs(tmuxSession),
+    args: tmuxAttachArgs(tmuxTarget),
     cols: 120,
     rows: 30,
   });
   store.upsertSession(summary);
-  fastify.log.info({ ptyId: summary.id, shell, backend, tmuxSession }, "shell spawned");
+  fastify.log.info({ ptyId: summary.id, shell, backend, tmuxSession: tmuxTarget }, "shell spawned");
   await broadcastPtyList();
   return { id: summary.id };
 });
@@ -513,7 +512,7 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
 
   if (summary.backend === "tmux" && summary.tmuxSession) {
     try {
-      await tmuxKillSession(summary.tmuxSession);
+      await tmuxKillWindow(summary.tmuxSession);
     } catch {
       // If it's already gone, continue with local cleanup.
     }
@@ -566,7 +565,7 @@ async function restorePersistentTmuxSessions(): Promise<void> {
     if (ptys.getSummary(s.id)) continue;
 
     const server = await tmuxLocateSession(s.tmuxSession);
-    if (!server) {
+    if (!server || !(await tmuxTargetExists(s.tmuxSession, server))) {
       s.status = "exited";
       store.upsertSession(s);
       continue;

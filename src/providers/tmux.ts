@@ -8,7 +8,7 @@ import {
   tmuxAttachArgs,
   tmuxCapturePaneVisible,
   tmuxCheckSessionConfig,
-  tmuxKillSession,
+  tmuxKillWindow,
   tmuxListSessions,
   tmuxLocateSession,
   tmuxNewSessionDetached,
@@ -133,9 +133,9 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
     if (!summary) return;
     if (summary.backend === "tmux" && summary.tmuxSession) {
       try {
-        await tmuxKillSession(summary.tmuxSession);
+        await tmuxKillWindow(summary.tmuxSession);
       } catch {
-        // If the tmux session is already gone we still kill local attachment.
+        // If the tmux window is already gone we still kill local attachment.
       }
     }
     this.deps.ptys.kill(request.id);
