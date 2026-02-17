@@ -20,17 +20,18 @@ import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
 import {
   tmuxApplySessionUiOptions,
-  tmuxAttachArgs,
   tmuxCreateLinkedSession,
   tmuxCapturePaneVisible,
   tmuxCheckSessionConfig,
   tmuxCreateWindow,
   tmuxEnsureSession,
+  tmuxIsLinkedViewSession,
   tmuxKillSession,
   tmuxKillWindow,
   tmuxListSessions,
   tmuxListWindows,
   tmuxLocateSession,
+  tmuxPruneDetachedLinkedSessions,
   tmuxScrollHistory,
   tmuxTargetSession,
   type TmuxServer,
@@ -394,7 +395,8 @@ fastify.get("/api/readiness/trace", async (req) => {
 });
 
 fastify.get("/api/tmux/sessions", async () => {
-  const sessions = await tmuxListSessions();
+  const sessions = (await tmuxListSessions())
+    .filter((s) => !(s.server === "agent_tide" && tmuxIsLinkedViewSession(s.name, AGENT_TIDE_SESSION)));
   return { sessions };
 });
 
@@ -655,6 +657,10 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
     reply.code(409);
     return { error: `tmux session exists on ${located}, not ${requestedServer}` };
   }
+  if (located === "agent_tide" && tmuxIsLinkedViewSession(name, AGENT_TIDE_SESSION)) {
+    reply.code(400);
+    return { error: "internal linked session cannot be attached directly" };
+  }
   const server: TmuxServer = located;
   try {
     await tmuxApplySessionUiOptions(name, server);
@@ -740,6 +746,10 @@ async function restoreAtStartup(): Promise<void> {
   // Ensure the single agent_tide tmux session exists (creates it if missing).
   const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
   await tmuxEnsureSession(AGENT_TIDE_SESSION, shell);
+  const pruned = await tmuxPruneDetachedLinkedSessions(AGENT_TIDE_SESSION);
+  if (pruned.length > 0) {
+    fastify.log.info({ count: pruned.length }, "pruned stale linked tmux sessions");
+  }
   // Reconcile agent_tide tmux windows — any existing window gets an attachment
   // PTY; stale PTYs are cleaned up.
   await reconcileTmuxAttachments();
