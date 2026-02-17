@@ -518,6 +518,7 @@ function onServerMsg(msg: ServerMsg): void {
     }
 
     updateTerminalVisibility();
+    reflowActiveTerm();
     renderList();
     return;
   }
@@ -1003,16 +1004,9 @@ function setActive(ptyId: string): void {
   subscribeIfNeeded(ptyId);
   requestAnimationFrame(() => {
     fitAndResizeActive();
+    reflowActiveTerm();
     const st = terms.get(ptyId);
-    if (st) {
-      // Force xterm.js to reflow the buffer — a plain refresh() only
-      // re-renders the viewport without recalculating line wrapping,
-      // which leaves garbled output after a page reload.  Scrolling by
-      // +1/−1 triggers a full reflow just like a manual wheel scroll.
-      st.term.scrollLines(-1);
-      st.term.scrollLines(1);
-      st.term.focus();
-    }
+    if (st) st.term.focus();
   });
   renderList();
   renderInputContextBar();
@@ -1107,6 +1101,18 @@ function subscribeIfNeeded(ptyId: string): void {
   sendWsMessage({ type: "subscribe", ptyId });
 }
 
+// Force xterm.js to reflow the active terminal buffer.  A plain refresh()
+// only re-renders the viewport without recalculating line wrapping, which
+// leaves garbled output after reconnects and resizes.  Scrolling by +1/−1
+// triggers a full reflow just like a manual wheel scroll.
+function reflowActiveTerm(): void {
+  if (!activePtyId) return;
+  const st = terms.get(activePtyId);
+  if (!st) return;
+  st.term.scrollLines(-1);
+  st.term.scrollLines(1);
+}
+
 function updateTerminalVisibility(): void {
   const hasActive = Boolean(activePtyId);
   placeholderEl.classList.toggle("hidden", hasActive);
@@ -1133,10 +1139,10 @@ function fitAndResizeActive(): void {
 }
 
 const ro = new ResizeObserver(() => {
-  requestAnimationFrame(() => fitAndResizeActive());
+  requestAnimationFrame(() => { fitAndResizeActive(); reflowActiveTerm(); });
 });
 ro.observe(terminalEl);
-window.addEventListener("resize", () => fitAndResizeActive());
+window.addEventListener("resize", () => { fitAndResizeActive(); reflowActiveTerm(); });
 
 // --- Keybindings ---
 
