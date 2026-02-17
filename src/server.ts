@@ -21,10 +21,12 @@ import { TriggerLoader } from "./triggers/loader.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxAttachArgs,
+  tmuxCreateLinkedSession,
   tmuxCapturePaneVisible,
   tmuxCheckSessionConfig,
   tmuxCreateWindow,
   tmuxEnsureSession,
+  tmuxKillSession,
   tmuxKillWindow,
   tmuxListSessions,
   tmuxListWindows,
@@ -154,6 +156,9 @@ function isWsOriginAllowed(origin: string | undefined): boolean {
 const AGENT_TIDE_SESSION = "agent_tide";
 let reconciling = false;
 
+/** Track linked tmux sessions per PTY so we can clean them up on exit. */
+const linkedSessionsByPty = new Map<string, string>();
+
 async function reconcileTmuxAttachments(): Promise<void> {
   if (reconciling) return;
   reconciling = true;
@@ -184,15 +189,17 @@ async function reconcileTmuxAttachments(): Promise<void> {
     const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
     for (const w of windows) {
       if (!runningByTarget.has(w.target)) {
+        const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(w.target);
         const summary = ptys.spawn({
           name: `shell:${path.basename(shell)}`,
           backend: "tmux",
           tmuxSession: w.target,
           command: "tmux",
-          args: tmuxAttachArgs(w.target),
+          args: attachArgs,
           cols: 120,
           rows: 30,
         });
+        linkedSessionsByPty.set(summary.id, linkedSession);
         store.upsertSession(summary);
         fastify.log.info({ ptyId: summary.id, tmuxSession: w.target }, "reconcile: attached orphaned window");
       }
@@ -338,6 +345,13 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   readinessEngine.markExited(ptyId);
   fastify.log.info({ ptyId, code, signal }, "pty exited");
   broadcast({ type: "pty_exit", ptyId, code, signal });
+
+  // Clean up the linked tmux session for this PTY.
+  const linked = linkedSessionsByPty.get(ptyId);
+  if (linked) {
+    linkedSessionsByPty.delete(ptyId);
+    tmuxKillSession(linked).catch(() => {});
+  }
 
   // If this was a tmux attachment, reconcile after a brief delay to reattach
   // if the window still exists (or clean up if it doesn't).
@@ -525,6 +539,7 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
 
   // Create a new tmux window with the worktree as cwd
   const tmuxTarget = await tmuxCreateWindow(SESSION_NAME, shell, cwd);
+  const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(tmuxTarget);
 
   const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
@@ -532,10 +547,11 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     backend: "tmux",
     tmuxSession: tmuxTarget,
     command: "tmux",
-    args: tmuxAttachArgs(tmuxTarget),
+    args: attachArgs,
     cols: 120,
     rows: 30,
   });
+  linkedSessionsByPty.set(summary.id, linkedSession);
   store.upsertSession(summary);
   fastify.log.info({ ptyId: summary.id, agent, cwd, tmuxSession: tmuxTarget }, "launch: shell spawned");
   await broadcastPtyList();
@@ -599,16 +615,18 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
   if (!tmuxTarget) {
     tmuxTarget = await tmuxCreateWindow(AGENT_TIDE_SESSION, shell);
   }
+  const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(tmuxTarget);
   const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
     name,
     backend: "tmux",
     tmuxSession: tmuxTarget,
     command: "tmux",
-    args: tmuxAttachArgs(tmuxTarget),
+    args: attachArgs,
     cols: 120,
     rows: 30,
   });
+  linkedSessionsByPty.set(summary.id, linkedSession);
   store.upsertSession(summary);
   fastify.log.info({ ptyId: summary.id, shell, backend, tmuxSession: tmuxTarget }, "shell spawned");
   await broadcastPtyList();
@@ -644,15 +662,17 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
     // Ignore best-effort option sync; attach can continue.
   }
 
+  const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(name, server);
   const summary = ptys.spawn({
     name: `tmux:${name}`,
     backend: "tmux",
     tmuxSession: name,
     command: "tmux",
-    args: tmuxAttachArgs(name, server),
+    args: attachArgs,
     cols: 120,
     rows: 30,
   });
+  linkedSessionsByPty.set(summary.id, linkedSession);
   store.upsertSession(summary);
   broadcast({ type: "pty_list", ptys: ptys.list() });
   return { id: summary.id };

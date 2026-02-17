@@ -101,6 +101,43 @@ export async function tmuxLocateSession(target: string): Promise<TmuxServer | nu
   }
 }
 
+/**
+ * Create a linked session that shares windows with the target session but has
+ * its own independent active-window pointer.  This prevents PTY switches from
+ * affecting each other when multiple tmux attach clients are running.
+ *
+ * Returns the args needed to attach to the new linked session.
+ */
+export async function tmuxCreateLinkedSession(
+  windowTarget: string,
+  server: TmuxServer = "agent_tide",
+): Promise<{ linkedSession: string; attachArgs: string[] }> {
+  const session = tmuxTargetSession(windowTarget);
+  const linked = `${session}_view_${Date.now()}`;
+
+  // Create a grouped (linked) session sharing windows with the parent session.
+  // -d: don't attach, -t: group with parent session
+  const newArgs = ["new-session", "-d", "-s", linked, "-t", session];
+  if (server === "default") {
+    await tmuxDefault(newArgs);
+  } else {
+    await tmuxAgent(newArgs);
+  }
+
+  // Select the specific window in this linked session
+  const selectArgs = ["select-window", "-t", `${linked}:${windowTarget.split(":")[1]}`];
+  if (server === "default") {
+    await tmuxDefault(selectArgs);
+  } else {
+    await tmuxAgent(selectArgs);
+  }
+
+  const attachArgs = server === "default"
+    ? ["attach-session", "-t", linked]
+    : [...TMUX_BASE_ARGS, "attach-session", "-t", linked];
+  return { linkedSession: linked, attachArgs };
+}
+
 export function tmuxAttachArgs(name: string, server: TmuxServer = "agent_tide"): string[] {
   if (server === "default") return ["attach-session", "-t", name];
   return [...TMUX_BASE_ARGS, "attach-session", "-t", name];
