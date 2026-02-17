@@ -699,13 +699,11 @@ fastify.post("/api/triggers/reload", async () => {
 });
 
 async function restoreAtStartup(): Promise<void> {
-  // Reconcile agent_tide tmux windows — this is the sole restore mechanism.
-  // Any existing tmux window gets an attachment PTY; stale PTYs are cleaned up.
-  try {
-    await tmuxApplySessionUiOptions(AGENT_TIDE_SESSION);
-  } catch {
-    // Session may not exist yet; that's fine.
-  }
+  // Ensure the single agent_tide tmux session exists (creates it if missing).
+  const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
+  await tmuxEnsureSession(AGENT_TIDE_SESSION, shell);
+  // Reconcile agent_tide tmux windows — any existing window gets an attachment
+  // PTY; stale PTYs are cleaned up.
   await reconcileTmuxAttachments();
 }
 
