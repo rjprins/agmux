@@ -255,6 +255,7 @@ export class ReadinessEngine {
           readyState: st.state,
           readyIndicator: st.indicator,
           readyReason: st.reason,
+          readyStateChangedAt: st.updatedAt,
         };
       }),
     );

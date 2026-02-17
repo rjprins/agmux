@@ -14,6 +14,7 @@ export type PtySummary = {
   readyState?: PtyReadinessState;
   readyIndicator?: PtyReadinessIndicator;
   readyReason?: string | null;
+  readyStateChangedAt?: number | null;
   command: string;
   args: string[];
   cwd: string | null;
