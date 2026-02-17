@@ -16,6 +16,7 @@ type PtySummary = {
   readyState?: PtyReadinessState;
   readyIndicator?: PtyReadinessIndicator;
   readyReason?: string | null;
+  readyStateChangedAt?: number | null;
   command: string;
   args: string[];
   cwd: string | null;
@@ -128,11 +129,26 @@ const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
 type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator; reason: string };
 const ptyReady = new Map<string, PtyReadyInfo>();
+const ptyStateChangedAt = new Map<string, number>();
 const MAX_INPUT_HISTORY = 40;
+
+function formatElapsedTime(sinceMs: number): string {
+  const delta = Date.now() - sinceMs;
+  if (delta < 0) return "";
+  const secs = Math.floor(delta / 1000);
+  if (secs < 5) return "now";
+  if (secs < 60) return `${secs}s`;
+  const mins = Math.floor(secs / 60);
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+}
 
 function readinessFromSummary(p: PtySummary): PtyReadyInfo {
   const state = p.readyState ?? (typeof p.ready === "boolean" ? (p.ready ? "ready" : "busy") : "unknown");
   const indicator = p.readyIndicator ?? (state === "ready" ? "ready" : "busy");
+  if (p.readyStateChangedAt) ptyStateChangedAt.set(p.id, p.readyStateChangedAt);
   return { state, indicator, reason: String(p.readyReason ?? "") };
 }
 
@@ -408,6 +424,7 @@ function removeTerm(ptyId: string): void {
   ptyTitles.delete(ptyId);
   ptyInputLineBuffers.delete(ptyId);
   ptyReady.delete(ptyId);
+  ptyStateChangedAt.delete(ptyId);
 }
 
 function wsUrl(): string {
@@ -547,6 +564,9 @@ function onServerMsg(msg: ServerMsg): void {
     for (const ptyId of ptyReady.keys()) {
       if (!running.has(ptyId)) ptyReady.delete(ptyId);
     }
+    for (const ptyId of ptyStateChangedAt.keys()) {
+      if (!running.has(ptyId)) ptyStateChangedAt.delete(ptyId);
+    }
     for (const ptyId of terms.keys()) {
       if (!running.has(ptyId)) removeTerm(ptyId);
     }
@@ -579,6 +599,7 @@ function onServerMsg(msg: ServerMsg): void {
   }
   if (msg.type === "pty_ready") {
     ptyReady.set(msg.ptyId, { state: msg.state, indicator: msg.indicator, reason: msg.reason });
+    ptyStateChangedAt.set(msg.ptyId, msg.ts);
     if (msg.cwd != null) {
       const p = ptys.find((x) => x.id === msg.ptyId);
       if (p) p.cwd = msg.cwd;
@@ -1043,6 +1064,20 @@ function renderList(): void {
         primaryRow.appendChild(titleEl);
       }
 
+      const changedAt = ptyStateChangedAt.get(p.id);
+      if (changedAt) {
+        const elapsed = formatElapsedTime(changedAt);
+        if (elapsed) {
+          const timeBadge = document.createElement("span");
+          timeBadge.className = `time-badge ${readyInfo.state === "ready" ? "ready" : "busy"}`;
+          timeBadge.textContent = elapsed;
+          timeBadge.title = readyInfo.state === "ready"
+            ? `Ready for ${elapsed}`
+            : `Processing for ${elapsed}`;
+          primaryRow.appendChild(timeBadge);
+        }
+      }
+
       const secondary = document.createElement("div");
       secondary.className = "secondary";
       let secondaryText = "";
@@ -1361,6 +1396,9 @@ void (async () => {
     }
   }
 })();
+
+// Refresh sidebar every 5 seconds to keep time badges current.
+setInterval(() => renderList(), 5000);
 
 // Minimal debug hooks for e2e tests and local inspection.
 function dumpBuffer(st: TermState, maxLines = 120): string {

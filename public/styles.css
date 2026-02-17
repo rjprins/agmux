@@ -136,7 +136,8 @@ body {
 .sidebar.collapsed .pty-item .primary-row,
 .sidebar.collapsed .pty-item .secondary,
 .sidebar.collapsed .pty-item .pty-close,
-.sidebar.collapsed .pty-item .title-label {
+.sidebar.collapsed .pty-item .title-label,
+.sidebar.collapsed .pty-item .time-badge {
   display: none;
 }
 .sidebar.collapsed .pty-item .ready-dot.compact {
@@ -464,6 +465,26 @@ button:disabled {
   font-size: 10px;
 }
 
+.pty-item .time-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: 6px;
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.pty-item .time-badge.ready {
+  color: var(--ready);
+  background: rgba(95, 209, 140, 0.12);
+}
+
+.pty-item .time-badge.busy {
+  color: var(--busy);
+  background: rgba(255, 184, 112, 0.12);
+}
+
 .pty-item .title-label {
   color: var(--muted);
   font-size: 12px;
@@ -471,7 +492,6 @@ button:disabled {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-left: auto;
 }
 
 .pty-item .secondary {
