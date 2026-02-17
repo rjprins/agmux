@@ -722,6 +722,50 @@ function compactWhitespace(s: string): string {
 
 const AGENT_CHOICES = ["claude", "codex", "aider", "goose", "opencode", "cursor-agent", "shell"];
 
+type OptionDef =
+  | { type: "select"; flag: string; label: string; choices: { value: string; label: string }[]; defaultValue: string }
+  | { type: "checkbox"; flag: string; label: string; defaultChecked: boolean };
+
+/** Per-agent launch options, matching the actual CLI flags. */
+const AGENT_OPTIONS: Record<string, OptionDef[]> = {
+  claude: [
+    {
+      type: "select", flag: "--permission-mode", label: "Permission mode",
+      defaultValue: "default",
+      choices: [
+        { value: "default", label: "default" },
+        { value: "acceptEdits", label: "acceptEdits" },
+        { value: "bypassPermissions", label: "bypassPermissions" },
+        { value: "plan", label: "plan" },
+      ],
+    },
+    { type: "checkbox", flag: "--dangerously-skip-permissions", label: "--dangerously-skip-permissions", defaultChecked: true },
+  ],
+  codex: [
+    {
+      type: "select", flag: "--ask-for-approval", label: "Ask for approval",
+      defaultValue: "on-request",
+      choices: [
+        { value: "untrusted", label: "untrusted" },
+        { value: "on-failure", label: "on-failure" },
+        { value: "on-request", label: "on-request" },
+        { value: "never", label: "never" },
+      ],
+    },
+    {
+      type: "select", flag: "--sandbox", label: "Sandbox",
+      defaultValue: "workspace-write",
+      choices: [
+        { value: "read-only", label: "read-only" },
+        { value: "workspace-write", label: "workspace-write" },
+        { value: "danger-full-access", label: "danger-full-access" },
+      ],
+    },
+    { type: "checkbox", flag: "--full-auto", label: "--full-auto", defaultChecked: true },
+    { type: "checkbox", flag: "--dangerously-bypass-approvals-and-sandbox", label: "--dangerously-bypass-approvals-and-sandbox", defaultChecked: false },
+  ],
+};
+
 function generateBranchName(): string {
   const now = new Date();
   const yy = String(now.getFullYear()).slice(2);
@@ -767,6 +811,81 @@ function openLaunchModal(groupCwd: string): void {
   agentLabel.appendChild(agentSelect);
   modal.appendChild(agentLabel);
 
+  // Agent options container (populated dynamically per agent)
+  const optionsContainer = document.createElement("div");
+  optionsContainer.className = "launch-modal-options";
+  modal.appendChild(optionsContainer);
+
+  /**
+   * Saved flag values per agent, e.g. { claude: { "--permission-mode": "default", "--dangerously-skip-permissions": true } }
+   * Persisted to/from the server so they survive across sessions.
+   */
+  const savedFlags: Record<string, Record<string, string | boolean>> = {};
+
+  /** Currently rendered controls, keyed by flag name. */
+  let activeControls: Map<string, HTMLSelectElement | HTMLInputElement> = new Map();
+
+  function collectCurrentFlags(agent: string): void {
+    if (!activeControls.size) return;
+    const flags: Record<string, string | boolean> = {};
+    for (const [flag, el] of activeControls) {
+      flags[flag] = el instanceof HTMLSelectElement ? el.value : el.checked;
+    }
+    savedFlags[agent] = flags;
+  }
+
+  function buildOptionsUI(agent: string): void {
+    optionsContainer.textContent = "";
+    activeControls = new Map();
+    const defs = AGENT_OPTIONS[agent];
+    if (!defs || defs.length === 0) return;
+
+    const saved = savedFlags[agent] ?? {};
+
+    for (const def of defs) {
+      if (def.type === "select") {
+        const label = document.createElement("label");
+        label.textContent = def.label;
+        label.className = "launch-modal-label";
+        const select = document.createElement("select");
+        select.className = "launch-modal-select";
+        for (const c of def.choices) {
+          const opt = document.createElement("option");
+          opt.value = c.value;
+          opt.textContent = c.label;
+          select.appendChild(opt);
+        }
+        const savedVal = saved[def.flag];
+        select.value = typeof savedVal === "string" ? savedVal : def.defaultValue;
+        label.appendChild(select);
+        optionsContainer.appendChild(label);
+        activeControls.set(def.flag, select);
+      } else {
+        const label = document.createElement("label");
+        label.className = "launch-modal-label launch-modal-checkbox-label";
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        const savedVal = saved[def.flag];
+        checkbox.checked = typeof savedVal === "boolean" ? savedVal : def.defaultChecked;
+        const text = document.createElement("span");
+        text.textContent = def.label;
+        label.appendChild(checkbox);
+        label.appendChild(text);
+        optionsContainer.appendChild(label);
+        activeControls.set(def.flag, checkbox);
+      }
+    }
+  }
+
+  let previousAgent = agentSelect.value;
+  buildOptionsUI(previousAgent);
+
+  agentSelect.addEventListener("change", () => {
+    collectCurrentFlags(previousAgent);
+    previousAgent = agentSelect.value;
+    buildOptionsUI(agentSelect.value);
+  });
+
   // Worktree select
   const wtLabel = document.createElement("label");
   wtLabel.textContent = "Worktree";
@@ -797,6 +916,23 @@ function openLaunchModal(groupCwd: string): void {
   wtSelect.addEventListener("change", () => {
     branchLabel.classList.toggle("hidden", wtSelect.value !== "__new__");
   });
+
+  // Load saved launch preferences
+  authFetch("/api/launch-preferences")
+    .then((r) => r.ok ? r.json() : {})
+    .then((prefs: { agent?: string; flags?: Record<string, Record<string, string | boolean>> }) => {
+      if (prefs.flags && typeof prefs.flags === "object") {
+        for (const [a, f] of Object.entries(prefs.flags)) {
+          if (f && typeof f === "object") savedFlags[a] = f;
+        }
+      }
+      if (prefs.agent && AGENT_CHOICES.includes(prefs.agent)) {
+        agentSelect.value = prefs.agent;
+        previousAgent = prefs.agent;
+      }
+      buildOptionsUI(agentSelect.value);
+    })
+    .catch(() => {});
 
   // Fetch worktrees and populate
   fetch("/api/worktrees")
@@ -859,6 +995,10 @@ function openLaunchModal(groupCwd: string): void {
     const worktree = wtSelect.value;
     const branch = worktree === "__new__" ? (branchInput.value.trim() || generatedBranch) : undefined;
 
+    // Collect current flag values
+    collectCurrentFlags(agent);
+    const agentFlags = savedFlags[agent] ?? {};
+
     if (!agent || !worktree) return;
 
     launchBtn.disabled = true;
@@ -867,7 +1007,7 @@ function openLaunchModal(groupCwd: string): void {
     authFetch("/api/ptys/launch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent, worktree, branch }),
+      body: JSON.stringify({ agent, worktree, branch, flags: agentFlags }),
     })
       .then((r) => {
         if (!r.ok) return r.json().then((d: { error?: string }) => Promise.reject(new Error(d.error ?? "Launch failed")));

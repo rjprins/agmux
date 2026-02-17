@@ -775,7 +775,21 @@ button:disabled {
   color: var(--muted);
 }
 
-.launch-modal-branch.hidden {
+.launch-modal-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.launch-modal-checkbox-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.launch-modal-branch.hidden,
+.launch-modal-label.hidden {
   display: none;
 }
 
