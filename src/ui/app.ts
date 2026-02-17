@@ -1,7 +1,6 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { WebglAddon } from "@xterm/addon-webgl";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -283,7 +282,6 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
   term.open(container);
-  try { term.loadAddon(new WebglAddon()); } catch { /* fallback to DOM renderer */ }
 
   // For tmux PTYs, intercept wheel events and scroll tmux history instead.
   container.addEventListener(
@@ -897,9 +895,8 @@ function renderList(): void {
 
     const title = (ptyTitles.get(p.id) ?? "").trim();
     const activeProcess = compactWhitespace(p.activeProcess ?? "");
-    const inputHint = compactWhitespace(ptyInputProcessHints.get(p.id) ?? "");
     const process =
-      (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || inputHint || activeProcess || title || p.name;
+      (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name;
     const inputPreview = ptyLastInput.get(p.id) ?? "";
     const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
     li.classList.add(`state-${readyInfo.state}`);
