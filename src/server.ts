@@ -30,7 +30,7 @@ import {
   tmuxListWindows,
   tmuxLocateSession,
   tmuxScrollHistory,
-  tmuxTargetExists,
+  tmuxTargetSession,
   type TmuxServer,
 } from "./tmux.js";
 
@@ -134,11 +134,67 @@ function isWsOriginAllowed(origin: string | undefined): boolean {
   return WS_ALLOWED_ORIGINS.has(origin.toLowerCase());
 }
 
-function mergePtys(live: PtySummary[], persisted: PtySummary[]): PtySummary[] {
-  const byId = new Map<string, PtySummary>();
-  for (const p of persisted) byId.set(p.id, p);
-  for (const p of live) byId.set(p.id, p);
-  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
+// ---------------------------------------------------------------------------
+// Tmux reconciliation: tmux windows are the source of truth.
+// Ensures exactly one running PTY attachment per agent_tide window.
+// ---------------------------------------------------------------------------
+const AGENT_TIDE_SESSION = "agent_tide";
+let reconciling = false;
+
+async function reconcileTmuxAttachments(): Promise<void> {
+  if (reconciling) return;
+  reconciling = true;
+  try {
+    const windows = await tmuxListWindows(AGENT_TIDE_SESSION);
+    const windowTargets = new Set(windows.map((w) => w.target));
+
+    // Map target → ptyId for running agent_tide PTYs.
+    const runningByTarget = new Map<string, string>();
+    for (const p of ptys.list()) {
+      if (
+        p.backend === "tmux" &&
+        p.status === "running" &&
+        p.tmuxSession &&
+        tmuxTargetSession(p.tmuxSession) === AGENT_TIDE_SESSION
+      ) {
+        if (runningByTarget.has(p.tmuxSession)) {
+          // Duplicate! Kill the newer one.
+          ptys.kill(p.id);
+          fastify.log.info({ ptyId: p.id, tmuxSession: p.tmuxSession }, "killed duplicate PTY for same window");
+          continue;
+        }
+        runningByTarget.set(p.tmuxSession, p.id);
+      }
+    }
+
+    // Spawn attachments for orphaned windows (window exists, no PTY).
+    const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
+    for (const w of windows) {
+      if (!runningByTarget.has(w.target)) {
+        const summary = ptys.spawn({
+          name: `shell:${path.basename(shell)}`,
+          backend: "tmux",
+          tmuxSession: w.target,
+          command: "tmux",
+          args: tmuxAttachArgs(w.target),
+          cols: 120,
+          rows: 30,
+        });
+        store.upsertSession(summary);
+        fastify.log.info({ ptyId: summary.id, tmuxSession: w.target }, "reconcile: attached orphaned window");
+      }
+    }
+
+    // Kill PTYs whose target window no longer exists.
+    for (const [target, ptyId] of runningByTarget) {
+      if (!windowTargets.has(target)) {
+        ptys.kill(ptyId);
+        fastify.log.info({ ptyId, tmuxSession: target }, "reconcile: killed PTY for missing window");
+      }
+    }
+  } finally {
+    reconciling = false;
+  }
 }
 
 type ReadinessTraceEntry = PtyReadyEvent & { seq: number };
@@ -181,7 +237,7 @@ const logWatcher = new ClaudeLogWatcher({
 });
 
 async function listPtys(): Promise<PtySummary[]> {
-  return readinessEngine.withActiveProcesses(mergePtys(ptys.list(), store.listSessions()));
+  return readinessEngine.withActiveProcesses(ptys.list());
 }
 
 async function broadcastPtyList(): Promise<void> {
@@ -270,33 +326,13 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   fastify.log.info({ ptyId, code, signal }, "pty exited");
   broadcast({ type: "pty_exit", ptyId, code, signal });
 
-  // If this PTY is an attachment to a persistent tmux session, try to reattach.
-  // This keeps "agent is alive" semantics separate from an individual server-side PTY attachment.
+  // If this was a tmux attachment, reconcile after a brief delay to reattach
+  // if the window still exists (or clean up if it doesn't).
   if (summary?.backend === "tmux" && summary.tmuxSession) {
     void (async () => {
-      const server = await tmuxLocateSession(summary.tmuxSession!);
-      if (!server) return;
-      // Verify the specific window target still exists before reattaching.
-      if (!(await tmuxTargetExists(summary.tmuxSession!, server))) return;
-      try {
-        await tmuxApplySessionUiOptions(summary.tmuxSession!, server);
-      } catch {
-        // ignore best-effort session option sync
-      }
       // Small delay to avoid tight loops if tmux is unstable.
       await new Promise((r) => setTimeout(r, 250));
-      const re = ptys.spawn({
-        id: summary.id,
-        createdAt: summary.createdAt,
-        name: summary.name,
-        backend: "tmux",
-        tmuxSession: summary.tmuxSession,
-        command: "tmux",
-        args: tmuxAttachArgs(summary.tmuxSession!, server),
-        cols: 120,
-        rows: 30,
-      });
-      store.upsertSession(re);
+      await reconcileTmuxAttachments();
       await broadcastPtyList();
     })();
   }
@@ -512,14 +548,13 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     });
     store.upsertSession(summary);
     fastify.log.info({ ptyId: summary.id, shell, backend }, "shell spawned");
-    broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+    broadcast({ type: "pty_list", ptys: ptys.list() });
     return { id: summary.id };
   }
 
   // Use a single tmux session with one window per shell.
-  const SESSION_NAME = "agent_tide";
   try {
-    await tmuxEnsureSession(SESSION_NAME, shell);
+    await tmuxEnsureSession(AGENT_TIDE_SESSION, shell);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith("shell must")) {
@@ -529,23 +564,23 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     throw err;
   }
 
-  // Find a window not currently attached by a live PTY, or create a new one.
-  const windows = await tmuxListWindows(SESSION_NAME);
-  const liveTargets = new Set(
-    ptys.list().filter((p) => p.status === "running" && p.backend === "tmux" && p.tmuxSession)
+  // Reuse an unattached window (e.g. from session creation) or create a new one.
+  const windows = await tmuxListWindows(AGENT_TIDE_SESSION);
+  const attachedTargets = new Set(
+    ptys.list()
+      .filter((p) => p.backend === "tmux" && p.tmuxSession)
       .map((p) => p.tmuxSession),
   );
   let tmuxTarget: string | null = null;
   for (const w of windows) {
-    if (!liveTargets.has(w.target)) {
+    if (!attachedTargets.has(w.target)) {
       tmuxTarget = w.target;
       break;
     }
   }
   if (!tmuxTarget) {
-    tmuxTarget = await tmuxCreateWindow(SESSION_NAME, shell);
+    tmuxTarget = await tmuxCreateWindow(AGENT_TIDE_SESSION, shell);
   }
-
   const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
     name,
@@ -601,7 +636,7 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
     rows: 30,
   });
   store.upsertSession(summary);
-  broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
+  broadcast({ type: "pty_list", ptys: ptys.list() });
   return { id: summary.id };
 });
 
@@ -663,37 +698,15 @@ fastify.post("/api/triggers/reload", async () => {
   return { ok: true };
 });
 
-async function restorePersistentTmuxSessions(): Promise<void> {
-  const persisted = store.listSessions(500);
-  for (const s of persisted) {
-    if (s.backend !== "tmux" || !s.tmuxSession) continue;
-    if (ptys.getSummary(s.id)) continue;
-
-    const server = await tmuxLocateSession(s.tmuxSession);
-    if (!server || !(await tmuxTargetExists(s.tmuxSession, server))) {
-      s.status = "exited";
-      store.upsertSession(s);
-      continue;
-    }
-    try {
-      await tmuxApplySessionUiOptions(s.tmuxSession, server);
-    } catch {
-      // ignore best-effort session option sync
-    }
-
-    const attached = ptys.spawn({
-      id: s.id,
-      createdAt: s.createdAt,
-      name: s.name,
-      backend: "tmux",
-      tmuxSession: s.tmuxSession,
-      command: "tmux",
-      args: tmuxAttachArgs(s.tmuxSession, server),
-      cols: 120,
-      rows: 30,
-    });
-    store.upsertSession(attached);
+async function restoreAtStartup(): Promise<void> {
+  // Reconcile agent_tide tmux windows — this is the sole restore mechanism.
+  // Any existing tmux window gets an attachment PTY; stale PTYs are cleaned up.
+  try {
+    await tmuxApplySessionUiOptions(AGENT_TIDE_SESSION);
+  } catch {
+    // Session may not exist yet; that's fine.
   }
+  await reconcileTmuxAttachments();
 }
 
 // Minimal static serving from /public
@@ -845,7 +858,7 @@ wss.on("connection", (ws) => {
   // Initial list.
   void listPtys()
     .then((items) => send(ws, { type: "pty_list", ptys: items }))
-    .catch(() => send(ws, { type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) }));
+    .catch(() => send(ws, { type: "pty_list", ptys: ptys.list() }));
 
   ws.on("message", (raw) => {
     const msg = parseWsMessage(raw);
@@ -935,7 +948,7 @@ function openBrowser(url: string): void {
 // Boot
 await loadTriggersAndBroadcast("startup");
 triggerLoader.watch(() => void loadTriggersAndBroadcast("watch"));
-await restorePersistentTmuxSessions();
+await restoreAtStartup();
 
 await fastify.listen({ host: HOST, port: PORT });
 
