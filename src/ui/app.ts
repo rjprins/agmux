@@ -201,7 +201,6 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
 const btnNew = $("btn-new") as HTMLButtonElement;
 const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
 btnNew.disabled = true;
-tmuxSessionSelect.disabled = true;
 
 type TermState = {
   ptyId: string;
@@ -590,7 +589,6 @@ async function refreshTmuxSessions(): Promise<void> {
     opt.textContent = "(no tmux sessions)";
     tmuxSessionSelect.appendChild(opt);
     tmuxSessionSelect.value = "";
-    tmuxSessionSelect.disabled = true;
     return;
   }
 
@@ -899,7 +897,7 @@ function renderList(): void {
     return ba.localeCompare(bb);
   });
 
-  const showHeaders = sortedKeys.length > 1;
+  const showHeaders = sortedKeys.length >= 1;
 
   for (const key of sortedKeys) {
     if (showHeaders) {
@@ -1011,8 +1009,8 @@ function setActive(ptyId: string): void {
       // re-renders the viewport without recalculating line wrapping,
       // which leaves garbled output after a page reload.  Scrolling by
       // +1/−1 triggers a full reflow just like a manual wheel scroll.
-      st.term.scrollLines(1);
       st.term.scrollLines(-1);
+      st.term.scrollLines(1);
       st.term.focus();
     }
   });
@@ -1036,6 +1034,7 @@ async function newShell(): Promise<void> {
   const json = (await res.json()) as { id: string };
   addEvent(`Created PTY ${json.id}`);
   await refreshList();
+  refreshTmuxSessions().catch(() => {});
   setActive(json.id);
 }
 

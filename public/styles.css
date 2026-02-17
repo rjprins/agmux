@@ -41,6 +41,8 @@ body {
   padding: 16px;
   overflow-y: auto;
   overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 .brand .title {
@@ -73,8 +75,15 @@ body {
 
 .controls {
   display: flex;
-  gap: 8px;
-  margin: 14px 0 18px;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 16px;
+  padding-bottom: 0;
+  margin-bottom: -16px;
+  margin-left: -16px;
+  margin-right: -16px;
+  padding-left: 16px;
+  padding-right: 16px;
 }
 
 button {
@@ -162,6 +171,9 @@ button:disabled {
 
 .section {
   margin-top: 16px;
+  flex: 1;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .section-title {
