@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 import process from "node:process";
 import { WebSocketServer } from "ws";
@@ -53,7 +53,7 @@ const WS_ALLOWED_ORIGINS = new Set(
   ].map((v) => v.toLowerCase()),
 );
 
-const fastify = Fastify({ logger: true });
+const fastify = Fastify({ logger: true, disableRequestLogging: true });
 
 const store = new SqliteStore(DB_PATH);
 const ptys = new PtyManager();
@@ -249,6 +249,7 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
   const summary = ptys.getSummary(ptyId);
   if (summary) store.upsertSession(summary);
   readinessEngine.markExited(ptyId);
+  fastify.log.info({ ptyId, code, signal }, "pty exited");
   broadcast({ type: "pty_exit", ptyId, code, signal });
 
   // If this PTY is an attachment to a persistent tmux session, try to reattach.
@@ -382,6 +383,7 @@ fastify.post("/api/ptys", async (req, reply) => {
     rows,
   });
   store.upsertSession(summary);
+  fastify.log.info({ ptyId: summary.id, command, args }, "pty spawned");
   await broadcastPtyList();
   return { id: summary.id };
 });
@@ -399,21 +401,47 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
       rows: 30,
     });
     store.upsertSession(summary);
+    fastify.log.info({ ptyId: summary.id, shell, backend }, "shell spawned");
     broadcast({ type: "pty_list", ptys: mergePtys(ptys.list(), store.listSessions()) });
     return { id: summary.id };
   }
 
-  const tmuxSession = `agent_tide_${randomUUID()}`;
-  try {
-    await tmuxNewSessionDetached(tmuxSession, shell);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.startsWith("shell must")) {
-      reply.code(400);
-      return { error: message };
+  // Pick a deterministic session name so we reuse existing tmux sessions
+  // instead of leaving orphans behind on every server restart.
+  const sessions = await tmuxListSessions();
+  const takenNames = new Set(sessions.map((s) => s.name));
+  let tmuxSession: string | null = null;
+
+  // First, try to reuse an existing agent_tide_shell_* session that isn't
+  // already attached by a live PTY.
+  const liveAttached = new Set(
+    ptys.list().filter((p) => p.status === "running" && p.backend === "tmux" && p.tmuxSession)
+      .map((p) => p.tmuxSession),
+  );
+  for (const s of sessions) {
+    if (s.name.startsWith("agent_tide_shell_") && !liveAttached.has(s.name)) {
+      tmuxSession = s.name;
+      break;
     }
-    throw err;
   }
+
+  // If no reusable session, create one with the next available index.
+  if (!tmuxSession) {
+    let idx = 0;
+    while (takenNames.has(`agent_tide_shell_${idx}`)) idx++;
+    tmuxSession = `agent_tide_shell_${idx}`;
+    try {
+      await tmuxNewSessionDetached(tmuxSession, shell);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.startsWith("shell must")) {
+        reply.code(400);
+        return { error: message };
+      }
+      throw err;
+    }
+  }
+
   const name = `shell:${path.basename(shell)}`;
   const summary = ptys.spawn({
     name,
@@ -425,6 +453,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     rows: 30,
   });
   store.upsertSession(summary);
+  fastify.log.info({ ptyId: summary.id, shell, backend, tmuxSession }, "shell spawned");
   await broadcastPtyList();
   return { id: summary.id };
 });
@@ -490,6 +519,7 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
     }
   }
   ptys.kill(id);
+  fastify.log.info({ ptyId: id }, "pty killed");
 
   // If there is no live PTY process (e.g. server restarted but didn't attach yet),
   // ensure metadata reflects the kill immediately.
@@ -739,6 +769,9 @@ wss.on("connection", (ws) => {
     if (msg.type === "input") {
       readinessEngine.markInput(msg.ptyId, msg.data);
       ptys.write(msg.ptyId, msg.data);
+      const preview = msg.data.length > 200 ? `${msg.data.slice(0, 200)}…` : msg.data;
+      const printable = preview.replace(/[\x00-\x1f]+/g, " ").trim();
+      if (printable) fastify.log.info({ ptyId: msg.ptyId }, `input: ${printable}`);
       return;
     }
     if (msg.type === "resize") {

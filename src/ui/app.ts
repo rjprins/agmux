@@ -199,10 +199,8 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
 // Input history is loaded from the server after auth; see boot sequence below.
 
 const btnNew = $("btn-new") as HTMLButtonElement;
-const btnReloadTriggers = $("btn-reload-triggers") as HTMLButtonElement;
 const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
 btnNew.disabled = true;
-btnReloadTriggers.disabled = true;
 tmuxSessionSelect.disabled = true;
 
 type TermState = {
@@ -1082,14 +1080,6 @@ tmuxSessionSelect.addEventListener("focus", () => {
   });
 });
 
-btnReloadTriggers.addEventListener("click", async () => {
-  const res = await authFetch("/api/triggers/reload", { method: "POST" });
-  if (!res.ok) {
-    addEvent(`Trigger reload failed: ${await readApiError(res)}`);
-    return;
-  }
-  addEvent("Requested trigger reload");
-});
 
 function toggleInputHistory(): void {
   if (!activePtyId) return;
@@ -1249,7 +1239,6 @@ void (async () => {
     await loadPtyInputMeta();
     connectWs();
     btnNew.disabled = false;
-    btnReloadTriggers.disabled = false;
     await refreshTmuxSessions();
   } catch (err) {
     addEvent(`Failed to initialize session: ${errorMessage(err)}`);

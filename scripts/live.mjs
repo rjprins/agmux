@@ -71,7 +71,7 @@ const child = spawn("go", args, {
 
 child.on("exit", (code) => process.exit(code ?? 1));
 
-// Open the browser once from the launcher.
+// Open the browser once the server is actually listening.
 const appUrl = `http://127.0.0.1:${appPort}`;
 // eslint-disable-next-line no-console
 console.log(`app: ${appUrl}`);
@@ -83,5 +83,21 @@ if (process.env.AGENT_TIDE_NO_OPEN !== "1") {
       : process.platform === "win32"
         ? ["cmd", ["/c", "start", appUrl]]
         : ["xdg-open", [appUrl]];
-  execFile(open[0], open[1], () => {});
+
+  // Poll until the server responds before opening the browser.
+  const poll = async () => {
+    for (let i = 0; i < 120; i++) {
+      try {
+        const res = await fetch(appUrl);
+        if (res.ok) return true;
+      } catch {
+        // Server not ready yet.
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    return false;
+  };
+  poll().then((ok) => {
+    if (ok) execFile(open[0], open[1], () => {});
+  });
 }

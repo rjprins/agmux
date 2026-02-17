@@ -1,6 +1,6 @@
 import path from "node:path";
 import process from "node:process";
-import { randomUUID } from "node:crypto";
+
 import type { PtyManager } from "../pty/manager.js";
 import type { PtySummary } from "../types.js";
 import {
@@ -86,7 +86,7 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
     const shell = request.command.trim();
     if (!shell) throw new Error("tmux provider start requires a shell command");
 
-    const sessionName = getMetadataString(request.metadata, "tmuxSession") ?? `agent_tide_${randomUUID()}`;
+    const sessionName = getMetadataString(request.metadata, "tmuxSession") ?? `agent_tide_shell_${Date.now()}`;
     await tmuxNewSessionDetached(sessionName, shell);
     return this.spawnAttachedSession({
       id: request.id,
