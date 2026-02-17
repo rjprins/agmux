@@ -1,9 +1,17 @@
 {
   "name": "agent-tide",
   "version": "1.0.0",
-  "description": "",
-  "private": true,
+  "description": "Local web UI for managing agent terminal sessions with live streaming, triggers, and readiness detection",
   "main": "dist/server.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rjprins/agent-tide.git"
+  },
+  "homepage": "https://github.com/rjprins/agent-tide",
+  "bugs": {
+    "url": "https://github.com/rjprins/agent-tide/issues"
+  },
+  "author": "Rutger Prins",
   "scripts": {
     "app": "node scripts/build-ui.mjs && node --import tsx src/server.ts",
     "app:watch": "node scripts/build-ui.mjs && node --watch --import tsx src/server.ts",
@@ -18,9 +26,8 @@
     "e2e:debug": "PWDEBUG=1 playwright test --headed",
     "test": "vitest run"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "keywords": ["terminal", "pty", "agent", "tmux", "websocket", "cli"],
+  "license": "MIT",
   "type": "module",
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
