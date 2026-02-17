@@ -31,6 +31,7 @@ type PtyReadyState = {
   busyDelayTimer: NodeJS.Timeout | null;
   modeHint: SessionMode | null;
   agentFamilyHint: AgentFamily | null;
+  lastCwd: string | null;
 };
 
 export type PtyReadyEvent = {
@@ -313,6 +314,7 @@ export class ReadinessEngine {
       busyDelayTimer: null,
       modeHint: null,
       agentFamilyHint: null,
+      lastCwd: null,
     };
     this.readinessByPty.set(ptyId, st);
     return st;
@@ -376,13 +378,15 @@ export class ReadinessEngine {
     const st = this.ensureReadiness(ptyId);
     const indicator =
       state === "ready" ? "ready" : state === "busy" ? "busy" : (indicatorOverride ?? st.indicator);
-    if (st.state === state && st.reason === reason && st.indicator === indicator) return;
+    const cwd = this.deps.ptys.getSummary(ptyId)?.cwd ?? null;
+    const cwdChanged = cwd !== st.lastCwd;
+    if (st.state === state && st.reason === reason && st.indicator === indicator && !cwdChanged) return;
     st.state = state;
     st.indicator = indicator;
     st.reason = reason;
+    st.lastCwd = cwd;
     st.updatedAt = Date.now();
     if (!emitEvent) return;
-    const cwd = this.deps.ptys.getSummary(ptyId)?.cwd ?? null;
     this.deps.emitReadiness({
       ptyId,
       state,
