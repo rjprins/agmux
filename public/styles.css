@@ -44,7 +44,7 @@ body {
 #app {
   height: 100%;
   display: grid;
-  grid-template-columns: 360px 1fr;
+  grid-template-columns: 280px 1fr;
   min-width: 0;
   transition: grid-template-columns 0.2s ease;
 }
@@ -55,7 +55,7 @@ body {
 .sidebar {
   border-right: 1px solid var(--line);
   background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
-  padding: 16px;
+  padding: 12px;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
@@ -154,8 +154,8 @@ body {
 }
 
 .brand .title {
-  font-size: 18px;
-  letter-spacing: 0.4px;
+  font-size: 15px;
+  letter-spacing: 0.3px;
 }
 
 .brand-row {
@@ -172,8 +172,8 @@ body {
   background: var(--overlay);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 4px 6px;
+  border-radius: 6px;
+  padding: 3px 6px;
   font-size: 12px;
 }
 
@@ -191,21 +191,21 @@ body {
   display: flex;
   justify-content: space-between;
   margin-top: auto;
-  padding-top: 16px;
+  padding-top: 10px;
   padding-bottom: 0;
-  margin-bottom: -16px;
-  margin-left: -16px;
-  margin-right: -16px;
-  padding-left: 16px;
-  padding-right: 16px;
+  margin-bottom: -12px;
+  margin-left: -12px;
+  margin-right: -12px;
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 button {
   background: transparent;
   color: var(--text);
   border: 1px solid var(--line);
-  padding: 8px 10px;
-  border-radius: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
   cursor: pointer;
 }
 
@@ -219,17 +219,17 @@ button:disabled {
 }
 
 #btn-keys {
-  padding: 8px 10px;
+  padding: 6px 8px;
   min-width: 0;
   font-weight: 650;
 }
 
 .sidebar-toggle {
-  padding: 8px 10px;
+  padding: 6px 8px;
   font-size: 12px;
   line-height: 1;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 6px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
@@ -248,8 +248,8 @@ button:disabled {
   transform: translate(-50%, -50%);
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 20px 24px;
+  border-radius: 8px;
+  padding: 16px 20px;
   z-index: 1000;
   min-width: 280px;
   box-shadow: 0 8px 32px var(--backdrop);
@@ -300,7 +300,7 @@ button:disabled {
 }
 
 .section {
-  margin-top: 16px;
+  margin-top: 10px;
   flex: 1;
   overflow-y: auto;
   min-height: 0;
@@ -317,25 +317,25 @@ button:disabled {
   padding: 0;
   margin: 0;
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 
 .pty-item {
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 8px 10px;
+  border-radius: 6px;
+  padding: 6px 8px;
   background: var(--surface);
   cursor: pointer;
   position: relative;
-  border-left: 3px solid var(--pty-color, var(--surface-border));
-  opacity: 0.65;
+  border-left: 2px solid var(--pty-color, var(--surface-border));
+  opacity: 0.7;
 }
 
 .pty-item.active {
   opacity: 1;
   border-color: color-mix(in srgb, var(--pty-color, var(--accent)) 50%, var(--surface-border));
-  border-left: 3px solid var(--pty-color, var(--accent));
-  box-shadow: 0 0 6px color-mix(in srgb, var(--pty-color, var(--accent)) 30%, transparent);
+  border-left: 2px solid var(--pty-color, var(--accent));
+  box-shadow: none;
   background: color-mix(in srgb, var(--pty-color, var(--accent)) 8%, var(--surface));
 }
 
@@ -364,7 +364,7 @@ button:disabled {
 }
 
 .pty-item.inactive {
-  opacity: 0.5;
+  opacity: 0.55;
   border-left-color: color-mix(in srgb, var(--muted) 40%, var(--surface-border));
   background: color-mix(in srgb, var(--surface) 78%, transparent);
 }
@@ -391,7 +391,7 @@ button:disabled {
 .pty-item .row {
   display: flex;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -473,7 +473,7 @@ button:disabled {
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--muted);
-  padding: 12px 4px 2px;
+  padding: 8px 4px 2px;
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
@@ -568,8 +568,8 @@ button:disabled {
 }
 
 .pty-close {
-  border-radius: 10px;
-  padding: 6px 8px;
+  border-radius: 6px;
+  padding: 4px 6px;
   line-height: 1;
   font-size: 12px;
   border-color: var(--surface-border);
@@ -617,20 +617,20 @@ button:disabled {
 }
 
 .terminal-wrap {
-  padding: 16px;
+  padding: 8px;
   overflow: hidden;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 
 .input-context {
   border: 1px solid var(--line);
   background: var(--overlay);
-  border-radius: 10px;
-  padding: 8px 10px;
+  border-radius: 6px;
+  padding: 6px 8px;
   min-height: 0;
 }
 
@@ -643,7 +643,7 @@ button:disabled {
   align-items: center;
   gap: 10px;
   min-width: 0;
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 2px 4px;
   cursor: pointer;
 }
@@ -667,7 +667,7 @@ button:disabled {
   color: var(--input-text);
   background: var(--surface);
   border: 1px solid var(--surface-border);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 4px 8px;
   min-height: 24px;
   min-width: 0;
@@ -813,8 +813,8 @@ button:disabled {
 .launch-modal {
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 20px 24px;
+  border-radius: 8px;
+  padding: 16px 20px;
   min-width: 320px;
   max-width: 420px;
   display: flex;
@@ -841,7 +841,7 @@ button:disabled {
   background: var(--panel);
   color: var(--text);
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 6px 8px;
   font-size: 13px;
   font-family: inherit;
