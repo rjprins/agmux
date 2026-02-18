@@ -2,13 +2,14 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
-import type { PtyId, PtySummary } from "../types.js";
+import type { PtyId, PtySummary, TmuxServer } from "../types.js";
 
 export type PtySpawnRequest = {
   id?: string;
   name?: string;
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
+  tmuxServer?: TmuxServer | null;
   command: string;
   args?: string[];
   cwd?: string;
@@ -62,6 +63,7 @@ export class PtyManager extends EventEmitter {
       name: req.name ?? req.command,
       backend: req.backend,
       tmuxSession: req.tmuxSession ?? null,
+      tmuxServer: req.tmuxServer ?? null,
       command: req.command,
       args,
       cwd: req.cwd ?? null,

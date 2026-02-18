@@ -3,12 +3,14 @@ export type PtyId = string;
 export type PtyStatus = "running" | "exited";
 export type PtyReadinessState = "ready" | "busy" | "unknown";
 export type PtyReadinessIndicator = "ready" | "busy";
+export type TmuxServer = "agmux" | "default";
 
 export type PtySummary = {
   id: PtyId;
   name: string;
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
+  tmuxServer?: TmuxServer | null;
   activeProcess?: string | null;
   ready?: boolean;
   readyState?: PtyReadinessState;

@@ -23,6 +23,7 @@ type PtySummary = {
   name: string;
   backend?: "pty" | "tmux";
   tmuxSession?: string | null;
+  tmuxServer?: "agmux" | "default" | null;
   activeProcess?: string | null;
   ready?: boolean;
   readyState?: PtyReadinessState;
@@ -108,6 +109,7 @@ function saveActivePty(ptyId: string | null): void {
       JSON.stringify({
         ptyId,
         tmuxSession: p?.tmuxSession ?? null,
+        tmuxServer: p?.tmuxServer ?? null,
       }),
     );
     // Cleanup legacy shared storage value from older builds.
@@ -117,7 +119,7 @@ function saveActivePty(ptyId: string | null): void {
   }
 }
 
-function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null } | null {
+function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null; tmuxServer: "agmux" | "default" | null } | null {
   try {
     // sessionStorage is tab-scoped: each browser tab remembers its own active PTY.
     // Fall back to legacy localStorage once, then migrate and clear it.
@@ -128,7 +130,13 @@ function loadSavedActivePty(): { ptyId: string; tmuxSession: string | null } | n
     }
     localStorage.removeItem(ACTIVE_PTY_KEY);
     const v = JSON.parse(raw);
-    return typeof v.ptyId === "string" ? { ptyId: v.ptyId, tmuxSession: v.tmuxSession ?? null } : null;
+    return typeof v.ptyId === "string"
+      ? {
+        ptyId: v.ptyId,
+        tmuxSession: v.tmuxSession ?? null,
+        tmuxServer: v.tmuxServer === "default" ? "default" : v.tmuxServer === "agmux" ? "agmux" : null,
+      }
+      : null;
   } catch { return null; }
 }
 
@@ -1413,7 +1421,11 @@ async function newShell(): Promise<void> {
 
 async function attachTmuxSession(selected: TmuxSessionInfo): Promise<void> {
   const existing = ptys.find(
-    (p) => p.status === "running" && p.backend === "tmux" && (p.tmuxSession ?? "") === selected.name,
+    (p) =>
+      p.status === "running" &&
+      p.backend === "tmux" &&
+      (p.tmuxSession ?? "") === selected.name &&
+      (p.tmuxServer ?? "agmux") === selected.server,
   );
   if (existing) {
     addEvent(`Using existing tmux ${selected.name}`);
@@ -1642,7 +1654,12 @@ void (async () => {
       const target =
         running.find((p) => p.id === saved.ptyId) ??
         (saved.tmuxSession
-          ? running.find((p) => p.backend === "tmux" && p.tmuxSession === saved.tmuxSession)
+          ? running.find(
+            (p) =>
+              p.backend === "tmux" &&
+              p.tmuxSession === saved.tmuxSession &&
+              (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true),
+          )
           : null);
       if (target) setActive(target.id);
     }

@@ -104,7 +104,10 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
       throw new Error("tmux provider attach metadata.server must be agmux or default");
     }
 
-    const located = await tmuxLocateSession(request.target);
+    const located = await tmuxLocateSession(
+      request.target,
+      requestedServer === "agmux" || requestedServer === "default" ? requestedServer : undefined,
+    );
     if (!located) {
       throw new Error(`tmux session not found: ${request.target}`);
     }
@@ -133,7 +136,7 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
     if (!summary) return;
     if (summary.backend === "tmux" && summary.tmuxSession) {
       try {
-        await tmuxKillWindow(summary.tmuxSession);
+        await tmuxKillWindow(summary.tmuxSession, summary.tmuxServer);
       } catch {
         // If the tmux window is already gone we still kill local attachment.
       }
@@ -152,7 +155,7 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
   async output(request: RuntimeOutputRequest): Promise<string | null> {
     const summary = this.deps.ptys.getSummary(request.id);
     if (!summary || !summary.tmuxSession) return null;
-    const snapshot = await tmuxCapturePaneVisible(summary.tmuxSession);
+    const snapshot = await tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer);
     if (!snapshot) return null;
     if (request.maxBytes == null || request.maxBytes <= 0 || snapshot.length <= request.maxBytes) {
       return snapshot;
@@ -199,8 +202,8 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
     }
 
     const [activeProcess, cwd] = await Promise.all([
-      tmuxPaneActiveProcess(summary.tmuxSession),
-      tmuxPaneCurrentPath(summary.tmuxSession),
+      tmuxPaneActiveProcess(summary.tmuxSession, summary.tmuxServer),
+      tmuxPaneCurrentPath(summary.tmuxSession, summary.tmuxServer),
     ]);
     const isShellLike = activeProcess != null && /(?:^|\/)(?:sh|bash|zsh|fish|dash|ksh|tcsh|csh|nu)$/i.test(activeProcess);
     return {
@@ -243,6 +246,7 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
       name: args.name,
       backend: "tmux",
       tmuxSession: args.sessionName,
+      tmuxServer: args.server,
       command: "tmux",
       args: tmuxAttachArgs(args.sessionName, args.server),
       cols: args.cols ?? 120,

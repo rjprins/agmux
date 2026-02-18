@@ -38,6 +38,7 @@ export class SqliteStore {
         name text not null,
         backend text,
         tmux_session text,
+        tmux_server text,
         command text not null,
         args_json text not null,
         cwd text,
@@ -82,19 +83,23 @@ export class SqliteStore {
     if (!have.has("tmux_session")) {
       this.db.exec(`alter table sessions add column tmux_session text;`);
     }
+    if (!have.has("tmux_server")) {
+      this.db.exec(`alter table sessions add column tmux_server text;`);
+    }
   }
 
   upsertSession(summary: PtySummary): void {
     const stmt = this.db.prepare(`
       insert into sessions (
-        id, name, backend, tmux_session, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
+        id, name, backend, tmux_session, tmux_server, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
       ) values (
-        @id, @name, @backend, @tmux_session, @command, @args_json, @cwd, @created_at, @last_seen_at, @status, @exit_code, @exit_signal
+        @id, @name, @backend, @tmux_session, @tmux_server, @command, @args_json, @cwd, @created_at, @last_seen_at, @status, @exit_code, @exit_signal
       )
       on conflict(id) do update set
         name=excluded.name,
         backend=excluded.backend,
         tmux_session=excluded.tmux_session,
+        tmux_server=excluded.tmux_server,
         command=excluded.command,
         args_json=excluded.args_json,
         cwd=excluded.cwd,
@@ -109,6 +114,7 @@ export class SqliteStore {
       name: summary.name,
       backend: summary.backend ?? null,
       tmux_session: summary.tmuxSession ?? null,
+      tmux_server: summary.tmuxServer ?? null,
       command: summary.command,
       args_json: JSON.stringify(summary.args),
       cwd: summary.cwd,
@@ -135,7 +141,7 @@ export class SqliteStore {
 
   listSessions(limit = 200): PtySummary[] {
     const stmt = this.db.prepare(`
-      select id, name, backend, tmux_session, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
+      select id, name, backend, tmux_session, tmux_server, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
       from sessions
       order by last_seen_at desc
       limit ?;
@@ -145,6 +151,7 @@ export class SqliteStore {
       name: string;
       backend: string | null;
       tmux_session: string | null;
+      tmux_server: string | null;
       command: string;
       args_json: string;
       cwd: string | null;
@@ -160,6 +167,7 @@ export class SqliteStore {
       name: r.name,
       backend: r.backend === "tmux" ? "tmux" : r.backend === "pty" ? "pty" : undefined,
       tmuxSession: r.tmux_session,
+      tmuxServer: r.tmux_server === "default" ? "default" : r.tmux_server === "agmux" ? "agmux" : null,
       command: r.command,
       args: this.parseArgsJson(r.args_json),
       cwd: r.cwd,

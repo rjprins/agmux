@@ -796,3 +796,78 @@ test("switching between multiple PTYs keeps each terminal's content distinct", a
     }
   }
 });
+
+test("switching same-name tmux sessions across servers keeps PTYs distinct", async ({ page }) => {
+  const hasTmux = await commandAvailable("tmux", ["-V"]);
+  test.skip(!hasTmux, "requires tmux");
+
+  const suffix = `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const sessionName = `agmux_e2e_same_name_${suffix}`;
+  const defaultValue = `default:${sessionName}`;
+  const agmuxValue = `agmux:${sessionName}`;
+
+  let defaultPtyId: string | null = null;
+  let agmuxPtyId: string | null = null;
+
+  page.on("dialog", (dialog) => {
+    void dialog.accept();
+  });
+
+  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "sh", "-lc", "echo default-server; exec cat"]);
+  await execFileAsync("tmux", ["-L", "agmux", "-f", "/dev/null", "new-session", "-d", "-s", sessionName, "sh", "-lc", "echo agmux-server; exec cat"]);
+
+  try {
+    await page.goto("/?nosup=1");
+
+    await page.locator("#tmux-session-select").focus();
+    await expect(page.locator(`#tmux-session-select option[value="${defaultValue}"]`)).toHaveCount(1, { timeout: 10_000 });
+    await expect(page.locator(`#tmux-session-select option[value="${agmuxValue}"]`)).toHaveCount(1, { timeout: 10_000 });
+
+    await page.selectOption("#tmux-session-select", defaultValue);
+    await expect(page.locator(".pty-item.active")).toHaveCount(1, { timeout: 10_000 });
+    defaultPtyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    expect(defaultPtyId).toBeTruthy();
+
+    await page.selectOption("#tmux-session-select", agmuxValue);
+    await expect
+      .poll(
+        async () => page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id")),
+        { timeout: 10_000 },
+      )
+      .not.toBe(defaultPtyId);
+
+    agmuxPtyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    expect(agmuxPtyId).toBeTruthy();
+    expect(agmuxPtyId).not.toBe(defaultPtyId);
+
+    await expect(page.locator(`.pty-item[data-pty-id="${defaultPtyId}"]`)).toHaveCount(1);
+    await expect(page.locator(`.pty-item[data-pty-id="${agmuxPtyId}"]`)).toHaveCount(1);
+
+    const token = await readSessionToken(page);
+    const listRes = await page.request.get(`/api/ptys?token=${encodeURIComponent(token)}`);
+    expect(listRes.ok()).toBe(true);
+    const listJson = (await listRes.json()) as {
+      ptys?: Array<{ id?: unknown; backend?: unknown; tmuxSession?: unknown; tmuxServer?: unknown; status?: unknown }>;
+    };
+
+    const sameNameRunning = (listJson.ptys ?? []).filter(
+      (p) =>
+        p?.backend === "tmux" &&
+        p?.status === "running" &&
+        p?.tmuxSession === sessionName,
+    );
+
+    expect(sameNameRunning.length).toBe(2);
+    const servers = sameNameRunning
+      .map((p) => (typeof p.tmuxServer === "string" ? p.tmuxServer : ""))
+      .sort();
+    expect(servers).toEqual(["agmux", "default"]);
+  } finally {
+    const token = await readSessionToken(page).catch(() => "");
+    if (token && defaultPtyId) await killPty(page, token, defaultPtyId);
+    if (token && agmuxPtyId) await killPty(page, token, agmuxPtyId);
+
+    await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
+    await execFileAsync("tmux", ["-L", "agmux", "-f", "/dev/null", "kill-session", "-t", sessionName]).catch(() => {});
+  }
+});

@@ -122,8 +122,8 @@ export class ReadinessEngine {
 
     if (summary.backend === "tmux" && summary.tmuxSession) {
       const [proc, liveCwd] = await Promise.all([
-        tmuxPaneActiveProcess(summary.tmuxSession),
-        tmuxPaneCurrentPath(summary.tmuxSession),
+        tmuxPaneActiveProcess(summary.tmuxSession, summary.tmuxServer),
+        tmuxPaneCurrentPath(summary.tmuxSession, summary.tmuxServer),
       ]);
       activeProcess = proc;
       if (liveCwd) {
@@ -132,8 +132,8 @@ export class ReadinessEngine {
       }
 
       const [paneContent, paneSize] = await Promise.all([
-        tmuxCapturePaneVisible(summary.tmuxSession),
-        tmuxPaneDimensions(summary.tmuxSession),
+        tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer),
+        tmuxPaneDimensions(summary.tmuxSession, summary.tmuxServer),
       ]);
       if (paneContent == null) {
         return {

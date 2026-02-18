@@ -93,21 +93,29 @@ export function tmuxIsLinkedViewSession(name: string, baseSession?: string): boo
   return /^[0-9]+$/.test(suffix);
 }
 
-export async function tmuxLocateSession(target: string): Promise<TmuxServer | null> {
+export async function tmuxLocateSession(
+  target: string,
+  preferredServer?: TmuxServer,
+): Promise<TmuxServer | null> {
   const session = tmuxTargetSession(target);
-  try {
-    await tmuxAgent(["has-session", "-t", session]);
-    return "agmux";
-  } catch {
-    // fall through
-  }
+  const order: TmuxServer[] = preferredServer
+    ? [preferredServer, preferredServer === "agmux" ? "default" : "agmux"]
+    : ["agmux", "default"];
 
-  try {
-    await tmuxDefault(["has-session", "-t", session]);
-    return "default";
-  } catch {
-    return null;
+  for (const server of order) {
+    try {
+      await tmuxExec(server, ["has-session", "-t", session]);
+      return server;
+    } catch {
+      // try next server
+    }
   }
+  return null;
+}
+
+function normalizeServerHint(server: TmuxServer | null | undefined): TmuxServer | null {
+  if (server === "agmux" || server === "default") return server;
+  return null;
 }
 
 /**
@@ -334,8 +342,11 @@ export async function tmuxListWindows(
 }
 
 /** Kill a single window (not the whole session). */
-export async function tmuxKillWindow(target: string): Promise<void> {
-  const server = await tmuxLocateSession(target);
+export async function tmuxKillWindow(
+  target: string,
+  serverHint?: TmuxServer | null,
+): Promise<void> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(target);
   if (!server) return;
   try {
     await tmuxByServer(server, ["kill-window", "-t", target]);
@@ -398,8 +409,11 @@ export async function tmuxApplySessionUiOptions(
   }
 }
 
-export async function tmuxKillSession(name: string): Promise<void> {
-  const server = await tmuxLocateSession(name);
+export async function tmuxKillSession(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<void> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return;
   if (server === "default") {
     await tmuxDefault(["kill-session", "-t", name]);
@@ -440,8 +454,9 @@ export async function tmuxScrollHistory(
   name: string,
   direction: "up" | "down",
   lines: number,
+  serverHint?: TmuxServer | null,
 ): Promise<void> {
-  const server = await tmuxLocateSession(name);
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return;
   const n = Math.max(1, Math.min(200, Math.floor(lines)));
 
@@ -459,8 +474,11 @@ export async function tmuxScrollHistory(
   ]);
 }
 
-export async function tmuxCapturePaneVisible(name: string): Promise<string | null> {
-  const server = await tmuxLocateSession(name);
+export async function tmuxCapturePaneVisible(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<string | null> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return null;
   try {
     const { stdout } = await tmuxExec(server, ["capture-pane", "-p", "-e", "-J", "-t", name]);
@@ -495,8 +513,11 @@ function isShellCommand(cmd: string): boolean {
   return SHELL_COMMANDS.has(normalizeCommandName(cmd));
 }
 
-async function tmuxPaneMeta(name: string): Promise<{ command: string; panePid: number | null; tty: string | null } | null> {
-  const server = await tmuxLocateSession(name);
+async function tmuxPaneMeta(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<{ command: string; panePid: number | null; tty: string | null } | null> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return null;
   try {
     const out =
@@ -547,8 +568,11 @@ async function ttyForegroundCommand(tty: string, panePid: number | null): Promis
   }
 }
 
-export async function tmuxPaneCurrentPath(name: string): Promise<string | null> {
-  const server = await tmuxLocateSession(name);
+export async function tmuxPaneCurrentPath(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<string | null> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return null;
   try {
     const out =
@@ -562,8 +586,11 @@ export async function tmuxPaneCurrentPath(name: string): Promise<string | null> 
   }
 }
 
-export async function tmuxPaneDimensions(name: string): Promise<{ width: number; height: number } | null> {
-  const server = await tmuxLocateSession(name);
+export async function tmuxPaneDimensions(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<{ width: number; height: number } | null> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return null;
   try {
     const out =
@@ -580,8 +607,11 @@ export async function tmuxPaneDimensions(name: string): Promise<{ width: number;
   }
 }
 
-export async function tmuxPaneActiveProcess(name: string): Promise<string | null> {
-  const meta = await tmuxPaneMeta(name);
+export async function tmuxPaneActiveProcess(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<string | null> {
+  const meta = await tmuxPaneMeta(name, serverHint);
   if (!meta || !meta.command) return null;
   if (!isShellCommand(meta.command)) return meta.command;
   if (!meta.tty) return meta.command;
