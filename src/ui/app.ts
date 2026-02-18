@@ -1370,15 +1370,9 @@ function renderList(): void {
       const primary = document.createElement("div");
       primary.className = "primary";
       primary.textContent = process;
-      primaryRow.appendChild(readyDot);
-      primaryRow.appendChild(primary);
-      if (title && title !== process) {
-        const titleEl = document.createElement("span");
-        titleEl.className = "title-label";
-        titleEl.textContent = title;
-        titleEl.title = title;
-        primaryRow.appendChild(titleEl);
-      }
+      const statusGroup = document.createElement("span");
+      statusGroup.className = "status-group";
+      statusGroup.appendChild(readyDot);
 
       const changedAt = ptyStateChangedAt.get(p.id);
       if (changedAt) {
@@ -1390,8 +1384,18 @@ function renderList(): void {
           timeBadge.title = readyInfo.state === "ready"
             ? `Ready for ${elapsed}`
             : `Processing for ${elapsed}`;
-          primaryRow.appendChild(timeBadge);
+          statusGroup.appendChild(timeBadge);
         }
+      }
+
+      primaryRow.appendChild(statusGroup);
+      primaryRow.appendChild(primary);
+      if (title && title !== process) {
+        const titleEl = document.createElement("span");
+        titleEl.className = "title-label";
+        titleEl.textContent = title;
+        titleEl.title = title;
+        primaryRow.appendChild(titleEl);
       }
 
       const secondary = document.createElement("div");

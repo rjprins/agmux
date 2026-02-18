@@ -403,6 +403,13 @@ button:disabled {
   min-width: 0;
 }
 
+.pty-item .status-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
 .pty-item .ready-dot {
   width: 11px;
   height: 11px;
