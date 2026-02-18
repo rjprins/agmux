@@ -169,6 +169,18 @@ function isCodexSubagent(entries: Array<Record<string, unknown>>): boolean {
   return typeof (payload as Record<string, unknown>).source === "object";
 }
 
+/**
+ * Claude Code writes ancillary JSONL files alongside real session transcripts.
+ * These contain only `file-history-snapshot` and/or `summary` entries with no
+ * sessionId / cwd, so they are not resumable sessions and should be skipped.
+ */
+const CLAUDE_ANCILLARY_TYPES = new Set(["file-history-snapshot", "summary"]);
+
+function isClaudeAncillaryLog(entries: Array<Record<string, unknown>>): boolean {
+  if (entries.length === 0) return false;
+  return entries.every((e) => typeof e.type === "string" && CLAUDE_ANCILLARY_TYPES.has(e.type));
+}
+
 function scanDirForJsonl(root: string, maxDepth: number): string[] {
   if (!root || !fs.existsSync(root)) return [];
 
@@ -253,6 +265,7 @@ export function discoverInactiveLogSessions(options: DiscoveryOptions = {}): Pty
     const entries = parseLogHeadEntries(candidate.logPath);
     if (entries.length === 0) continue;
     if (candidate.source === "codex" && isCodexSubagent(entries)) continue;
+    if (candidate.source === "claude" && isClaudeAncillaryLog(entries)) continue;
 
     const derivedSessionId = extractSessionId(entries) ?? path.basename(candidate.logPath, ".jsonl");
     const projectPath = extractProjectPath(entries);

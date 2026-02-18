@@ -60,6 +60,42 @@ describe("discoverInactiveLogSessions", () => {
     expect(sessions.every((s) => s.status === "exited")).toBe(true);
   });
 
+  test("skips claude ancillary logs (file-history-snapshot / summary only)", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-logs-"));
+    const claudeDir = path.join(tmpRoot, "claude");
+
+    // Ancillary file-history-snapshot file (should be skipped)
+    await writeJsonl(path.join(claudeDir, "projects", "a", "fh-only.jsonl"), [
+      { type: "file-history-snapshot", snapshot: {} },
+      { type: "file-history-snapshot", snapshot: {} },
+    ]);
+
+    // Ancillary summary + file-history-snapshot file (should be skipped)
+    await writeJsonl(path.join(claudeDir, "projects", "a", "summary-fh.jsonl"), [
+      { type: "summary", summary: "Some summary", leafUuid: "abc" },
+      { type: "file-history-snapshot", snapshot: {} },
+    ]);
+
+    // Real session that starts with file-history-snapshot but has session data (should be kept)
+    await writeJsonl(path.join(claudeDir, "projects", "a", "real-session.jsonl"), [
+      { type: "file-history-snapshot", snapshot: {} },
+      { type: "progress", sessionId: "real-1", cwd: "/tmp/real" },
+      { type: "user", sessionId: "real-1", cwd: "/tmp/real" },
+    ]);
+
+    const sessions = discoverInactiveLogSessions({
+      claudeConfigDir: claudeDir,
+      codexHomeDir: path.join(tmpRoot, "codex"),
+      piHomeDir: path.join(tmpRoot, "pi"),
+      scanLimit: 50,
+    });
+
+    expect(sessions.some((s) => s.id.includes("fh-only"))).toBe(false);
+    expect(sessions.some((s) => s.id.includes("summary-fh"))).toBe(false);
+    expect(sessions.some((s) => s.id === "log:claude:real-1")).toBe(true);
+    expect(sessions.find((s) => s.id === "log:claude:real-1")?.cwd).toBe("/tmp/real");
+  });
+
   test("uses filename stem when session id is missing", async () => {
     tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-logs-"));
     const claudeDir = path.join(tmpRoot, "claude");

@@ -63,15 +63,11 @@ const AUTH_TOKEN = process.env.AGMUX_TOKEN ?? randomBytes(32).toString("hex");
 const ALLOW_NON_LOOPBACK_BIND = process.env.AGMUX_ALLOW_NON_LOOPBACK === "1";
 const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGMUX_READINESS_TRACE_MAX ?? "2000") || 2000);
 const READINESS_TRACE_LOG = process.env.AGMUX_READINESS_TRACE_LOG === "1";
-const PERSISTED_PTY_LIMIT = Math.max(1, Number(process.env.AGMUX_PERSISTED_PTY_LIMIT ?? "500") || 500);
 const INACTIVE_MAX_AGE_HOURS = Number(
   process.env.AGMUX_INACTIVE_MAX_AGE_HOURS ?? String(DEFAULT_INACTIVE_MAX_AGE_HOURS),
 );
 const LOG_SESSION_DISCOVERY_ENABLED = process.env.AGMUX_LOG_SESSION_DISCOVERY !== "0";
-const LOG_SESSION_SCAN_MAX = Math.max(
-  1,
-  Number(process.env.AGMUX_LOG_SESSION_SCAN_MAX ?? String(PERSISTED_PTY_LIMIT)) || PERSISTED_PTY_LIMIT,
-);
+const LOG_SESSION_SCAN_MAX = Math.max(1, Number(process.env.AGMUX_LOG_SESSION_SCAN_MAX ?? "500") || 500);
 const LOG_SESSION_CACHE_MS = Math.max(
   250,
   Number(process.env.AGMUX_LOG_SESSION_CACHE_MS ?? "5000") || 5000,
@@ -275,9 +271,8 @@ const readinessEngine = new ReadinessEngine({
 
 async function listPtys(): Promise<PtySummary[]> {
   const live = await readinessEngine.withActiveProcesses(ptys.list());
-  const persisted = store.listSessions(PERSISTED_PTY_LIMIT);
   const discovered = logSessionDiscovery.list();
-  return mergePtyLists(live, [...persisted, ...discovered], {
+  return mergePtyLists(live, discovered, {
     inactiveMaxAgeHours: INACTIVE_MAX_AGE_HOURS,
   });
 }
@@ -285,8 +280,6 @@ async function listPtys(): Promise<PtySummary[]> {
 function findKnownSessionSummary(id: string): PtySummary | null {
   const live = ptys.getSummary(id);
   if (live) return live;
-  const persisted = store.listSessions(PERSISTED_PTY_LIMIT).find((s) => s.id === id);
-  if (persisted) return persisted;
   const discovered = logSessionDiscovery.list().find((s) => s.id === id);
   return discovered ?? null;
 }
@@ -311,7 +304,7 @@ async function resumeSession(summary: PtySummary): Promise<PtySummary | null> {
       rows: 30,
       createdAt: summary.createdAt,
     });
-    linkedSessionsByPty.set(resumed.id, linkedSession);
+    linkedSessionsByPty.set(resumed.id, { name: linkedSession, server });
     return resumed;
   }
 
@@ -785,9 +778,7 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
 
 fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   const id = (req.params as any).id as string;
-  const live = ptys.getSummary(id);
-  const persisted = store.listSessions(500).find((s) => s.id === id) ?? null;
-  const summary = live ?? persisted;
+  const summary = findKnownSessionSummary(id);
   if (!summary) {
     reply.code(404);
     return { error: "unknown PTY" };
