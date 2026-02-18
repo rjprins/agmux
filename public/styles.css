@@ -138,7 +138,8 @@ body {
 .sidebar.collapsed .pty-item .secondary,
 .sidebar.collapsed .pty-item .pty-close,
 .sidebar.collapsed .pty-item .title-label,
-.sidebar.collapsed .pty-item .time-badge {
+.sidebar.collapsed .pty-item .time-badge,
+.sidebar.collapsed .pty-item .worktree-badge {
   display: none;
 }
 .sidebar.collapsed .pty-item .ready-dot.compact {
@@ -499,6 +500,30 @@ button:disabled {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.pty-item .secondary > span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.worktree-badge {
+  font-size: 10px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--surface-hover);
+  border: 1px solid var(--surface-border);
+  color: var(--muted);
+  flex: 0 0 auto;
+  max-width: 120px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
