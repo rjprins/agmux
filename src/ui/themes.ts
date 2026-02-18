@@ -38,6 +38,55 @@ export interface Theme {
 // Built-in themes
 // ---------------------------------------------------------------------------
 
+const neutral: Theme = {
+  name: "Neutral",
+  bg: "#0a0a0a",
+  panel: "#111111",
+  panel2: "#0e0e0e",
+  text: "#e5e5e5",
+  muted: "#737373",
+  accent: "#3b82f6",
+  danger: "#ef4444",
+  line: "rgba(255, 255, 255, 0.08)",
+  gradientA: "#141414",
+  gradientB: "#161416",
+  ready: "#22c55e",
+  readyGlow: "rgba(34, 197, 94, 0.18)",
+  busy: "#f59e0b",
+  busyTrack: "rgba(245, 158, 11, 0.3)",
+  inputText: "#e5e5e5",
+  surface: "rgba(255, 255, 255, 0.03)",
+  surfaceHover: "rgba(255, 255, 255, 0.06)",
+  surfaceBorder: "rgba(255, 255, 255, 0.08)",
+  buttonHover: "rgba(255, 255, 255, 0.15)",
+  backdrop: "rgba(0, 0, 0, 0.4)",
+  overlay: "rgba(0, 0, 0, 0.25)",
+  hashSaturation: 70,
+  hashLightness: 68,
+  terminal: {
+    background: "#2d2d2d",
+    foreground: "#d4d4d4",
+    cursor: "#3b82f6",
+    selectionBackground: "rgba(59, 130, 246, 0.35)",
+    black: "#808080",
+    red: "#f87171",
+    green: "#4ade80",
+    yellow: "#fbbf24",
+    blue: "#60a5fa",
+    magenta: "#c084fc",
+    cyan: "#22d3ee",
+    white: "#d4d4d4",
+    brightBlack: "#a0a0a0",
+    brightRed: "#fca5a5",
+    brightGreen: "#86efac",
+    brightYellow: "#fde047",
+    brightBlue: "#93c5fd",
+    brightMagenta: "#d8b4fe",
+    brightCyan: "#67e8f9",
+    brightWhite: "#ffffff",
+  },
+};
+
 const dracula: Theme = {
   name: "Dracula",
   bg: "#0b0e14",
@@ -288,6 +337,7 @@ const light: Theme = {
 // ---------------------------------------------------------------------------
 
 export const THEMES: ReadonlyMap<string, Theme> = new Map<string, Theme>([
+  ["neutral", neutral],
   ["dracula", dracula],
   ["tokyo-night", tokyoNight],
   ["solarized-dark", solarizedDark],
@@ -295,7 +345,7 @@ export const THEMES: ReadonlyMap<string, Theme> = new Map<string, Theme>([
   ["light", light],
 ]);
 
-export const DEFAULT_THEME_KEY = "dracula";
+export const DEFAULT_THEME_KEY = "neutral";
 
 // ---------------------------------------------------------------------------
 // Apply
