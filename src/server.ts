@@ -18,6 +18,7 @@ import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
 import { DEFAULT_INACTIVE_MAX_AGE_HOURS, mergePtyLists } from "./sessionList.js";
+import { LogSessionDiscovery } from "./logSessions.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxCreateLinkedSession,
@@ -31,6 +32,7 @@ import {
   tmuxListSessions,
   tmuxListWindows,
   tmuxLocateSession,
+  tmuxTargetExists,
   tmuxPruneDetachedLinkedSessions,
   tmuxScrollHistory,
   tmuxTargetSession,
@@ -65,6 +67,15 @@ const PERSISTED_PTY_LIMIT = Math.max(1, Number(process.env.AGMUX_PERSISTED_PTY_L
 const INACTIVE_MAX_AGE_HOURS = Number(
   process.env.AGMUX_INACTIVE_MAX_AGE_HOURS ?? String(DEFAULT_INACTIVE_MAX_AGE_HOURS),
 );
+const LOG_SESSION_DISCOVERY_ENABLED = process.env.AGMUX_LOG_SESSION_DISCOVERY !== "0";
+const LOG_SESSION_SCAN_MAX = Math.max(
+  1,
+  Number(process.env.AGMUX_LOG_SESSION_SCAN_MAX ?? String(PERSISTED_PTY_LIMIT)) || PERSISTED_PTY_LIMIT,
+);
+const LOG_SESSION_CACHE_MS = Math.max(
+  250,
+  Number(process.env.AGMUX_LOG_SESSION_CACHE_MS ?? "5000") || 5000,
+);
 const WS_ALLOWED_ORIGINS = new Set(
   [
     `http://127.0.0.1:${PORT}`,
@@ -82,6 +93,11 @@ const fastify = Fastify({ logger: true, disableRequestLogging: true });
 const store = new SqliteStore(DB_PATH);
 const ptys = new PtyManager();
 const hub = new WsHub();
+const logSessionDiscovery = new LogSessionDiscovery({
+  enabled: LOG_SESSION_DISCOVERY_ENABLED,
+  scanLimit: LOG_SESSION_SCAN_MAX,
+  cacheMs: LOG_SESSION_CACHE_MS,
+});
 const triggerEngine = new TriggerEngine();
 const triggerLoader = new TriggerLoader(TRIGGERS_PATH);
 
@@ -260,7 +276,57 @@ const readinessEngine = new ReadinessEngine({
 async function listPtys(): Promise<PtySummary[]> {
   const live = await readinessEngine.withActiveProcesses(ptys.list());
   const persisted = store.listSessions(PERSISTED_PTY_LIMIT);
-  return mergePtyLists(live, persisted, { inactiveMaxAgeHours: INACTIVE_MAX_AGE_HOURS });
+  const discovered = logSessionDiscovery.list();
+  return mergePtyLists(live, [...persisted, ...discovered], {
+    inactiveMaxAgeHours: INACTIVE_MAX_AGE_HOURS,
+  });
+}
+
+function findKnownSessionSummary(id: string): PtySummary | null {
+  const live = ptys.getSummary(id);
+  if (live) return live;
+  const persisted = store.listSessions(PERSISTED_PTY_LIMIT).find((s) => s.id === id);
+  if (persisted) return persisted;
+  const discovered = logSessionDiscovery.list().find((s) => s.id === id);
+  return discovered ?? null;
+}
+
+async function resumeSession(summary: PtySummary): Promise<PtySummary | null> {
+  if (summary.backend === "tmux" && summary.tmuxSession) {
+    const server = await tmuxLocateSession(summary.tmuxSession);
+    if (!server) return null;
+    const targetExists = await tmuxTargetExists(summary.tmuxSession, server);
+    if (!targetExists) return null;
+
+    const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(summary.tmuxSession, server);
+    const resumed = ptys.spawn({
+      id: summary.id,
+      name: summary.name,
+      backend: "tmux",
+      tmuxSession: summary.tmuxSession,
+      command: "tmux",
+      args: attachArgs,
+      cwd: summary.cwd ?? undefined,
+      cols: 120,
+      rows: 30,
+      createdAt: summary.createdAt,
+    });
+    linkedSessionsByPty.set(resumed.id, linkedSession);
+    return resumed;
+  }
+
+  if (!summary.command || summary.command.trim().length === 0) return null;
+  return ptys.spawn({
+    id: summary.id,
+    name: summary.name,
+    backend: summary.backend === "pty" ? "pty" : undefined,
+    command: summary.command,
+    args: summary.args,
+    cwd: summary.cwd ?? undefined,
+    cols: 120,
+    rows: 30,
+    createdAt: summary.createdAt,
+  });
 }
 
 async function broadcastPtyList(): Promise<void> {
@@ -747,6 +813,37 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
   readinessEngine.markExited(id);
   await broadcastPtyList();
   return { ok: true };
+});
+
+fastify.post("/api/ptys/:id/resume", async (req, reply) => {
+  const id = (req.params as any).id as string;
+  const live = ptys.getSummary(id);
+  if (live?.status === "running") {
+    return { id: live.id, reused: true };
+  }
+
+  const summary = findKnownSessionSummary(id);
+  if (!summary) {
+    reply.code(404);
+    return { error: "unknown PTY" };
+  }
+
+  const resumed = await resumeSession(summary);
+  if (!resumed) {
+    reply.code(409);
+    if (summary.backend === "tmux") {
+      return { error: `tmux target unavailable: ${summary.tmuxSession ?? "(missing)"}` };
+    }
+    return { error: "unable to resume session" };
+  }
+
+  store.upsertSession(resumed);
+  fastify.log.info(
+    { ptyId: resumed.id, backend: resumed.backend, tmuxSession: resumed.tmuxSession },
+    "pty resumed",
+  );
+  await broadcastPtyList();
+  return { id: resumed.id, reused: false };
 });
 
 fastify.get("/api/input-history", async () => {

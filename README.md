@@ -10,6 +10,7 @@ Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **tmux-backed sessions** — agent sessions survive server restarts
 - **Trigger system** — pattern-match on terminal output and run custom actions
 - **Readiness detection** — detect when sessions are actively working vs waiting for input
+- **Inactive session discovery** — include recent Claude/Codex/Pi JSONL sessions in the inactive list
 - **Supervisor mode** — auto-commit, auto-reload, and rollback UI for self-editable development
 - **Themeable UI** — 5 built-in themes
 - **Multi-worktree support** — manage multiple git worktrees from one interface
@@ -88,6 +89,13 @@ Environment variables:
 | `AGMUX_NO_OPEN` | `false` | Skip auto-opening browser |
 | `AGMUX_ALLOW_NON_LOOPBACK` | `false` | Allow binding to non-localhost addresses |
 | `AGMUX_ALLOWED_ORIGINS` | | Additional WebSocket origins (comma-separated) |
+| `AGMUX_INACTIVE_MAX_AGE_HOURS` | `24` | Hide non-running sessions older than this |
+| `AGMUX_LOG_SESSION_DISCOVERY` | `1` | Enable/disable inactive discovery from JSONL logs |
+| `AGMUX_LOG_SESSION_SCAN_MAX` | `500` | Max JSONL files scanned per discovery refresh |
+| `AGMUX_LOG_SESSION_CACHE_MS` | `5000` | Cache lifetime for discovered log sessions |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | Root used for Claude log discovery |
+| `CODEX_HOME` | `~/.codex` | Root used for Codex log discovery |
+| `PI_HOME` | `~/.pi` | Root used for Pi log discovery |
 
 ## Testing
 
@@ -113,6 +121,7 @@ npx playwright install chromium
 
 - Plain PTYs (created via `/api/ptys`) are not persistent — if the Node server stops, those processes stop too.
 - The default "New PTY" shell is tmux-backed, so it survives server restarts.
+- Click an inactive session row to attempt resume/re-attach.
 - WebSocket output is batched (~16ms flush interval) for performance.
 
 ## Contributing

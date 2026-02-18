@@ -1223,6 +1223,18 @@ async function killPty(ptyId: string): Promise<void> {
   await refreshList();
 }
 
+async function resumePty(ptyId: string): Promise<void> {
+  const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/resume`, { method: "POST" });
+  if (!res.ok) {
+    addEvent(`Failed to resume session ${ptyId}: ${await readApiError(res)}`);
+    return;
+  }
+  const json = (await res.json()) as { id: string; reused?: boolean };
+  addEvent(json.reused ? `Session ${json.id} already running` : `Resumed session ${json.id}`);
+  await refreshList();
+  setActive(json.id);
+}
+
 function normalizeCwdGroupKey(cwd: string): string {
   const idx = cwd.indexOf("/.worktrees/");
   if (idx !== -1) return cwd.slice(0, idx);
@@ -1361,6 +1373,9 @@ function renderList(): void {
     onSelectPty: (ptyId) => setActive(ptyId),
     onKillPty: (ptyId) => {
       void killPty(ptyId);
+    },
+    onResumeInactive: (ptyId) => {
+      void resumePty(ptyId);
     },
     onToggleInactive: () => {
       inactiveSessionsExpanded = !inactiveSessionsExpanded;

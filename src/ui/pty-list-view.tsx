@@ -56,6 +56,7 @@ export type PtyListHandlers = {
   onOpenLaunch: (groupKey: string) => void;
   onSelectPty: (ptyId: string) => void;
   onKillPty: (ptyId: string) => void;
+  onResumeInactive: (ptyId: string) => void;
   onToggleInactive: () => void;
   onShowMoreInactive: () => void;
 };
@@ -166,7 +167,14 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
             ? (
               <>
                 {model.inactive.shown.map((item) => (
-                  <li key={item.id} className="pty-item inactive" data-pty-id={item.id} style={ptyStyle(item.color)}>
+                  <li
+                    key={item.id}
+                    className="pty-item inactive"
+                    data-pty-id={item.id}
+                    style={ptyStyle(item.color)}
+                    title="Resume session"
+                    onClick={() => handlers.onResumeInactive(item.id)}
+                  >
                     <div className="row">
                       <div className="mainline">
                         <div className="primary-row">
