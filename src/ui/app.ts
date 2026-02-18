@@ -57,6 +57,7 @@ type ServerMsg =
       reason: string;
       ts: number;
       cwd?: string | null;
+      activeProcess?: string | null;
     }
   | { type: "trigger_fired"; ptyId: string; trigger: string; match: string; line: string; ts: number }
   | { type: "pty_highlight"; ptyId: string; reason: string; ttlMs: number }
@@ -600,9 +601,10 @@ function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_ready") {
     ptyReady.set(msg.ptyId, { state: msg.state, indicator: msg.indicator, reason: msg.reason });
     ptyStateChangedAt.set(msg.ptyId, msg.ts);
-    if (msg.cwd != null) {
-      const p = ptys.find((x) => x.id === msg.ptyId);
-      if (p) p.cwd = msg.cwd;
+    const p = ptys.find((x) => x.id === msg.ptyId);
+    if (p) {
+      if (msg.cwd != null) p.cwd = msg.cwd;
+      if (msg.activeProcess !== undefined) p.activeProcess = msg.activeProcess;
     }
     renderList();
     return;
@@ -1394,6 +1396,14 @@ function renderList(): void {
 
       const secondary = document.createElement("div");
       secondary.className = "secondary";
+      const wt = worktreeName(p.cwd);
+      if (wt) {
+        const wtBadge = document.createElement("span");
+        wtBadge.className = "worktree-badge";
+        wtBadge.textContent = wt;
+        wtBadge.title = p.cwd ?? "";
+        secondary.appendChild(wtBadge);
+      }
       let secondaryText = "";
       if (inputPreview) {
         secondaryText = `> ${inputPreview}`;
@@ -1402,7 +1412,9 @@ function renderList(): void {
       } else {
         secondaryText = p.name;
       }
-      secondary.textContent = secondaryText;
+      const secondarySpan = document.createElement("span");
+      secondarySpan.textContent = secondaryText;
+      secondary.appendChild(secondarySpan);
 
       main.appendChild(primaryRow);
       main.appendChild(secondary);

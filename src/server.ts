@@ -244,9 +244,9 @@ function recordReadinessTrace(evt: PtyReadyEvent): void {
 
 const readinessEngine = new ReadinessEngine({
   ptys,
-  emitReadiness: ({ ptyId, state, indicator, reason, ts, cwd, source }) => {
-    recordReadinessTrace({ ptyId, state, indicator, reason, source, ts, cwd });
-    broadcast({ type: "pty_ready", ptyId, state, indicator, reason, ts, cwd });
+  emitReadiness: ({ ptyId, state, indicator, reason, ts, cwd, source, activeProcess }) => {
+    recordReadinessTrace({ ptyId, state, indicator, reason, source, ts, cwd, activeProcess });
+    broadcast({ type: "pty_ready", ptyId, state, indicator, reason, ts, cwd, activeProcess });
   },
 });
 
@@ -601,7 +601,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     });
     store.upsertSession(summary);
     fastify.log.info({ ptyId: summary.id, shell, backend }, "shell spawned");
-    broadcast({ type: "pty_list", ptys: ptys.list() });
+    await broadcastPtyList();
     return { id: summary.id };
   }
 
@@ -697,7 +697,7 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
   });
   linkedSessionsByPty.set(summary.id, linkedSession);
   store.upsertSession(summary);
-  broadcast({ type: "pty_list", ptys: ptys.list() });
+  await broadcastPtyList();
   return { id: summary.id };
 });
 

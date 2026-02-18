@@ -19,6 +19,7 @@ export type PtyReadyEvent = {
   source: string;
   ts: number;
   cwd?: string | null;
+  activeProcess?: string | null;
 };
 
 type ReadinessDeps = {
@@ -35,6 +36,7 @@ type PtyReadyStateInternal = {
   paneCache: PaneCacheState | undefined;
   outputBuffer: string;
   lastCwd: string | null;
+  activeProcess: string | null;
 };
 
 type ReadinessEvaluation = {
@@ -95,6 +97,7 @@ export class ReadinessEngine {
         }
 
         const evaluation = await this.evaluateReadiness(p.id, p);
+        st.activeProcess = evaluation.activeProcess;
         this.setPtyReadiness(p.id, evaluation.state, evaluation.reason, false, evaluation.indicator);
         if (evaluation.nextCheckInMs != null) this.scheduleReadinessRecompute(p.id, evaluation.nextCheckInMs);
 
@@ -220,6 +223,7 @@ export class ReadinessEngine {
       paneCache: undefined,
       outputBuffer: "",
       lastCwd: null,
+      activeProcess: null,
     };
     this.readinessByPty.set(ptyId, st);
     return st;
@@ -282,6 +286,7 @@ export class ReadinessEngine {
       source: this.readinessSignalSource(reason),
       ts: st.updatedAt,
       cwd,
+      activeProcess: st.activeProcess,
     });
   }
 
@@ -315,6 +320,8 @@ export class ReadinessEngine {
     }
 
     const evaluation = await this.evaluateReadiness(ptyId, summary);
+    const st = this.ensureReadiness(ptyId);
+    st.activeProcess = evaluation.activeProcess;
     this.setPtyReadiness(ptyId, evaluation.state, evaluation.reason, true, evaluation.indicator);
     if (evaluation.nextCheckInMs != null) this.scheduleReadinessRecompute(ptyId, evaluation.nextCheckInMs);
   }

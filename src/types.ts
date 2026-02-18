@@ -42,6 +42,7 @@ export type ServerToClientMessage =
       reason: string;
       ts: number;
       cwd?: string | null;
+      activeProcess?: string | null;
     }
   | {
       type: "trigger_fired";
