@@ -22,6 +22,17 @@ function sessionSortTs(session: PtySummary): number {
   return session.lastSeenAt ?? session.createdAt;
 }
 
+/**
+ * Merge live PTYs with persisted PTY summaries for UI/API listing.
+ *
+ * Inactivity tracking model:
+ * - "Inactive" means `status !== "running"`.
+ * - Recency is `lastSeenAt` when available, otherwise `createdAt`.
+ * - Non-running sessions older than `inactiveMaxAgeHours` are dropped.
+ * - Live sessions win over persisted rows with the same id.
+ * - Persisted `running` rows are normalized to `exited`, because after restart
+ *   we cannot assume that an in-memory PTY process still exists.
+ */
 export function mergePtyLists(
   liveSessions: PtySummary[],
   persistedSessions: PtySummary[],

@@ -1,6 +1,7 @@
 # Todo
 
 - [ ] Fix garbled PTYs after refresh bug! 
+- [ ] Add a quick launch
 - [ ] Add "input required" status to agent readiness
 - [x] Organize PTY's by directory
 - [ ] Promote directories to projects... What does that mean exactly?
