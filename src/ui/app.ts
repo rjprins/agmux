@@ -811,15 +811,19 @@ const AGENT_OPTIONS: Record<string, OptionDef[]> = {
 };
 
 function generateBranchName(): string {
-  const now = new Date();
-  const yy = String(now.getFullYear()).slice(2);
-  const mm = String(now.getMonth() + 1).padStart(2, "0");
-  const dd = String(now.getDate()).padStart(2, "0");
-  const verbs = ["build", "craft", "debug", "patch", "tune", "refine", "shape", "forge", "spark", "wire"];
-  const nouns = ["otter", "falcon", "comet", "maple", "cedar", "harbor", "reef", "prism", "flint", "ridge"];
+  const verbs = [
+    "build", "craft", "debug", "patch", "tune", "refine", "shape", "forge", "spark", "wire",
+    "mend", "hone", "trace", "carve", "weave", "align", "fuse", "solve", "twist", "stitch",
+    "sand", "temper", "splice", "prime", "sift", "grind", "weld", "buff", "etch", "mold",
+  ];
+  const nouns = [
+    "otter", "falcon", "comet", "maple", "cedar", "harbor", "reef", "prism", "flint", "ridge",
+    "heron", "quartz", "ember", "thorn", "birch", "delta", "summit", "dusk", "grove", "crest",
+    "pike", "frost", "anvil", "cairn", "drift", "glyph", "vale", "shard", "moss", "blaze",
+  ];
   const verb = verbs[Math.floor(Math.random() * verbs.length)];
   const noun = nouns[Math.floor(Math.random() * nouns.length)];
-  return `${yy}${mm}${dd}-${verb}-${noun}`;
+  return `${verb}-${noun}`;
 }
 
 type WorktreeOption = { value: string; label: string };
