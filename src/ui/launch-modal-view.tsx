@@ -57,6 +57,8 @@ export function renderLaunchModal(
     >
       <div
         className="launch-modal"
+        tabIndex={-1}
+        ref={(el) => { if (el && el !== document.activeElement && !el.contains(document.activeElement)) el.focus(); }}
         onKeyDown={(ev) => {
           if (ev.key !== "Enter") return;
           ev.preventDefault();
