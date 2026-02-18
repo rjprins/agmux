@@ -17,6 +17,7 @@ import type {
 import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
+import { DEFAULT_INACTIVE_MAX_AGE_HOURS, mergePtyLists } from "./sessionList.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxCreateLinkedSession,
@@ -60,6 +61,10 @@ const AUTH_TOKEN = process.env.AGENT_TIDE_TOKEN ?? randomBytes(32).toString("hex
 const ALLOW_NON_LOOPBACK_BIND = process.env.AGENT_TIDE_ALLOW_NON_LOOPBACK === "1";
 const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGENT_TIDE_READINESS_TRACE_MAX ?? "2000") || 2000);
 const READINESS_TRACE_LOG = process.env.AGENT_TIDE_READINESS_TRACE_LOG === "1";
+const PERSISTED_PTY_LIMIT = Math.max(1, Number(process.env.AGENT_TIDE_PERSISTED_PTY_LIMIT ?? "500") || 500);
+const INACTIVE_MAX_AGE_HOURS = Number(
+  process.env.AGENT_TIDE_INACTIVE_MAX_AGE_HOURS ?? String(DEFAULT_INACTIVE_MAX_AGE_HOURS),
+);
 const WS_ALLOWED_ORIGINS = new Set(
   [
     `http://127.0.0.1:${PORT}`,
@@ -251,7 +256,9 @@ const readinessEngine = new ReadinessEngine({
 });
 
 async function listPtys(): Promise<PtySummary[]> {
-  return readinessEngine.withActiveProcesses(ptys.list());
+  const live = await readinessEngine.withActiveProcesses(ptys.list());
+  const persisted = store.listSessions(PERSISTED_PTY_LIMIT);
+  return mergePtyLists(live, persisted, { inactiveMaxAgeHours: INACTIVE_MAX_AGE_HOURS });
 }
 
 async function broadcastPtyList(): Promise<void> {

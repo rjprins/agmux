@@ -135,9 +135,9 @@ export class SqliteStore {
 
   listSessions(limit = 200): PtySummary[] {
     const stmt = this.db.prepare(`
-      select id, name, backend, tmux_session, command, args_json, cwd, created_at, status, exit_code, exit_signal
+      select id, name, backend, tmux_session, command, args_json, cwd, created_at, last_seen_at, status, exit_code, exit_signal
       from sessions
-      order by created_at desc
+      order by last_seen_at desc
       limit ?;
     `);
     const rows = stmt.all(limit) as Array<{
@@ -149,6 +149,7 @@ export class SqliteStore {
       args_json: string;
       cwd: string | null;
       created_at: number;
+      last_seen_at: number;
       status: string;
       exit_code: number | null;
       exit_signal: string | null;
@@ -163,6 +164,7 @@ export class SqliteStore {
       args: this.parseArgsJson(r.args_json),
       cwd: r.cwd,
       createdAt: r.created_at,
+      lastSeenAt: r.last_seen_at,
       status: r.status === "running" ? "running" : "exited",
       exitCode: r.exit_code,
       exitSignal: r.exit_signal,

@@ -19,6 +19,7 @@ export type PtySummary = {
   args: string[];
   cwd: string | null;
   createdAt: number;
+  lastSeenAt?: number;
   status: PtyStatus;
   exitCode?: number | null;
   exitSignal?: string | null;

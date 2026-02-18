@@ -21,6 +21,7 @@ type PtySummary = {
   args: string[];
   cwd: string | null;
   createdAt: number;
+  lastSeenAt?: number;
   status: "running" | "exited";
   exitCode?: number | null;
   exitSignal?: string | null;
@@ -1267,14 +1268,139 @@ function worktreeName(cwd: string | null): string | null {
 }
 
 const collapsedGroups = new Set<string>();
+const INACTIVE_PAGE_SIZE = 20;
+let inactiveSessionsExpanded = false;
+let inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
+
+function sessionSortTs(p: PtySummary): number {
+  return p.lastSeenAt ?? p.createdAt;
+}
+
+function renderInactiveSection(inactivePtys: PtySummary[]): void {
+  const header = document.createElement("li");
+  header.className = `pty-group-header${inactiveSessionsExpanded ? "" : " collapsed"}`;
+
+  const chevron = document.createElement("span");
+  chevron.className = "group-chevron";
+  chevron.textContent = inactiveSessionsExpanded ? "\u25bc" : "\u25b6";
+  header.appendChild(chevron);
+
+  const label = document.createElement("span");
+  label.textContent = "Inactive sessions";
+  header.appendChild(label);
+
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent = String(inactivePtys.length);
+  header.appendChild(count);
+
+  header.addEventListener("click", () => {
+    inactiveSessionsExpanded = !inactiveSessionsExpanded;
+    if (!inactiveSessionsExpanded) {
+      inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
+    }
+    renderList();
+  });
+  listEl.appendChild(header);
+
+  if (!inactiveSessionsExpanded) return;
+
+  for (const p of inactivePtys.slice(0, inactiveSessionsLimit)) {
+    const li = document.createElement("li");
+    li.className = "pty-item inactive";
+    li.dataset.ptyId = p.id;
+    li.style.setProperty("--pty-color", ptyColor(p.id));
+
+    const row = document.createElement("div");
+    row.className = "row";
+
+    const main = document.createElement("div");
+    main.className = "mainline";
+
+    const processHint = compactWhitespace(ptyInputProcessHints.get(p.id) ?? "");
+    const title = compactWhitespace(ptyTitles.get(p.id) ?? "");
+    const process = processHint || title || p.name;
+    const inputPreview = ptyLastInput.get(p.id) ?? "";
+    const changedAt = sessionSortTs(p);
+    const elapsed = formatElapsedTime(changedAt);
+    const exitLabel = p.exitSignal
+      ? `signal ${p.exitSignal}`
+      : p.exitCode != null
+        ? `exit ${p.exitCode}`
+        : "ended";
+
+    const primaryRow = document.createElement("div");
+    primaryRow.className = "primary-row";
+
+    const dot = document.createElement("span");
+    dot.className = "inactive-dot";
+    dot.title = `Inactive (${exitLabel})`;
+    primaryRow.appendChild(dot);
+
+    const primary = document.createElement("div");
+    primary.className = "primary";
+    primary.textContent = process;
+    primaryRow.appendChild(primary);
+
+    if (elapsed) {
+      const timeBadge = document.createElement("span");
+      timeBadge.className = "time-badge inactive";
+      timeBadge.textContent = elapsed;
+      timeBadge.title = `Inactive for ${elapsed}`;
+      primaryRow.appendChild(timeBadge);
+    }
+
+    const secondary = document.createElement("div");
+    secondary.className = "secondary";
+    const wt = worktreeName(p.cwd);
+    if (wt) {
+      const wtBadge = document.createElement("span");
+      wtBadge.className = "worktree-badge";
+      wtBadge.textContent = wt;
+      wtBadge.title = p.cwd ?? "";
+      secondary.appendChild(wtBadge);
+    }
+    const secondarySpan = document.createElement("span");
+    secondarySpan.textContent = inputPreview || exitLabel;
+    secondarySpan.title = secondarySpan.textContent;
+    secondary.appendChild(secondarySpan);
+
+    main.appendChild(primaryRow);
+    main.appendChild(secondary);
+    row.appendChild(main);
+    li.appendChild(row);
+
+    // Compact dot for collapsed sidebar mode (hidden via CSS when expanded).
+    const compactDot = document.createElement("span");
+    compactDot.className = "inactive-dot compact";
+    compactDot.title = `Inactive: ${process}`;
+    li.appendChild(compactDot);
+
+    listEl.appendChild(li);
+  }
+
+  if (inactivePtys.length > inactiveSessionsLimit) {
+    const moreLi = document.createElement("li");
+    const moreBtn = document.createElement("button");
+    moreBtn.type = "button";
+    moreBtn.className = "inactive-show-more";
+    moreBtn.textContent = `Show more (${inactivePtys.length - inactiveSessionsLimit} remaining)`;
+    moreBtn.addEventListener("click", () => {
+      inactiveSessionsLimit += INACTIVE_PAGE_SIZE;
+      renderList();
+    });
+    moreLi.appendChild(moreBtn);
+    listEl.appendChild(moreLi);
+  }
+}
 
 function renderList(): void {
   listEl.textContent = "";
 
   // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo)
+  const runningPtys = ptys.filter((p) => p.status === "running");
   const grouped = new Map<string, PtySummary[]>();
-  for (const p of ptys) {
-    if (p.status !== "running") continue;
+  for (const p of runningPtys) {
     const key = p.cwd ? normalizeCwdGroupKey(p.cwd) : "";
     let arr = grouped.get(key);
     if (!arr) {
@@ -1337,7 +1463,8 @@ function renderList(): void {
 
     if (collapsed) continue;
 
-    for (const p of grouped.get(key)!) {
+    const runningInGroup = grouped.get(key) ?? [];
+    for (const p of runningInGroup) {
       const li = document.createElement("li");
       li.className = "pty-item";
       li.dataset.ptyId = p.id;
@@ -1450,13 +1577,22 @@ function renderList(): void {
       listEl.appendChild(li);
     }
   }
+
+  const inactivePtys = ptys
+    .filter((p) => p.status !== "running")
+    .sort((a, b) => sessionSortTs(b) - sessionSortTs(a));
+  if (inactivePtys.length > 0) {
+    renderInactiveSection(inactivePtys);
+  }
 }
 
 function setActive(ptyId: string): void {
+  const summary = ptys.find((p) => p.id === ptyId);
+  if (!summary || summary.status !== "running") return;
+
   activePtyId = ptyId;
   saveActivePty(ptyId);
-  const backend = ptys.find((p) => p.id === ptyId)?.backend;
-  ensureTerm(ptyId, backend);
+  ensureTerm(ptyId, summary.backend);
   updateTerminalVisibility();
   subscribeIfNeeded(ptyId);
   requestAnimationFrame(() => {
