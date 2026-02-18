@@ -2,6 +2,18 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { THEMES, DEFAULT_THEME_KEY, applyTheme, type Theme } from "./themes";
+import {
+  renderPtyList,
+  type InactivePtyItem,
+  type PtyGroup,
+  type PtyListModel,
+  type RunningPtyItem,
+} from "./pty-list-view";
+import {
+  renderLaunchModal,
+  type LaunchModalViewModel,
+  type LaunchOptionControl,
+} from "./launch-modal-view";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -802,262 +814,196 @@ function generateBranchName(): string {
   return `${yy}${mm}${dd}-${verb}-${noun}`;
 }
 
-function openLaunchModal(groupCwd: string): void {
-  // Remove any existing modal
-  document.getElementById("launch-modal-overlay")?.remove();
+type WorktreeOption = { value: string; label: string };
 
-  const overlay = document.createElement("div");
-  overlay.id = "launch-modal-overlay";
-  overlay.className = "launch-modal-overlay";
-  overlay.addEventListener("click", (e) => {
-    if (e.target === overlay) overlay.remove();
-  });
+type LaunchModalState = {
+  selectedAgent: string;
+  selectedWorktree: string;
+  branchValue: string;
+  generatedBranch: string;
+  launching: boolean;
+  savedFlags: Record<string, Record<string, string | boolean>>;
+  worktreeOptions: WorktreeOption[];
+};
 
-  const modal = document.createElement("div");
-  modal.className = "launch-modal";
+const launchModalRoot = document.createElement("div");
+document.body.appendChild(launchModalRoot);
+let launchModalState: LaunchModalState | null = null;
+let launchModalSeq = 0;
+const NOOP_LAUNCH_HANDLERS = {
+  onClose: () => {},
+  onAgentChange: () => {},
+  onOptionChange: () => {},
+  onWorktreeChange: () => {},
+  onBranchChange: () => {},
+  onLaunch: () => {},
+};
 
-  const title = document.createElement("h3");
-  title.textContent = "Launch agent";
-  modal.appendChild(title);
-
-  // Agent select
-  const agentLabel = document.createElement("label");
-  agentLabel.textContent = "Agent";
-  agentLabel.className = "launch-modal-label";
-  const agentSelect = document.createElement("select");
-  agentSelect.className = "launch-modal-select";
-  for (const a of AGENT_CHOICES) {
-    const opt = document.createElement("option");
-    opt.value = a;
-    opt.textContent = a;
-    agentSelect.appendChild(opt);
+function buildWorktreeOptions(
+  groupCwd: string,
+  worktrees?: Array<{ name: string; path: string }>,
+): WorktreeOption[] {
+  const options: WorktreeOption[] = [{ value: "__new__", label: "+ New worktree" }];
+  if (groupCwd) {
+    const name = groupCwd.split("/").filter(Boolean).at(-1) ?? groupCwd;
+    options.push({ value: groupCwd, label: `Current (${name})` });
   }
-  agentLabel.appendChild(agentSelect);
-  modal.appendChild(agentLabel);
-
-  // Agent options container (populated dynamically per agent)
-  const optionsContainer = document.createElement("div");
-  optionsContainer.className = "launch-modal-options";
-  modal.appendChild(optionsContainer);
-
-  /**
-   * Saved flag values per agent, e.g. { claude: { "--permission-mode": "default", "--dangerously-skip-permissions": true } }
-   * Persisted to/from the server so they survive across sessions.
-   */
-  const savedFlags: Record<string, Record<string, string | boolean>> = {};
-
-  /** Currently rendered controls, keyed by flag name. */
-  let activeControls: Map<string, HTMLSelectElement | HTMLInputElement> = new Map();
-
-  function collectCurrentFlags(agent: string): void {
-    if (!activeControls.size) return;
-    const flags: Record<string, string | boolean> = {};
-    for (const [flag, el] of activeControls) {
-      flags[flag] = el instanceof HTMLSelectElement ? el.value : el.checked;
+  if (Array.isArray(worktrees)) {
+    for (const wt of worktrees) {
+      if (!wt || typeof wt.path !== "string" || typeof wt.name !== "string") continue;
+      if (groupCwd && wt.path === groupCwd) continue;
+      options.push({ value: wt.path, label: wt.name });
     }
-    savedFlags[agent] = flags;
   }
+  return options;
+}
 
-  function buildOptionsUI(agent: string): void {
-    optionsContainer.textContent = "";
-    activeControls = new Map();
-    const defs = AGENT_OPTIONS[agent];
-    if (!defs || defs.length === 0) return;
-
-    const saved = savedFlags[agent] ?? {};
-
-    for (const def of defs) {
-      if (def.type === "select") {
-        const label = document.createElement("label");
-        label.textContent = def.label;
-        label.className = "launch-modal-label";
-        const select = document.createElement("select");
-        select.className = "launch-modal-select";
-        for (const c of def.choices) {
-          const opt = document.createElement("option");
-          opt.value = c.value;
-          opt.textContent = c.label;
-          select.appendChild(opt);
-        }
-        const savedVal = saved[def.flag];
-        select.value = typeof savedVal === "string" ? savedVal : def.defaultValue;
-        label.appendChild(select);
-        optionsContainer.appendChild(label);
-        activeControls.set(def.flag, select);
-      } else {
-        const label = document.createElement("label");
-        label.className = "launch-modal-label launch-modal-checkbox-label";
-        const checkbox = document.createElement("input");
-        checkbox.type = "checkbox";
-        const savedVal = saved[def.flag];
-        checkbox.checked = typeof savedVal === "boolean" ? savedVal : def.defaultChecked;
-        const text = document.createElement("span");
-        text.textContent = def.label;
-        label.appendChild(checkbox);
-        label.appendChild(text);
-        optionsContainer.appendChild(label);
-        activeControls.set(def.flag, checkbox);
+function buildLaunchOptionControls(state: LaunchModalState): LaunchOptionControl[] {
+  const defs = AGENT_OPTIONS[state.selectedAgent] ?? [];
+  const saved = state.savedFlags[state.selectedAgent] ?? {};
+  return defs.map((def) =>
+    def.type === "select"
+      ? {
+        type: "select",
+        flag: def.flag,
+        label: def.label,
+        value: typeof saved[def.flag] === "string" ? String(saved[def.flag]) : def.defaultValue,
+        choices: def.choices,
       }
+      : {
+        type: "checkbox",
+        flag: def.flag,
+        label: def.label,
+        checked: typeof saved[def.flag] === "boolean" ? Boolean(saved[def.flag]) : def.defaultChecked,
+      });
+}
+
+function closeLaunchModal(): void {
+  launchModalState = null;
+  renderLaunchModal(launchModalRoot, null, NOOP_LAUNCH_HANDLERS);
+}
+
+function renderLaunchModalState(): void {
+  const state = launchModalState;
+  const model: LaunchModalViewModel | null = state
+    ? {
+      agentChoices: AGENT_CHOICES,
+      selectedAgent: state.selectedAgent,
+      optionControls: buildLaunchOptionControls(state),
+      worktreeOptions: state.worktreeOptions,
+      selectedWorktree: state.selectedWorktree,
+      branchValue: state.branchValue,
+      branchPlaceholder: state.generatedBranch,
+      launching: state.launching,
     }
-  }
+    : null;
 
-  let previousAgent = agentSelect.value;
-  buildOptionsUI(previousAgent);
+  renderLaunchModal(launchModalRoot, model, {
+    onClose: () => closeLaunchModal(),
+    onAgentChange: (agent) => {
+      if (!launchModalState) return;
+      launchModalState.selectedAgent = agent;
+      renderLaunchModalState();
+    },
+    onOptionChange: (flag, value) => {
+      if (!launchModalState) return;
+      const agentFlags = launchModalState.savedFlags[launchModalState.selectedAgent] ?? {};
+      agentFlags[flag] = value;
+      launchModalState.savedFlags[launchModalState.selectedAgent] = agentFlags;
+      renderLaunchModalState();
+    },
+    onWorktreeChange: (worktree) => {
+      if (!launchModalState) return;
+      launchModalState.selectedWorktree = worktree;
+      renderLaunchModalState();
+    },
+    onBranchChange: (branch) => {
+      if (!launchModalState) return;
+      launchModalState.branchValue = branch;
+      renderLaunchModalState();
+    },
+    onLaunch: () => {
+      if (!launchModalState || launchModalState.launching) return;
+      const stateNow = launchModalState;
+      if (!stateNow.selectedAgent || !stateNow.selectedWorktree) return;
+      stateNow.launching = true;
+      renderLaunchModalState();
 
-  agentSelect.addEventListener("change", () => {
-    collectCurrentFlags(previousAgent);
-    previousAgent = agentSelect.value;
-    buildOptionsUI(agentSelect.value);
+      const branch = stateNow.selectedWorktree === "__new__"
+        ? (stateNow.branchValue.trim() || stateNow.generatedBranch)
+        : undefined;
+      const flags = stateNow.savedFlags[stateNow.selectedAgent] ?? {};
+
+      void authFetch("/api/ptys/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          agent: stateNow.selectedAgent,
+          worktree: stateNow.selectedWorktree,
+          branch,
+          flags,
+        }),
+      })
+        .then(async (res) => {
+          if (res.ok) {
+            closeLaunchModal();
+            return;
+          }
+          const msg = await readApiError(res);
+          throw new Error(msg || "Launch failed");
+        })
+        .catch((err) => {
+          if (!launchModalState) return;
+          launchModalState.launching = false;
+          renderLaunchModalState();
+          window.alert(errorMessage(err));
+        });
+    },
   });
+}
 
-  // Worktree select
-  const wtLabel = document.createElement("label");
-  wtLabel.textContent = "Worktree";
-  wtLabel.className = "launch-modal-label";
-  const wtSelect = document.createElement("select");
-  wtSelect.className = "launch-modal-select";
+function openLaunchModal(groupCwd: string): void {
+  const seq = ++launchModalSeq;
+  launchModalState = {
+    selectedAgent: AGENT_CHOICES[0],
+    selectedWorktree: "__new__",
+    branchValue: "",
+    generatedBranch: generateBranchName(),
+    launching: false,
+    savedFlags: {},
+    worktreeOptions: buildWorktreeOptions(groupCwd),
+  };
+  renderLaunchModalState();
 
-  // Placeholder while loading
-  const loadingOpt = document.createElement("option");
-  loadingOpt.textContent = "Loading...";
-  loadingOpt.disabled = true;
-  wtSelect.appendChild(loadingOpt);
-  wtLabel.appendChild(wtSelect);
-  modal.appendChild(wtLabel);
-
-  // New worktree branch name (shown when __new__ is selected)
-  const branchLabel = document.createElement("label");
-  branchLabel.textContent = "Branch name (optional)";
-  branchLabel.className = "launch-modal-label launch-modal-branch";
-  const branchInput = document.createElement("input");
-  branchInput.type = "text";
-  branchInput.className = "launch-modal-input";
-  const generatedBranch = generateBranchName();
-  branchInput.placeholder = generatedBranch;
-  branchLabel.appendChild(branchInput);
-  modal.appendChild(branchLabel);
-
-  wtSelect.addEventListener("change", () => {
-    branchLabel.classList.toggle("hidden", wtSelect.value !== "__new__");
-  });
-
-  // Load saved launch preferences
-  authFetch("/api/launch-preferences")
-    .then((r) => r.ok ? r.json() : {})
+  void authFetch("/api/launch-preferences")
+    .then((r) => (r.ok ? r.json() : {}))
     .then((prefs: { agent?: string; flags?: Record<string, Record<string, string | boolean>> }) => {
+      if (seq !== launchModalSeq || !launchModalState) return;
       if (prefs.flags && typeof prefs.flags === "object") {
-        for (const [a, f] of Object.entries(prefs.flags)) {
-          if (f && typeof f === "object") savedFlags[a] = f;
+        for (const [agent, flags] of Object.entries(prefs.flags)) {
+          if (flags && typeof flags === "object") {
+            launchModalState.savedFlags[agent] = flags;
+          }
         }
       }
       if (prefs.agent && AGENT_CHOICES.includes(prefs.agent)) {
-        agentSelect.value = prefs.agent;
-        previousAgent = prefs.agent;
+        launchModalState.selectedAgent = prefs.agent;
       }
-      buildOptionsUI(agentSelect.value);
+      renderLaunchModalState();
     })
     .catch(() => {});
 
-  // Fetch worktrees and populate
-  fetch("/api/worktrees")
+  void fetch("/api/worktrees")
     .then((r) => r.json())
-    .then((data: { worktrees: { name: string; path: string }[] }) => {
-      wtSelect.innerHTML = "";
-
-      // Default: new worktree (first option, selected)
-      const newOpt = document.createElement("option");
-      newOpt.value = "__new__";
-      newOpt.textContent = "+ New worktree";
-      newOpt.selected = true;
-      wtSelect.appendChild(newOpt);
-
-      // If the group has a CWD, offer it as "Current directory"
-      if (groupCwd) {
-        const opt = document.createElement("option");
-        opt.value = groupCwd;
-        opt.textContent = `Current (${groupCwd.split("/").filter(Boolean).at(-1) ?? groupCwd})`;
-        wtSelect.appendChild(opt);
+    .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
+      if (seq !== launchModalSeq || !launchModalState) return;
+      launchModalState.worktreeOptions = buildWorktreeOptions(groupCwd, data.worktrees);
+      if (!launchModalState.worktreeOptions.some((w) => w.value === launchModalState.selectedWorktree)) {
+        launchModalState.selectedWorktree = launchModalState.worktreeOptions[0]?.value ?? "";
       }
-
-      for (const wt of data.worktrees) {
-        if (groupCwd && wt.path === groupCwd) continue;
-        const opt = document.createElement("option");
-        opt.value = wt.path;
-        opt.textContent = wt.name;
-        wtSelect.appendChild(opt);
-      }
+      renderLaunchModalState();
     })
-    .catch(() => {
-      wtSelect.innerHTML = "";
-      const newOpt = document.createElement("option");
-      newOpt.value = "__new__";
-      newOpt.textContent = "+ New worktree";
-      newOpt.selected = true;
-      wtSelect.appendChild(newOpt);
-      if (groupCwd) {
-        const opt = document.createElement("option");
-        opt.value = groupCwd;
-        opt.textContent = groupCwd.split("/").filter(Boolean).at(-1) ?? groupCwd;
-        wtSelect.appendChild(opt);
-      }
-    });
-
-  // Buttons
-  const btnRow = document.createElement("div");
-  btnRow.className = "launch-modal-buttons";
-
-  const cancelBtn = document.createElement("button");
-  cancelBtn.textContent = "Cancel";
-  cancelBtn.addEventListener("click", () => overlay.remove());
-  btnRow.appendChild(cancelBtn);
-
-  const launchBtn = document.createElement("button");
-  launchBtn.textContent = "Launch";
-  launchBtn.className = "launch-modal-go";
-  launchBtn.addEventListener("click", () => {
-    const agent = agentSelect.value;
-    const worktree = wtSelect.value;
-    const branch = worktree === "__new__" ? (branchInput.value.trim() || generatedBranch) : undefined;
-
-    // Collect current flag values
-    collectCurrentFlags(agent);
-    const agentFlags = savedFlags[agent] ?? {};
-
-    if (!agent || !worktree) return;
-
-    launchBtn.disabled = true;
-    launchBtn.textContent = "Launching...";
-
-    authFetch("/api/ptys/launch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ agent, worktree, branch, flags: agentFlags }),
-    })
-      .then((r) => {
-        if (!r.ok) return r.json().then((d: { error?: string }) => Promise.reject(new Error(d.error ?? "Launch failed")));
-        overlay.remove();
-      })
-      .catch((err: Error) => {
-        launchBtn.disabled = false;
-        launchBtn.textContent = "Launch";
-        alert(err.message);
-      });
-  });
-  btnRow.appendChild(launchBtn);
-  modal.appendChild(btnRow);
-
-  modal.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      launchBtn.click();
-    }
-  });
-
-  overlay.appendChild(modal);
-  document.body.appendChild(overlay);
-
-  // Focus the agent select
-  agentSelect.focus();
+    .catch(() => {});
 }
 
 const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
@@ -1276,130 +1222,64 @@ function sessionSortTs(p: PtySummary): number {
   return p.lastSeenAt ?? p.createdAt;
 }
 
-function renderInactiveSection(inactivePtys: PtySummary[]): void {
-  const header = document.createElement("li");
-  header.className = `pty-group-header${inactiveSessionsExpanded ? "" : " collapsed"}`;
+function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
+  const title = (ptyTitles.get(p.id) ?? "").trim();
+  const activeProcess = compactWhitespace(p.activeProcess ?? "");
+  const process =
+    (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name;
+  const inputPreview = ptyLastInput.get(p.id) ?? "";
+  const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
+  const changedAt = ptyStateChangedAt.get(p.id);
+  const elapsed = changedAt ? formatElapsedTime(changedAt) : "";
+  const secondaryText = inputPreview ? `> ${inputPreview}` : title && title !== process ? title : p.name;
 
-  const chevron = document.createElement("span");
-  chevron.className = "group-chevron";
-  chevron.textContent = inactiveSessionsExpanded ? "\u25bc" : "\u25b6";
-  header.appendChild(chevron);
+  return {
+    id: p.id,
+    color: ptyColor(p.id),
+    active: p.id === activePtyId,
+    readyState: readyInfo.state,
+    readyIndicator: readyInfo.indicator,
+    readyReason: readyInfo.reason,
+    process,
+    title: title && title !== process ? title : undefined,
+    secondaryText,
+    worktree: worktreeName(p.cwd),
+    cwd: p.cwd ?? undefined,
+    elapsed: elapsed || undefined,
+  };
+}
 
-  const label = document.createElement("span");
-  label.textContent = "Inactive sessions";
-  header.appendChild(label);
+function buildInactivePtyItem(p: PtySummary): InactivePtyItem {
+  const processHint = compactWhitespace(ptyInputProcessHints.get(p.id) ?? "");
+  const title = compactWhitespace(ptyTitles.get(p.id) ?? "");
+  const process = processHint || title || p.name;
+  const inputPreview = ptyLastInput.get(p.id) ?? "";
+  const changedAt = sessionSortTs(p);
+  const elapsed = formatElapsedTime(changedAt);
+  const exitLabel = p.exitSignal
+    ? `signal ${p.exitSignal}`
+    : p.exitCode != null
+      ? `exit ${p.exitCode}`
+      : "ended";
+  const secondaryText = inputPreview || exitLabel;
 
-  const count = document.createElement("span");
-  count.className = "group-count";
-  count.textContent = String(inactivePtys.length);
-  header.appendChild(count);
-
-  header.addEventListener("click", () => {
-    inactiveSessionsExpanded = !inactiveSessionsExpanded;
-    if (!inactiveSessionsExpanded) {
-      inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
-    }
-    renderList();
-  });
-  listEl.appendChild(header);
-
-  if (!inactiveSessionsExpanded) return;
-
-  for (const p of inactivePtys.slice(0, inactiveSessionsLimit)) {
-    const li = document.createElement("li");
-    li.className = "pty-item inactive";
-    li.dataset.ptyId = p.id;
-    li.style.setProperty("--pty-color", ptyColor(p.id));
-
-    const row = document.createElement("div");
-    row.className = "row";
-
-    const main = document.createElement("div");
-    main.className = "mainline";
-
-    const processHint = compactWhitespace(ptyInputProcessHints.get(p.id) ?? "");
-    const title = compactWhitespace(ptyTitles.get(p.id) ?? "");
-    const process = processHint || title || p.name;
-    const inputPreview = ptyLastInput.get(p.id) ?? "";
-    const changedAt = sessionSortTs(p);
-    const elapsed = formatElapsedTime(changedAt);
-    const exitLabel = p.exitSignal
-      ? `signal ${p.exitSignal}`
-      : p.exitCode != null
-        ? `exit ${p.exitCode}`
-        : "ended";
-
-    const primaryRow = document.createElement("div");
-    primaryRow.className = "primary-row";
-
-    const dot = document.createElement("span");
-    dot.className = "inactive-dot";
-    dot.title = `Inactive (${exitLabel})`;
-    primaryRow.appendChild(dot);
-
-    const primary = document.createElement("div");
-    primary.className = "primary";
-    primary.textContent = process;
-    primaryRow.appendChild(primary);
-
-    if (elapsed) {
-      const timeBadge = document.createElement("span");
-      timeBadge.className = "time-badge inactive";
-      timeBadge.textContent = elapsed;
-      timeBadge.title = `Inactive for ${elapsed}`;
-      primaryRow.appendChild(timeBadge);
-    }
-
-    const secondary = document.createElement("div");
-    secondary.className = "secondary";
-    const wt = worktreeName(p.cwd);
-    if (wt) {
-      const wtBadge = document.createElement("span");
-      wtBadge.className = "worktree-badge";
-      wtBadge.textContent = wt;
-      wtBadge.title = p.cwd ?? "";
-      secondary.appendChild(wtBadge);
-    }
-    const secondarySpan = document.createElement("span");
-    secondarySpan.textContent = inputPreview || exitLabel;
-    secondarySpan.title = secondarySpan.textContent;
-    secondary.appendChild(secondarySpan);
-
-    main.appendChild(primaryRow);
-    main.appendChild(secondary);
-    row.appendChild(main);
-    li.appendChild(row);
-
-    // Compact dot for collapsed sidebar mode (hidden via CSS when expanded).
-    const compactDot = document.createElement("span");
-    compactDot.className = "inactive-dot compact";
-    compactDot.title = `Inactive: ${process}`;
-    li.appendChild(compactDot);
-
-    listEl.appendChild(li);
-  }
-
-  if (inactivePtys.length > inactiveSessionsLimit) {
-    const moreLi = document.createElement("li");
-    const moreBtn = document.createElement("button");
-    moreBtn.type = "button";
-    moreBtn.className = "inactive-show-more";
-    moreBtn.textContent = `Show more (${inactivePtys.length - inactiveSessionsLimit} remaining)`;
-    moreBtn.addEventListener("click", () => {
-      inactiveSessionsLimit += INACTIVE_PAGE_SIZE;
-      renderList();
-    });
-    moreLi.appendChild(moreBtn);
-    listEl.appendChild(moreLi);
-  }
+  return {
+    id: p.id,
+    color: ptyColor(p.id),
+    process,
+    secondaryText,
+    secondaryTitle: secondaryText,
+    worktree: worktreeName(p.cwd),
+    cwd: p.cwd ?? undefined,
+    elapsed: elapsed || undefined,
+    exitLabel,
+  };
 }
 
 function renderList(): void {
-  listEl.textContent = "";
-
-  // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo)
+  // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo).
   const runningPtys = ptys.filter((p) => p.status === "running");
-  const grouped = new Map<string, PtySummary[]>();
+  const grouped = new Map<string, RunningPtyItem[]>();
   for (const p of runningPtys) {
     const key = p.cwd ? normalizeCwdGroupKey(p.cwd) : "";
     let arr = grouped.get(key);
@@ -1407,10 +1287,10 @@ function renderList(): void {
       arr = [];
       grouped.set(key, arr);
     }
-    arr.push(p);
+    arr.push(buildRunningPtyItem(p));
   }
 
-  // Sort: non-empty CWDs alphabetically by basename, empty last
+  // Sort: non-empty CWDs alphabetically by basename, empty last.
   const sortedKeys = [...grouped.keys()].sort((a, b) => {
     if (!a) return 1;
     if (!b) return -1;
@@ -1419,171 +1299,59 @@ function renderList(): void {
     return ba.localeCompare(bb);
   });
 
-  const showHeaders = sortedKeys.length >= 1;
-
-  for (const key of sortedKeys) {
-    const collapsed = collapsedGroups.has(key);
-
-    if (showHeaders) {
-      const header = document.createElement("li");
-      header.className = `pty-group-header${collapsed ? " collapsed" : ""}`;
-
-      const chevron = document.createElement("span");
-      chevron.className = "group-chevron";
-      chevron.textContent = collapsed ? "\u25b6" : "\u25bc";
-      header.appendChild(chevron);
-
-      const label = document.createElement("span");
-      if (key) {
-        const basename = key.split("/").filter(Boolean).at(-1) ?? key;
-        label.textContent = basename;
-        header.title = key;
-      } else {
-        label.textContent = "Other";
-      }
-      header.appendChild(label);
-
-      const launchBtn = document.createElement("button");
-      launchBtn.className = "group-launch";
-      launchBtn.textContent = "+";
-      launchBtn.title = "Launch agent";
-      launchBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        openLaunchModal(key);
-      });
-      header.appendChild(launchBtn);
-
-      header.addEventListener("click", () => {
-        if (collapsedGroups.has(key)) collapsedGroups.delete(key);
-        else collapsedGroups.add(key);
-        renderList();
-      });
-      listEl.appendChild(header);
-    }
-
-    if (collapsed) continue;
-
-    const runningInGroup = grouped.get(key) ?? [];
-    for (const p of runningInGroup) {
-      const li = document.createElement("li");
-      li.className = "pty-item";
-      li.dataset.ptyId = p.id;
-      li.style.setProperty("--pty-color", ptyColor(p.id));
-      if (p.id === activePtyId) li.classList.add("active");
-
-      const row = document.createElement("div");
-      row.className = "row";
-
-      const main = document.createElement("div");
-      main.className = "mainline";
-
-      const title = (ptyTitles.get(p.id) ?? "").trim();
-      const activeProcess = compactWhitespace(p.activeProcess ?? "");
-      const process =
-        (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name;
-      const inputPreview = ptyLastInput.get(p.id) ?? "";
-      const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
-      li.classList.add(`state-${readyInfo.state}`);
-      const readyStateLabel = readyInfo.state;
-
-      const primaryRow = document.createElement("div");
-      primaryRow.className = "primary-row";
-
-      const readyDot = document.createElement("span");
-      readyDot.className = `ready-dot ${readyInfo.indicator}`;
-      readyDot.title = `PTY is ${readyStateLabel}${readyInfo.reason ? ` (${readyInfo.reason})` : ""}`;
-      readyDot.setAttribute("aria-label", `PTY is ${readyStateLabel}`);
-
-      const primary = document.createElement("div");
-      primary.className = "primary";
-      primary.textContent = process;
-      const statusGroup = document.createElement("span");
-      statusGroup.className = "status-group";
-      statusGroup.appendChild(readyDot);
-
-      const changedAt = ptyStateChangedAt.get(p.id);
-      if (changedAt) {
-        const elapsed = formatElapsedTime(changedAt);
-        if (elapsed) {
-          const timeBadge = document.createElement("span");
-          timeBadge.className = `time-badge ${readyInfo.state === "ready" ? "ready" : "busy"}`;
-          timeBadge.textContent = elapsed;
-          timeBadge.title = readyInfo.state === "ready"
-            ? `Ready for ${elapsed}`
-            : `Processing for ${elapsed}`;
-          statusGroup.appendChild(timeBadge);
-        }
-      }
-
-      primaryRow.appendChild(statusGroup);
-      primaryRow.appendChild(primary);
-      if (title && title !== process) {
-        const titleEl = document.createElement("span");
-        titleEl.className = "title-label";
-        titleEl.textContent = title;
-        titleEl.title = title;
-        primaryRow.appendChild(titleEl);
-      }
-
-      const secondary = document.createElement("div");
-      secondary.className = "secondary";
-      const wt = worktreeName(p.cwd);
-      if (wt) {
-        const wtBadge = document.createElement("span");
-        wtBadge.className = "worktree-badge";
-        wtBadge.textContent = wt;
-        wtBadge.title = p.cwd ?? "";
-        secondary.appendChild(wtBadge);
-      }
-      let secondaryText = "";
-      if (inputPreview) {
-        secondaryText = `> ${inputPreview}`;
-      } else if (title && title !== process) {
-        secondaryText = title;
-      } else {
-        secondaryText = p.name;
-      }
-      const secondarySpan = document.createElement("span");
-      secondarySpan.textContent = secondaryText;
-      secondary.appendChild(secondarySpan);
-
-      main.appendChild(primaryRow);
-      main.appendChild(secondary);
-
-      const closeBtn = document.createElement("button");
-      closeBtn.type = "button";
-      closeBtn.className = "pty-close";
-      closeBtn.textContent = "x";
-      closeBtn.title = "Close";
-      closeBtn.setAttribute("aria-label", `Close PTY ${process}`);
-      closeBtn.addEventListener("click", async (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        await killPty(p.id);
-      });
-
-      row.appendChild(main);
-      row.appendChild(closeBtn);
-
-      li.appendChild(row);
-
-      // Compact dot for collapsed sidebar mode (hidden via CSS when expanded).
-      const compactDot = document.createElement("span");
-      compactDot.className = `ready-dot compact ${readyInfo.indicator}`;
-      compactDot.title = `${process} — ${readyStateLabel}`;
-      li.appendChild(compactDot);
-
-      li.addEventListener("click", () => setActive(p.id));
-      listEl.appendChild(li);
-    }
-  }
+  const groups: PtyGroup[] = sortedKeys.map((key) => {
+    const basename = key ? key.split("/").filter(Boolean).at(-1) ?? key : "Other";
+    return {
+      key,
+      label: basename,
+      title: key || undefined,
+      collapsed: collapsedGroups.has(key),
+      items: grouped.get(key) ?? [],
+    };
+  });
 
   const inactivePtys = ptys
     .filter((p) => p.status !== "running")
     .sort((a, b) => sessionSortTs(b) - sessionSortTs(a));
-  if (inactivePtys.length > 0) {
-    renderInactiveSection(inactivePtys);
-  }
+  const inactiveItems = inactivePtys.map(buildInactivePtyItem);
+  const shownInactive = inactiveSessionsExpanded ? inactiveItems.slice(0, inactiveSessionsLimit) : [];
+
+  const model: PtyListModel = {
+    groups,
+    showHeaders: sortedKeys.length >= 1,
+    inactive: inactiveItems.length > 0
+      ? {
+        expanded: inactiveSessionsExpanded,
+        total: inactiveItems.length,
+        shown: shownInactive,
+        remaining: Math.max(0, inactiveItems.length - shownInactive.length),
+      }
+      : null,
+  };
+
+  renderPtyList(listEl, model, {
+    onToggleGroup: (groupKey) => {
+      if (collapsedGroups.has(groupKey)) collapsedGroups.delete(groupKey);
+      else collapsedGroups.add(groupKey);
+      renderList();
+    },
+    onOpenLaunch: (groupKey) => openLaunchModal(groupKey),
+    onSelectPty: (ptyId) => setActive(ptyId),
+    onKillPty: (ptyId) => {
+      void killPty(ptyId);
+    },
+    onToggleInactive: () => {
+      inactiveSessionsExpanded = !inactiveSessionsExpanded;
+      if (!inactiveSessionsExpanded) {
+        inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
+      }
+      renderList();
+    },
+    onShowMoreInactive: () => {
+      inactiveSessionsLimit += INACTIVE_PAGE_SIZE;
+      renderList();
+    },
+  });
 }
 
 function setActive(ptyId: string): void {

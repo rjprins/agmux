@@ -26,7 +26,14 @@
     "e2e:debug": "PWDEBUG=1 playwright test --headed",
     "test": "vitest run"
   },
-  "keywords": ["terminal", "pty", "agent", "tmux", "websocket", "cli"],
+  "keywords": [
+    "terminal",
+    "pty",
+    "agent",
+    "tmux",
+    "websocket",
+    "cli"
+  ],
   "license": "MIT",
   "type": "module",
   "dependencies": {
@@ -37,6 +44,7 @@
     "chokidar": "^5.0.0",
     "fastify": "^5.7.4",
     "node-pty": "^1.1.0",
+    "preact": "^10.28.3",
     "strip-ansi": "^7.1.2",
     "ws": "^8.19.0"
   },

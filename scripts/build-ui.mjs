@@ -13,6 +13,8 @@ await build({
   bundle: true,
   platform: "browser",
   format: "iife",
+  jsx: "automatic",
+  jsxImportSource: "preact",
   sourcemap: true,
   target: ["es2020"],
   define: {
