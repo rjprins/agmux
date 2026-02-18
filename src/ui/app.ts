@@ -89,6 +89,7 @@ const inputHistoryListEl = $("input-history-list");
 
 let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
+let pendingActivePtyId: string | null = null;
 let inputHistoryExpanded = false;
 
 const ACTIVE_PTY_KEY = "agmux:activePty";
@@ -594,6 +595,13 @@ function onServerMsg(msg: ServerMsg): void {
       }
     }
 
+    if (pendingActivePtyId) {
+      const pending = ptys.find((p) => p.id === pendingActivePtyId);
+      if (pending && pending.status === "running") {
+        setActive(pendingActivePtyId);
+      }
+    }
+
     updateTerminalVisibility();
     reflowActiveTerm();
     renderList();
@@ -946,7 +954,9 @@ function renderLaunchModalState(): void {
       })
         .then(async (res) => {
           if (res.ok) {
+            const { id } = await res.json() as { id: string };
             closeLaunchModal();
+            setActive(id);
             return;
           }
           const msg = await readApiError(res);
@@ -1356,7 +1366,11 @@ function renderList(): void {
 
 function setActive(ptyId: string): void {
   const summary = ptys.find((p) => p.id === ptyId);
-  if (!summary || summary.status !== "running") return;
+  if (!summary || summary.status !== "running") {
+    pendingActivePtyId = ptyId;
+    return;
+  }
+  pendingActivePtyId = null;
 
   activePtyId = ptyId;
   saveActivePty(ptyId);
