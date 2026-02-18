@@ -619,6 +619,7 @@ function onServerMsg(msg: ServerMsg): void {
     const backend = ptys.find((p) => p.id === msg.ptyId)?.backend;
     const st = ensureTerm(msg.ptyId, backend);
     st.term.write(msg.data);
+    if (msg.ptyId === activePtyId) scheduleReflow();
     return;
   }
   if (msg.type === "pty_exit") {
@@ -1517,6 +1518,19 @@ function reflowActiveTerm(): void {
   if (!st) return;
   st.term.scrollLines(-1);
   st.term.scrollLines(1);
+}
+
+// Debounced reflow: coalesces multiple writes within a single frame into one
+// reflow.  Called after pty_output writes so that snapshots arriving after
+// reconnect (which land after the initial setActive reflow) still get reflowed.
+let reflowRafPending = false;
+function scheduleReflow(): void {
+  if (reflowRafPending) return;
+  reflowRafPending = true;
+  requestAnimationFrame(() => {
+    reflowRafPending = false;
+    reflowActiveTerm();
+  });
 }
 
 function updateTerminalVisibility(): void {
