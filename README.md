@@ -1,4 +1,4 @@
-# agent-tide
+# agmux
 
 Local web UI for managing agent terminal sessions. Streams PTY output to the browser over WebSockets, with customizable triggers and agent readiness detection.
 
@@ -31,8 +31,8 @@ See [docs/dependencies.md](docs/dependencies.md) for the full list.
 ## Quick Start
 
 ```sh
-git clone https://github.com/rjprins/agent-tide.git
-cd agent-tide
+git clone https://github.com/rjprins/agmux.git
+cd agmux
 npm install
 npm run live
 ```
@@ -60,8 +60,8 @@ For extra safety, you can install the supervisor binary outside the repo so PTY 
 
 ```sh
 cd supervisor
-GOCACHE=/tmp/go-build-cache go build -o ~/.local/bin/agent-tide-supervisor .
-~/.local/bin/agent-tide-supervisor -repo "$(pwd)/.." -app-port 4821 -sup-port 4822
+GOCACHE=/tmp/go-build-cache go build -o ~/.local/bin/agmux-supervisor .
+~/.local/bin/agmux-supervisor -repo "$(pwd)/.." -app-port 4821 -sup-port 4822
 ```
 
 Requires **Go 1.22+**. Optional hardening (Linux): make the installed supervisor binary non-writable for the PTY agent user.
@@ -80,14 +80,14 @@ Environment variables:
 |---|---|---|
 | `HOST` | `127.0.0.1` | Server bind address |
 | `PORT` | `4821` | Server port |
-| `DB_PATH` | `data/agent-tide.db` | SQLite database path |
+| `DB_PATH` | `data/agmux.db` | SQLite database path |
 | `TRIGGERS_PATH` | `triggers/index.js` | Trigger definitions file |
-| `AGENT_TIDE_TOKEN` | *(random)* | Auth token (auto-generated if not set) |
-| `AGENT_TIDE_SHELL` | `$SHELL` or `bash` | Shell for PTY sessions |
-| `AGENT_TIDE_SHELL_BACKEND` | `tmux` | PTY backend: `tmux` or `pty` |
-| `AGENT_TIDE_NO_OPEN` | `false` | Skip auto-opening browser |
-| `AGENT_TIDE_ALLOW_NON_LOOPBACK` | `false` | Allow binding to non-localhost addresses |
-| `AGENT_TIDE_ALLOWED_ORIGINS` | | Additional WebSocket origins (comma-separated) |
+| `AGMUX_TOKEN` | *(random)* | Auth token (auto-generated if not set) |
+| `AGMUX_SHELL` | `$SHELL` or `bash` | Shell for PTY sessions |
+| `AGMUX_SHELL_BACKEND` | `tmux` | PTY backend: `tmux` or `pty` |
+| `AGMUX_NO_OPEN` | `false` | Skip auto-opening browser |
+| `AGMUX_ALLOW_NON_LOOPBACK` | `false` | Allow binding to non-localhost addresses |
+| `AGMUX_ALLOWED_ORIGINS` | | Additional WebSocket origins (comma-separated) |
 
 ## Testing
 
@@ -121,7 +121,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for reporting vulnerabilities. agent-tide runs terminal sessions — please report security issues responsibly.
+See [SECURITY.md](SECURITY.md) for reporting vulnerabilities. agmux runs terminal sessions — please report security issues responsibly.
 
 ## License
 

@@ -55,22 +55,22 @@ const DEFAULT_PORT = 4821;
 const requestedPort = Number(process.env.PORT ?? String(DEFAULT_PORT));
 const PORT = Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : DEFAULT_PORT;
 const PUBLIC_DIR = path.resolve("public");
-const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agent-tide.db");
+const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agmux.db");
 const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
-const AUTH_TOKEN = process.env.AGENT_TIDE_TOKEN ?? randomBytes(32).toString("hex");
-const ALLOW_NON_LOOPBACK_BIND = process.env.AGENT_TIDE_ALLOW_NON_LOOPBACK === "1";
-const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGENT_TIDE_READINESS_TRACE_MAX ?? "2000") || 2000);
-const READINESS_TRACE_LOG = process.env.AGENT_TIDE_READINESS_TRACE_LOG === "1";
-const PERSISTED_PTY_LIMIT = Math.max(1, Number(process.env.AGENT_TIDE_PERSISTED_PTY_LIMIT ?? "500") || 500);
+const AUTH_TOKEN = process.env.AGMUX_TOKEN ?? randomBytes(32).toString("hex");
+const ALLOW_NON_LOOPBACK_BIND = process.env.AGMUX_ALLOW_NON_LOOPBACK === "1";
+const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGMUX_READINESS_TRACE_MAX ?? "2000") || 2000);
+const READINESS_TRACE_LOG = process.env.AGMUX_READINESS_TRACE_LOG === "1";
+const PERSISTED_PTY_LIMIT = Math.max(1, Number(process.env.AGMUX_PERSISTED_PTY_LIMIT ?? "500") || 500);
 const INACTIVE_MAX_AGE_HOURS = Number(
-  process.env.AGENT_TIDE_INACTIVE_MAX_AGE_HOURS ?? String(DEFAULT_INACTIVE_MAX_AGE_HOURS),
+  process.env.AGMUX_INACTIVE_MAX_AGE_HOURS ?? String(DEFAULT_INACTIVE_MAX_AGE_HOURS),
 );
 const WS_ALLOWED_ORIGINS = new Set(
   [
     `http://127.0.0.1:${PORT}`,
     `http://localhost:${PORT}`,
     `http://[::1]:${PORT}`,
-    ...(process.env.AGENT_TIDE_ALLOWED_ORIGINS ?? "")
+    ...(process.env.AGMUX_ALLOWED_ORIGINS ?? "")
       .split(",")
       .map((v) => v.trim())
       .filter((v) => v.length > 0),
@@ -87,7 +87,7 @@ const triggerLoader = new TriggerLoader(TRIGGERS_PATH);
 
 if (!ALLOW_NON_LOOPBACK_BIND && !isLoopbackHost(HOST)) {
   throw new Error(
-    `Refusing to bind to non-loopback host "${HOST}". Set AGENT_TIDE_ALLOW_NON_LOOPBACK=1 to allow.`,
+    `Refusing to bind to non-loopback host "${HOST}". Set AGMUX_ALLOW_NON_LOOPBACK=1 to allow.`,
   );
 }
 
@@ -109,7 +109,7 @@ function parseTokenFromAuthHeader(value: unknown): string | null {
 }
 
 function parseTokenFromHeaders(headers: Record<string, unknown>): string | null {
-  const direct = headers["x-agent-tide-token"];
+  const direct = headers["x-agmux-token"];
   if (typeof direct === "string" && direct.length > 0) return direct;
   if (Array.isArray(direct)) {
     for (const v of direct) {
@@ -156,9 +156,9 @@ function isWsOriginAllowed(origin: string | undefined): boolean {
 
 // ---------------------------------------------------------------------------
 // Tmux reconciliation: tmux windows are the source of truth.
-// Ensures exactly one running PTY attachment per agent_tide window.
+// Ensures exactly one running PTY attachment per agmux window.
 // ---------------------------------------------------------------------------
-const AGENT_TIDE_SESSION = "agent_tide";
+const AGMUX_SESSION = "agmux";
 let reconciling = false;
 
 /** Track linked tmux sessions per PTY so we can clean them up on exit. */
@@ -168,17 +168,17 @@ async function reconcileTmuxAttachments(): Promise<void> {
   if (reconciling) return;
   reconciling = true;
   try {
-    const windows = await tmuxListWindows(AGENT_TIDE_SESSION);
+    const windows = await tmuxListWindows(AGMUX_SESSION);
     const windowTargets = new Set(windows.map((w) => w.target));
 
-    // Map target → ptyId for running agent_tide PTYs.
+    // Map target → ptyId for running agmux PTYs.
     const runningByTarget = new Map<string, string>();
     for (const p of ptys.list()) {
       if (
         p.backend === "tmux" &&
         p.status === "running" &&
         p.tmuxSession &&
-        tmuxTargetSession(p.tmuxSession) === AGENT_TIDE_SESSION
+        tmuxTargetSession(p.tmuxSession) === AGMUX_SESSION
       ) {
         if (runningByTarget.has(p.tmuxSession)) {
           // Duplicate! Kill the newer one.
@@ -191,7 +191,7 @@ async function reconcileTmuxAttachments(): Promise<void> {
     }
 
     // Spawn attachments for orphaned windows (window exists, no PTY).
-    const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
+    const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
     for (const w of windows) {
       if (!runningByTarget.has(w.target)) {
         const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(w.target);
@@ -389,7 +389,7 @@ fastify.get("/api/readiness/trace", async (req) => {
 
 fastify.get("/api/tmux/sessions", async () => {
   const sessions = (await tmuxListSessions())
-    .filter((s) => !(s.server === "agent_tide" && tmuxIsLinkedViewSession(s.name, AGENT_TIDE_SESSION)));
+    .filter((s) => !(s.server === "agmux" && tmuxIsLinkedViewSession(s.name, AGMUX_SESSION)));
   return { sessions };
 });
 
@@ -401,9 +401,9 @@ fastify.get("/api/tmux/check", async (req, reply) => {
     reply.code(400);
     return { error: "name is required" };
   }
-  if (serverRaw !== "agent_tide" && serverRaw !== "default") {
+  if (serverRaw !== "agmux" && serverRaw !== "default") {
     reply.code(400);
-    return { error: "server must be agent_tide or default" };
+    return { error: "server must be agmux or default" };
   }
   const located = await tmuxLocateSession(name);
   if (located !== serverRaw) {
@@ -539,8 +539,8 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
   }
 
   // Create shell using tmux (reuse /api/ptys/shell logic)
-  const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
-  const SESSION_NAME = "agent_tide";
+  const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
+  const SESSION_NAME = "agmux";
   try {
     await tmuxEnsureSession(SESSION_NAME, shell);
   } catch (err) {
@@ -596,8 +596,8 @@ fastify.get("/api/launch-preferences", async () => {
 });
 
 fastify.post("/api/ptys/shell", async (_req, reply) => {
-  const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
-  const backend = process.env.AGENT_TIDE_SHELL_BACKEND ?? "tmux";
+  const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
+  const backend = process.env.AGMUX_SHELL_BACKEND ?? "tmux";
 
   if (backend === "pty") {
     const summary = ptys.spawn({
@@ -614,7 +614,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
 
   // Use a single tmux session with one window per shell.
   try {
-    await tmuxEnsureSession(AGENT_TIDE_SESSION, shell);
+    await tmuxEnsureSession(AGMUX_SESSION, shell);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     if (message.startsWith("shell must")) {
@@ -625,7 +625,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
   }
 
   // Reuse an unattached window (e.g. from session creation) or create a new one.
-  const windows = await tmuxListWindows(AGENT_TIDE_SESSION);
+  const windows = await tmuxListWindows(AGMUX_SESSION);
   const attachedTargets = new Set(
     ptys.list()
       .filter((p) => p.backend === "tmux" && p.tmuxSession)
@@ -639,7 +639,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
     }
   }
   if (!tmuxTarget) {
-    tmuxTarget = await tmuxCreateWindow(AGENT_TIDE_SESSION, shell);
+    tmuxTarget = await tmuxCreateWindow(AGMUX_SESSION, shell);
   }
   const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(tmuxTarget);
   const name = `shell:${path.basename(shell)}`;
@@ -667,9 +667,9 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
     reply.code(400);
     return { error: "name is required" };
   }
-  if (requestedServer != null && requestedServer !== "agent_tide" && requestedServer !== "default") {
+  if (requestedServer != null && requestedServer !== "agmux" && requestedServer !== "default") {
     reply.code(400);
-    return { error: "server must be agent_tide or default" };
+    return { error: "server must be agmux or default" };
   }
 
   const located = await tmuxLocateSession(name);
@@ -681,7 +681,7 @@ fastify.post("/api/ptys/attach-tmux", async (req, reply) => {
     reply.code(409);
     return { error: `tmux session exists on ${located}, not ${requestedServer}` };
   }
-  if (located === "agent_tide" && tmuxIsLinkedViewSession(name, AGENT_TIDE_SESSION)) {
+  if (located === "agmux" && tmuxIsLinkedViewSession(name, AGMUX_SESSION)) {
     reply.code(400);
     return { error: "internal linked session cannot be attached directly" };
   }
@@ -767,14 +767,14 @@ fastify.post("/api/triggers/reload", async () => {
 });
 
 async function restoreAtStartup(): Promise<void> {
-  // Ensure the single agent_tide tmux session exists (creates it if missing).
-  const shell = process.env.AGENT_TIDE_SHELL ?? process.env.SHELL ?? "bash";
-  await tmuxEnsureSession(AGENT_TIDE_SESSION, shell);
-  const pruned = await tmuxPruneDetachedLinkedSessions(AGENT_TIDE_SESSION);
+  // Ensure the single agmux tmux session exists (creates it if missing).
+  const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
+  await tmuxEnsureSession(AGMUX_SESSION, shell);
+  const pruned = await tmuxPruneDetachedLinkedSessions(AGMUX_SESSION);
   if (pruned.length > 0) {
     fastify.log.info({ count: pruned.length }, "pruned stale linked tmux sessions");
   }
-  // Reconcile agent_tide tmux windows — any existing window gets an attachment
+  // Reconcile agmux tmux windows — any existing window gets an attachment
   // PTY; stale PTYs are cleaned up.
   await reconcileTmuxAttachments();
 }
@@ -1020,8 +1020,8 @@ await restoreAtStartup();
 await fastify.listen({ host: HOST, port: PORT });
 
 const appUrl = `http://${HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST}:${PORT}`;
-fastify.log.info(`agent-tide ready at ${appUrl}`);
+fastify.log.info(`agmux ready at ${appUrl}`);
 
-if (process.env.AGENT_TIDE_NO_OPEN !== "1") {
+if (process.env.AGMUX_NO_OPEN !== "1") {
   openBrowser(appUrl);
 }

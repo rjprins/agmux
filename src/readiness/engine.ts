@@ -6,7 +6,7 @@ import { inferPaneStatus, type PaneCacheState } from "./status-inference.js";
 
 const READINESS_WORKING_GRACE_MS = Math.max(
   300,
-  Number(process.env.AGENT_TIDE_WORKING_GRACE_MS ?? "4000") || 4000,
+  Number(process.env.AGMUX_WORKING_GRACE_MS ?? "4000") || 4000,
 );
 const READINESS_RECOMPUTE_DEBOUNCE_MS = 120;
 const OUTPUT_BUFFER_LIMIT = 16_000;

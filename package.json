@@ -1,15 +1,15 @@
 {
-  "name": "agent-tide",
+  "name": "agmux",
   "version": "1.0.0",
   "description": "Local web UI for managing agent terminal sessions with live streaming, triggers, and readiness detection",
   "main": "dist/server.js",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/rjprins/agent-tide.git"
+    "url": "git+https://github.com/rjprins/agmux.git"
   },
-  "homepage": "https://github.com/rjprins/agent-tide",
+  "homepage": "https://github.com/rjprins/agmux",
   "bugs": {
-    "url": "https://github.com/rjprins/agent-tide/issues"
+    "url": "https://github.com/rjprins/agmux/issues"
   },
   "author": "Rutger Prins",
   "scripts": {

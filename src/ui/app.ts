@@ -29,14 +29,14 @@ type PtySummary = {
 
 type TmuxSessionInfo = {
   name: string;
-  server: "agent_tide" | "default";
+  server: "agmux" | "default";
   createdAt: number | null;
   windows: number | null;
 };
 
 type TmuxSessionCheck = {
   name: string;
-  server: "agent_tide" | "default";
+  server: "agmux" | "default";
   warnings: string[];
   observed: {
     mouse: string | null;
@@ -79,7 +79,7 @@ let ptys: PtySummary[] = [];
 let activePtyId: string | null = null;
 let inputHistoryExpanded = false;
 
-const ACTIVE_PTY_KEY = "agent-tide:activePty";
+const ACTIVE_PTY_KEY = "agmux:activePty";
 
 function saveActivePty(ptyId: string | null): void {
   try {
@@ -242,7 +242,7 @@ btnSidebarToggle.addEventListener("click", toggleSidebar);
 
 // --- Theme ---
 
-const THEME_KEY = "agent-tide:theme";
+const THEME_KEY = "agmux:theme";
 let activeThemeKey = localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_KEY;
 let activeTheme: Theme = THEMES.get(activeThemeKey) ?? THEMES.get(DEFAULT_THEME_KEY)!;
 
@@ -442,7 +442,7 @@ function sendWsMessage(msg: unknown): void {
 
 function authHeaders(init?: HeadersInit): Headers {
   const headers = new Headers(init);
-  if (authToken) headers.set("x-agent-tide-token", authToken);
+  if (authToken) headers.set("x-agmux-token", authToken);
   return headers;
 }
 
@@ -1879,7 +1879,7 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
   return out.join("\n");
 }
 
-(window as any).__agentTide = {
+(window as any).__agmux = {
   activePtyId: () => activePtyId,
   dumpActive: () => {
     if (!activePtyId) return "";

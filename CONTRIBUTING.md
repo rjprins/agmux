@@ -1,4 +1,4 @@
-# Contributing to agent-tide
+# Contributing to agmux
 
 Thanks for your interest in contributing! This guide will help you get started.
 
@@ -21,8 +21,8 @@ See [docs/dependencies.md](docs/dependencies.md) for the full dependency list.
 
 ```sh
 # Clone the repo
-git clone https://github.com/rjprins/agent-tide.git
-cd agent-tide
+git clone https://github.com/rjprins/agmux.git
+cd agmux
 
 # Install dependencies
 npm install

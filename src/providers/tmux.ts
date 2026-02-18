@@ -86,13 +86,13 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
     const shell = request.command.trim();
     if (!shell) throw new Error("tmux provider start requires a shell command");
 
-    const sessionName = getMetadataString(request.metadata, "tmuxSession") ?? `agent_tide_shell_${Date.now()}`;
+    const sessionName = getMetadataString(request.metadata, "tmuxSession") ?? `agmux_shell_${Date.now()}`;
     await tmuxNewSessionDetached(sessionName, shell);
     return this.spawnAttachedSession({
       id: request.id,
       name: request.name ?? `shell:${path.basename(shell)}`,
       sessionName,
-      server: "agent_tide",
+      server: "agmux",
       cols: request.cols,
       rows: request.rows,
     });
@@ -100,8 +100,8 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
 
   async attach(request: RuntimeAttachRequest): Promise<PtySummary> {
     const requestedServer = getMetadataString(request.metadata, "server");
-    if (requestedServer && requestedServer !== "agent_tide" && requestedServer !== "default") {
-      throw new Error("tmux provider attach metadata.server must be agent_tide or default");
+    if (requestedServer && requestedServer !== "agmux" && requestedServer !== "default") {
+      throw new Error("tmux provider attach metadata.server must be agmux or default");
     }
 
     const located = await tmuxLocateSession(request.target);

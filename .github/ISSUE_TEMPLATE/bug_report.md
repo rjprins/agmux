@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug to help improve agent-tide
+about: Report a bug to help improve agmux
 title: ""
 labels: bug
 ---

@@ -3,13 +3,13 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-// Keep agent-tide sessions isolated from any user tmux server.
+// Keep agmux sessions isolated from any user tmux server.
 // - `-L <socket>`: use a dedicated server socket name
 // - `-f /dev/null`: do not load user config; we set options explicitly
-const TMUX_SOCKET = "agent_tide";
+const TMUX_SOCKET = "agmux";
 const TMUX_BASE_ARGS = ["-L", TMUX_SOCKET, "-f", "/dev/null"] as const;
 
-export type TmuxServer = "agent_tide" | "default";
+export type TmuxServer = "agmux" | "default";
 export type TmuxSessionInfo = {
   name: string;
   server: TmuxServer;
@@ -53,7 +53,7 @@ async function tmuxExec(server: TmuxServer, args: string[]): Promise<{ stdout: s
 }
 
 async function tmuxAgent(args: string[]): Promise<void> {
-  await tmuxExec("agent_tide", args);
+  await tmuxExec("agmux", args);
 }
 
 async function tmuxDefault(args: string[]): Promise<void> {
@@ -69,7 +69,7 @@ async function tmuxByServer(server: TmuxServer, args: string[]): Promise<void> {
 }
 
 async function tmuxAgentOut(args: string[]): Promise<string> {
-  const { stdout } = await tmuxExec("agent_tide", args);
+  const { stdout } = await tmuxExec("agmux", args);
   return stdout;
 }
 
@@ -97,7 +97,7 @@ export async function tmuxLocateSession(target: string): Promise<TmuxServer | nu
   const session = tmuxTargetSession(target);
   try {
     await tmuxAgent(["has-session", "-t", session]);
-    return "agent_tide";
+    return "agmux";
   } catch {
     // fall through
   }
@@ -119,7 +119,7 @@ export async function tmuxLocateSession(target: string): Promise<TmuxServer | nu
  */
 export async function tmuxCreateLinkedSession(
   windowTarget: string,
-  server: TmuxServer = "agent_tide",
+  server: TmuxServer = "agmux",
 ): Promise<{ linkedSession: string; attachArgs: string[] }> {
   const session = tmuxTargetSession(windowTarget);
   const windowPart = windowTarget.includes(":") ? windowTarget.slice(windowTarget.indexOf(":") + 1).trim() : "";
@@ -155,7 +155,7 @@ export async function tmuxCreateLinkedSession(
   return { linkedSession: linked, attachArgs };
 }
 
-export function tmuxAttachArgs(name: string, server: TmuxServer = "agent_tide"): string[] {
+export function tmuxAttachArgs(name: string, server: TmuxServer = "agmux"): string[] {
   if (server === "default") return ["attach-session", "-t", name];
   return [...TMUX_BASE_ARGS, "attach-session", "-t", name];
 }
@@ -212,7 +212,7 @@ async function tmuxListSessionsOn(server: TmuxServer): Promise<TmuxSessionInfo[]
 
 export async function tmuxListSessions(): Promise<TmuxSessionInfo[]> {
   const [agent, def] = await Promise.all([
-    tmuxListSessionsOn("agent_tide"),
+    tmuxListSessionsOn("agmux"),
     tmuxListSessionsOn("default"),
   ]);
   return [...agent, ...def].sort((a, b) => {
@@ -283,10 +283,10 @@ export async function tmuxCheckSessionConfig(
 export async function tmuxNewSessionDetached(name: string, shell: string): Promise<void> {
   const safeShell = validateShellExecutable(shell);
   await tmuxAgent(["new-session", "-d", "-s", name, "--", safeShell]);
-  await tmuxApplySessionUiOptions(name, "agent_tide");
+  await tmuxApplySessionUiOptions(name, "agmux");
 }
 
-/** Ensure the named session exists on the agent_tide server; create if missing. */
+/** Ensure the named session exists on the agmux server; create if missing. */
 export async function tmuxEnsureSession(name: string, shell: string): Promise<void> {
   try {
     await tmuxAgent(["has-session", "-t", name]);
@@ -303,19 +303,19 @@ export async function tmuxCreateWindow(sessionName: string, shell: string, cwd?:
   args.push("--", safeShell);
   const out = await tmuxAgentOut(args);
   const target = out.trim();
-  await tmuxApplySessionUiOptions(target, "agent_tide");
+  await tmuxApplySessionUiOptions(target, "agmux");
   return target;
 }
 
 export type TmuxWindowInfo = {
-  target: string; // e.g. "agent_tide:@3"
+  target: string; // e.g. "agmux:@3"
   index: number;
 };
 
 /** List all windows in a session as stable targets. */
 export async function tmuxListWindows(
   sessionName: string,
-  server: TmuxServer = "agent_tide",
+  server: TmuxServer = "agmux",
 ): Promise<TmuxWindowInfo[]> {
   const fmt = "#{session_name}:#{window_id}\t#{window_index}";
   try {
@@ -346,9 +346,9 @@ export async function tmuxKillWindow(target: string): Promise<void> {
 
 export async function tmuxApplySessionUiOptions(
   name: string,
-  server: TmuxServer = "agent_tide",
+  server: TmuxServer = "agmux",
 ): Promise<void> {
-  if (server === "agent_tide") {
+  if (server === "agmux") {
     try {
       // Disable alternate-screen capabilities at the tmux server level so
       // tmux does not switch the outer terminal to the alt buffer.
@@ -410,7 +410,7 @@ export async function tmuxKillSession(name: string): Promise<void> {
 
 export async function tmuxPruneDetachedLinkedSessions(
   baseSession: string,
-  server: TmuxServer = "agent_tide",
+  server: TmuxServer = "agmux",
 ): Promise<string[]> {
   const fmt = "#{session_name}\t#{session_attached}";
   try {

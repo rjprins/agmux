@@ -5,8 +5,8 @@ public/app.js
 public/app.js.map
 public/xterm.css
 public/vendor
-supervisor/agent-tide-supervisor
-supervisor/agent-tide-supervisor.exe
+supervisor/agmux-supervisor
+supervisor/agmux-supervisor.exe
 playwright-report
 test-results
 .DS_Store

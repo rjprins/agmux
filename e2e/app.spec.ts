@@ -33,7 +33,7 @@ async function attachTmuxWithRetry(
   page: Page,
   token: string,
   name: string,
-  server?: "agent_tide" | "default",
+  server?: "agmux" | "default",
 ): Promise<string> {
   let lastStatus = 0;
   let lastBody = "";
@@ -87,7 +87,7 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
     .poll(
       async () =>
         page.evaluate(() => {
-          const d = (window as any).__agentTide?.dumpActive;
+          const d = (window as any).__agmux?.dumpActive;
           return typeof d === "function" ? String(d()) : "";
         }),
       { timeout: 30_000 },
@@ -104,7 +104,7 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
     .poll(
       async () =>
         page.evaluate(() => {
-          const d = (window as any).__agentTide?.dumpActive;
+          const d = (window as any).__agmux?.dumpActive;
           return typeof d === "function" ? String(d()) : "";
         }),
       { timeout: 30_000 },
@@ -143,7 +143,7 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
     .poll(
       async () =>
         page.evaluate(() => {
-          const d = (window as any).__agentTide?.dumpActive;
+          const d = (window as any).__agmux?.dumpActive;
           return typeof d === "function" ? String(d()) : "";
         }),
       { timeout: 30_000 },
@@ -151,8 +151,8 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
     .toContain("line-8000");
 
   // Force to bottom, then wheel up and verify visible viewport changes.
-  await page.evaluate(() => (window as any).__agentTide?.scrollToBottomActive?.());
-  const bottomViewport = await page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? "");
+  await page.evaluate(() => (window as any).__agmux?.scrollToBottomActive?.());
+  const bottomViewport = await page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? "");
 
   await page.evaluate(() => {
     const el = document.querySelector(".term-pane:not(.hidden)") as HTMLElement | null;
@@ -169,7 +169,7 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
   });
 
   await expect
-    .poll(async () => page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? ""), {
+    .poll(async () => page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? ""), {
       timeout: 5_000,
     })
     .not.toBe(bottomViewport);
@@ -210,7 +210,7 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
     .poll(
       async () =>
         page.evaluate(() => {
-          const d = (window as any).__agentTide?.dumpActive;
+          const d = (window as any).__agmux?.dumpActive;
           return typeof d === "function" ? String(d()) : "";
         }),
       { timeout: 30_000 },
@@ -218,7 +218,7 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
     .toMatch(/\b80\n.*\$/s);
 
   // At the bottom the cat command should be scrolled out of view.
-  await page.evaluate(() => (window as any).__agentTide?.scrollToBottomActive?.());
+  await page.evaluate(() => (window as any).__agmux?.scrollToBottomActive?.());
 
   // Scroll up with the mouse wheel to reveal the cat command.
   await xterm.hover();
@@ -226,7 +226,7 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
 
   await expect
     .poll(
-      async () => page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? ""),
+      async () => page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? ""),
       { timeout: 5_000 },
     )
     .toContain("cat /tmp/e2e-bigfile.txt");
@@ -365,7 +365,7 @@ test("tmux non-shell interactive prompt stays ready after reload", async ({ page
   const hasPython = await commandAvailable("python3", ["--version"]);
   test.skip(!hasTmux || !hasPython, "requires tmux and python3");
 
-  const sessionName = `agent_tide_e2e_prompt_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const sessionName = `agmux_e2e_prompt_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
   let ptyId: string | null = null;
 
   await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "python3", "-q"]);
@@ -401,7 +401,7 @@ test("tmux non-shell prompt with footer line stays stable", async ({ page }) => 
   const hasPython = await commandAvailable("python3", ["--version"]);
   test.skip(!hasTmux || !hasPython, "requires tmux and python3");
 
-  const sessionName = `agent_tide_e2e_footer_prompt_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const sessionName = `agmux_e2e_footer_prompt_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
   let ptyId: string | null = null;
 
   const script =
@@ -454,7 +454,7 @@ test("tmux claude/codex subprocess prompt uses prompt readiness detection", asyn
 
   for (const family of ["codex", "claude"] as const) {
     const suffix = `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
-    const sessionName = `agent_tide_e2e_${family}_prompt_${suffix}`;
+    const sessionName = `agmux_e2e_${family}_prompt_${suffix}`;
     const binaryPath = `/tmp/${family}-e2e-prompt-${suffix}`;
     const promptLine = family === "codex" ? "› Ask anything" : "❯ Ask anything";
     const script = `import sys,time; print(${JSON.stringify(promptLine)}); sys.stdout.flush(); time.sleep(20)`;
@@ -483,7 +483,7 @@ test("escape key is delivered to tmux session promptly", async ({ page }) => {
   const hasTmux = await commandAvailable("tmux", ["-V"]);
   test.skip(!hasTmux, "requires tmux");
 
-  const sessionName = `agent_tide_e2e_esc_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const sessionName = `agmux_e2e_esc_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
   let ptyId: string | null = null;
 
   // Create a tmux session running cat -v, which echoes Escape as ^[.
@@ -513,7 +513,7 @@ test("escape key is delivered to tmux session promptly", async ({ page }) => {
       .poll(
         async () =>
           page.evaluate(() => {
-            const d = (window as any).__agentTide?.dumpActive;
+            const d = (window as any).__agmux?.dumpActive;
             return typeof d === "function" ? String(d()) : "";
           }),
         { timeout: 5_000 },
@@ -552,7 +552,7 @@ test("reopening running tmux PTY after refresh shows output without wheel scroll
       .poll(
         async () =>
           page.evaluate(() => {
-            const d = (window as any).__agentTide?.dumpActive;
+            const d = (window as any).__agmux?.dumpActive;
             return typeof d === "function" ? String(d()) : "";
           }),
         { timeout: 30_000 },
@@ -564,7 +564,7 @@ test("reopening running tmux PTY after refresh shows output without wheel scroll
 
     await expect
       .poll(
-        async () => page.evaluate(() => (window as any).__agentTide?.dumpViewport?.() ?? ""),
+        async () => page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? ""),
         { timeout: 10_000 },
       )
       .toContain(marker);
@@ -722,7 +722,7 @@ test("switching between multiple PTYs keeps each terminal's content distinct", a
 
   const dumpActiveBuffer = async (): Promise<string> =>
     page.evaluate(() => {
-      const dump = (window as any).__agentTide?.dumpActive;
+      const dump = (window as any).__agmux?.dumpActive;
       return typeof dump === "function" ? String(dump()) : "";
     });
 
