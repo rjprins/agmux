@@ -550,6 +550,105 @@ fastify.get("/api/worktrees", async () => {
   return { worktrees };
 });
 
+fastify.get("/api/worktrees/status", async (req, reply) => {
+  const q = req.query as Record<string, unknown>;
+  const wtPath = typeof q.path === "string" ? q.path.trim() : "";
+  if (!wtPath) {
+    reply.code(400);
+    return { error: "path is required" };
+  }
+  const resolved = path.resolve(wtPath);
+  const wtPrefix = path.resolve(REPO_ROOT, ".worktrees") + path.sep;
+  if (!resolved.startsWith(wtPrefix)) {
+    reply.code(400);
+    return { error: "path must be under .worktrees/" };
+  }
+  try {
+    const result = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["status", "--porcelain"], { cwd: resolved }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
+    const dirty = result.trim().length > 0;
+    let branch = "";
+    try {
+      branch = await new Promise<string>((resolve, reject) => {
+        execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: resolved }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout.trim());
+        });
+      });
+    } catch {
+      // ignore
+    }
+    return { dirty, branch };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reply.code(500);
+    return { error: message };
+  }
+});
+
+fastify.delete("/api/worktrees", async (req, reply) => {
+  const body = isRecord(req.body) ? req.body : {};
+  const wtPath = typeof body.path === "string" ? body.path.trim() : "";
+  if (!wtPath) {
+    reply.code(400);
+    return { error: "path is required" };
+  }
+  const resolved = path.resolve(wtPath);
+  const wtPrefix = path.resolve(REPO_ROOT, ".worktrees") + path.sep;
+  if (!resolved.startsWith(wtPrefix)) {
+    reply.code(400);
+    return { error: "path must be under .worktrees/" };
+  }
+
+  // Check for uncommitted changes
+  try {
+    const statusResult = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["status", "--porcelain"], { cwd: resolved }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
+    if (statusResult.trim().length > 0) {
+      // Force remove even with dirty state (user confirmed in modal)
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "remove", "--force", resolved], { cwd: REPO_ROOT }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "remove", resolved], { cwd: REPO_ROOT }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reply.code(500);
+    return { error: message };
+  }
+
+  // Prune stale worktree references
+  try {
+    await new Promise<void>((resolve, reject) => {
+      execFile("git", ["worktree", "prune"], { cwd: REPO_ROOT }, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+  } catch {
+    // ignore prune failures
+  }
+
+  return { ok: true };
+});
+
 /** Select values that match CLI defaults and should not be emitted. */
 const FLAG_DEFAULTS: Record<string, Record<string, string>> = {
   claude: { "--permission-mode": "default" },

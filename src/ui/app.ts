@@ -8,12 +8,17 @@ import {
   type PtyGroup,
   type PtyListModel,
   type RunningPtyItem,
+  type WorktreeSubgroup,
 } from "./pty-list-view";
 import {
   renderLaunchModal,
   type LaunchModalViewModel,
   type LaunchOptionControl,
 } from "./launch-modal-view";
+import {
+  renderCloseWorktreeModal,
+  type CloseWorktreeModalViewModel,
+} from "./close-worktree-modal-view";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -1029,6 +1034,118 @@ function openLaunchModal(groupCwd: string): void {
     .catch(() => {});
 }
 
+// --- Close worktree modal ---
+
+const closeWorktreeModalRoot = document.createElement("div");
+document.body.appendChild(closeWorktreeModalRoot);
+
+type CloseWorktreeModalState = {
+  ptyId: string;
+  ptyProcess: string;
+  worktreeName: string;
+  worktreePath: string;
+  dirty: boolean | null;
+  closing: boolean;
+};
+
+let closeWorktreeModalState: CloseWorktreeModalState | null = null;
+
+const NOOP_CLOSE_WORKTREE_HANDLERS = {
+  onClose: () => {},
+  onCloseSession: () => {},
+  onCloseAndRemove: () => {},
+};
+
+function renderCloseWorktreeModalState(): void {
+  const state = closeWorktreeModalState;
+  const model: CloseWorktreeModalViewModel | null = state
+    ? {
+      ptyProcess: state.ptyProcess,
+      worktreeName: state.worktreeName,
+      dirty: state.dirty,
+      closing: state.closing,
+    }
+    : null;
+
+  renderCloseWorktreeModal(closeWorktreeModalRoot, model, {
+    onClose: () => {
+      closeWorktreeModalState = null;
+      renderCloseWorktreeModalState();
+    },
+    onCloseSession: () => {
+      if (!closeWorktreeModalState) return;
+      const { ptyId } = closeWorktreeModalState;
+      closeWorktreeModalState = null;
+      renderCloseWorktreeModalState();
+      void killPtyDirect(ptyId);
+    },
+    onCloseAndRemove: () => {
+      if (!closeWorktreeModalState || closeWorktreeModalState.closing) return;
+      closeWorktreeModalState.closing = true;
+      renderCloseWorktreeModalState();
+      const { ptyId, worktreePath } = closeWorktreeModalState;
+      void (async () => {
+        await killPtyDirect(ptyId);
+        try {
+          await authFetch("/api/worktrees", {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: worktreePath }),
+          });
+        } catch {
+          // ignore worktree removal failure
+        }
+        closeWorktreeModalState = null;
+        renderCloseWorktreeModalState();
+      })();
+    },
+  });
+}
+
+function openCloseWorktreeModal(ptyId: string): void {
+  const p = ptys.find((x) => x.id === ptyId);
+  if (!p) return;
+  const wt = worktreeName(p.cwd);
+  if (!wt || !p.cwd) return;
+
+  const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
+  const activeProcess = compactWhitespace(p.activeProcess ?? "");
+  const process =
+    (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || p.name;
+
+  // Determine the full worktree path from the cwd
+  const wtMatch = p.cwd.match(/^(.*\/\.worktrees\/[^/]+)/);
+  const worktreePath = wtMatch ? wtMatch[1] : p.cwd;
+
+  closeWorktreeModalState = {
+    ptyId,
+    ptyProcess: process,
+    worktreeName: wt,
+    worktreePath,
+    dirty: null,
+    closing: false,
+  };
+  renderCloseWorktreeModalState();
+
+  // Fetch dirty status
+  void authFetch(`/api/worktrees/status?path=${encodeURIComponent(worktreePath)}`)
+    .then(async (res) => {
+      if (!closeWorktreeModalState || closeWorktreeModalState.ptyId !== ptyId) return;
+      if (res.ok) {
+        const json = (await res.json()) as { dirty?: boolean };
+        closeWorktreeModalState.dirty = json.dirty === true;
+      } else {
+        closeWorktreeModalState.dirty = false;
+      }
+      renderCloseWorktreeModalState();
+    })
+    .catch(() => {
+      if (!closeWorktreeModalState || closeWorktreeModalState.ptyId !== ptyId) return;
+      closeWorktreeModalState.dirty = false;
+      renderCloseWorktreeModalState();
+    });
+}
+
 const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 
 function normalizeProcessName(s: string): string {
@@ -1206,7 +1323,7 @@ function trackUserInput(ptyId: string, data: string): void {
   }
 }
 
-async function killPty(ptyId: string): Promise<void> {
+async function killPtyDirect(ptyId: string): Promise<void> {
   const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/kill`, { method: "POST" });
   if (!res.ok) {
     addEvent(`Failed to kill PTY ${ptyId}: ${await readApiError(res)}`);
@@ -1222,6 +1339,32 @@ async function killPty(ptyId: string): Promise<void> {
   updateTerminalVisibility();
 
   await refreshList();
+}
+
+function killPty(ptyId: string): void {
+  const p = ptys.find((x) => x.id === ptyId);
+  if (!p) {
+    void killPtyDirect(ptyId);
+    return;
+  }
+
+  const wt = worktreeName(p.cwd);
+  if (!wt) {
+    void killPtyDirect(ptyId);
+    return;
+  }
+
+  // Check if there are other running PTYs in the same worktree
+  const sameWorktree = ptys.filter(
+    (x) => x.id !== ptyId && x.status === "running" && worktreeName(x.cwd) === wt,
+  );
+  if (sameWorktree.length > 0) {
+    void killPtyDirect(ptyId);
+    return;
+  }
+
+  // Last PTY in worktree: show the close modal
+  openCloseWorktreeModal(ptyId);
 }
 
 async function resumePty(ptyId: string): Promise<void> {
@@ -1249,6 +1392,7 @@ function worktreeName(cwd: string | null): string | null {
 }
 
 const collapsedGroups = new Set<string>();
+const collapsedWorktrees = new Set<string>(); // "groupKey::worktreeName"
 const INACTIVE_PAGE_SIZE = 20;
 let inactiveSessionsExpanded = false;
 let inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
@@ -1336,12 +1480,40 @@ function renderList(): void {
 
   const groups: PtyGroup[] = sortedKeys.map((key) => {
     const basename = key ? key.split("/").filter(Boolean).at(-1) ?? key : "Other";
+    const allItems = grouped.get(key) ?? [];
+
+    // Sub-group items by worktree
+    const rootItems: RunningPtyItem[] = [];
+    const wtMap = new Map<string, { items: RunningPtyItem[]; path: string }>();
+    for (const item of allItems) {
+      if (item.worktree) {
+        let wt = wtMap.get(item.worktree);
+        if (!wt) {
+          wt = { items: [], path: item.cwd ?? "" };
+          wtMap.set(item.worktree, wt);
+        }
+        wt.items.push(item);
+      } else {
+        rootItems.push(item);
+      }
+    }
+
+    const worktrees: WorktreeSubgroup[] = [...wtMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, wt]) => ({
+        name,
+        path: wt.path,
+        collapsed: collapsedWorktrees.has(`${key}::${name}`),
+        items: wt.items,
+      }));
+
     return {
       key,
       label: basename,
       title: key || undefined,
       collapsed: collapsedGroups.has(key),
-      items: grouped.get(key) ?? [],
+      worktrees,
+      items: rootItems,
     };
   });
 
@@ -1370,10 +1542,16 @@ function renderList(): void {
       else collapsedGroups.add(groupKey);
       renderList();
     },
+    onToggleWorktree: (groupKey, wtName) => {
+      const key = `${groupKey}::${wtName}`;
+      if (collapsedWorktrees.has(key)) collapsedWorktrees.delete(key);
+      else collapsedWorktrees.add(key);
+      renderList();
+    },
     onOpenLaunch: (groupKey) => openLaunchModal(groupKey),
     onSelectPty: (ptyId) => setActive(ptyId),
     onKillPty: (ptyId) => {
-      void killPty(ptyId);
+      killPty(ptyId);
     },
     onResumeInactive: (ptyId) => {
       void resumePty(ptyId);
@@ -1615,7 +1793,7 @@ document.addEventListener(
       case "KeyQ":
         ev.preventDefault();
         ev.stopPropagation();
-        if (activePtyId) killPty(activePtyId).catch(() => {});
+        if (activePtyId) killPty(activePtyId);
         return;
       case "Space":
         ev.preventDefault();
