@@ -1215,6 +1215,20 @@ button:disabled {
   min-height: auto;
 }
 
+.pty-item.inactive.compact.show-more {
+  cursor: pointer;
+  opacity: 0.5;
+  padding: 1px 8px;
+}
+.pty-item.inactive.compact.show-more:hover {
+  opacity: 0.8;
+}
+.show-more-label {
+  font-size: 11px;
+  color: var(--fg-dim, #888);
+  padding-left: 14px;
+}
+
 .sidebar.collapsed .group-menu-wrap {
   display: none;
 }

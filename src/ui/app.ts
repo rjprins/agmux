@@ -2403,6 +2403,10 @@ function renderList(): void {
       saveCollapsedSet(ARCHIVED_WORKTREES_COLLAPSED_KEY, collapsedArchivedWorktrees);
       renderList();
     },
+    onShowMore: (_contextKey) => {
+      // Pagination state is managed in pty-list-view; just re-render.
+      renderList();
+    },
   });
 }
 

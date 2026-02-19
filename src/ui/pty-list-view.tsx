@@ -1,5 +1,16 @@
 import { Fragment, render } from "preact";
 
+const PAGE_SIZE = 8;
+const visiblePages = new Map<string, number>();
+
+function getVisibleCount(key: string): number {
+  return (visiblePages.get(key) ?? 1) * PAGE_SIZE;
+}
+
+function showMore(key: string): void {
+  visiblePages.set(key, (visiblePages.get(key) ?? 1) + 1);
+}
+
 export type ReadyState = "ready" | "busy" | "unknown";
 export type ReadyIndicator = "ready" | "busy";
 
@@ -102,6 +113,7 @@ export type PtyListHandlers = {
   onToggleArchived: () => void;
   onToggleArchivedGroup: (groupKey: string) => void;
   onToggleArchivedWorktree: (groupKey: string, worktreeName: string) => void;
+  onShowMore: (contextKey: string) => void;
 };
 
 function InactiveItemRow(
@@ -145,6 +157,39 @@ function InactiveItemRow(
       </div>
       <span className="inactive-dot compact" title={`Restorable: ${item.process}`} />
     </li>
+  );
+}
+
+function TruncatedInactiveList(
+  { contextKey, items, inWorktree, handlers }: {
+    contextKey: string;
+    items: InactivePtyItem[];
+    inWorktree: boolean;
+    handlers: PtyListHandlers;
+  },
+) {
+  if (items.length === 0) return null;
+  const limit = getVisibleCount(contextKey);
+  const visible = items.slice(0, limit);
+  const remaining = items.length - visible.length;
+  return (
+    <>
+      {visible.map((item) => (
+        <InactiveItemRow key={item.id} item={item} inWorktree={inWorktree} handlers={handlers} />
+      ))}
+      {remaining > 0 ? (
+        <li
+          className="pty-item inactive compact show-more"
+          onClick={(ev) => {
+            ev.stopPropagation();
+            showMore(contextKey);
+            handlers.onShowMore(contextKey);
+          }}
+        >
+          <span className="show-more-label">\u2026 {remaining} more</span>
+        </li>
+      ) : null}
+    </>
   );
 }
 
@@ -377,9 +422,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     </li>
                     {group.inlineInactiveExpanded ? (
                       <>
-                        {group.inactiveSessions.map((item) => (
-                          <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
-                        ))}
+                        <TruncatedInactiveList contextKey={`inline:${group.key}`} items={group.inactiveSessions} inWorktree={false} handlers={handlers} />
                         {group.inactiveWorktrees.map((wt) => (
                           <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
                             <li
@@ -403,9 +446,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                             </li>
                             {wt.collapsed
                               ? null
-                              : wt.items.map((item) => (
-                                <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
-                              ))}
+                              : <TruncatedInactiveList contextKey={`inline-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
                           </Fragment>
                         ))}
                       </>
@@ -415,9 +456,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
 
                 {group.inactiveTotal > 0 && !hasRunning(group) ? (
                   <>
-                    {group.inactiveSessions.map((item) => (
-                      <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
-                    ))}
+                    <TruncatedInactiveList contextKey={`norun:${group.key}`} items={group.inactiveSessions} inWorktree={false} handlers={handlers} />
                     {group.inactiveWorktrees.map((wt) => (
                       <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
                         <li
@@ -431,9 +470,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                         </li>
                         {wt.collapsed
                           ? null
-                          : wt.items.map((item) => (
-                            <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
-                          ))}
+                          : <TruncatedInactiveList contextKey={`norun-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
                       </Fragment>
                     ))}
                   </>
@@ -486,9 +523,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       ? null
                       : (
                         <div className="group-body">
-                          {group.items.map((item) => (
-                            <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
-                          ))}
+                          <TruncatedInactiveList contextKey={`orphan:${group.key}`} items={group.items} inWorktree={false} handlers={handlers} />
                           {group.worktrees.map((wt) => (
                             <Fragment key={`inactive-wt:${group.key}::${wt.name}`}>
                               <li
@@ -512,9 +547,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                               </li>
                               {wt.collapsed
                                 ? null
-                                : wt.items.map((item) => (
-                                  <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
-                                ))}
+                                : <TruncatedInactiveList contextKey={`orphan-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
                             </Fragment>
                           ))}
                         </div>
@@ -569,9 +602,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       ? null
                       : (
                         <div className="group-body">
-                          {group.items.map((item) => (
-                            <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
-                          ))}
+                          <TruncatedInactiveList contextKey={`archived:${group.key}`} items={group.items} inWorktree={false} handlers={handlers} />
                           {group.worktrees.map((wt) => (
                             <Fragment key={`archived-wt:${group.key}::${wt.name}`}>
                               <li
@@ -584,9 +615,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                               </li>
                               {wt.collapsed
                                 ? null
-                                : wt.items.map((item) => (
-                                  <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
-                                ))}
+                                : <TruncatedInactiveList contextKey={`archived-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
                             </Fragment>
                           ))}
                         </div>
