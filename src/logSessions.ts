@@ -177,6 +177,9 @@ const SKIP_PATTERNS = [
   /<environment_context>/,
   /<turn_aborted>/,
   /^# INSTRUCTIONS/,
+  /<command[ _-]message>/,
+  /<local-command-caveat>/,
+  /^<[a-z][\w-]*>/,  // any message starting with an XML tag
 ];
 
 const CONVERSATIONAL_PREFIX = /^(?:hey[,!]?\s+|hi[,!]?\s+|can you\s+|could you\s+|please\s+|i (?:seem to|think i|believe i|guess i)\s+(?:have\s+)?)/i;
