@@ -43,6 +43,8 @@ http://127.0.0.1:<port>/?token=<token>
 
 So the UI can start immediately without a manual token prompt.
 
+The UI keeps `?token=...` in the URL so refreshes remain authenticated even if web storage is unavailable.
+
 ## Startup logging
 
 On startup, agmux logs:

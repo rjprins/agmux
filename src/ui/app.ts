@@ -562,14 +562,11 @@ function setAuthToken(token: string): void {
   } catch {
     // ignore storage failures
   }
-}
-
-function clearTokenFromLocation(): void {
-  const url = new URL(location.href);
-  if (!url.searchParams.has("token")) return;
-  url.searchParams.delete("token");
-  const next = `${url.pathname}${url.search}${url.hash}`;
-  history.replaceState(null, "", next);
+  try {
+    localStorage.setItem(AUTH_TOKEN_KEY, token);
+  } catch {
+    // ignore storage failures
+  }
 }
 
 async function ensureAuthToken(): Promise<void> {
@@ -577,13 +574,14 @@ async function ensureAuthToken(): Promise<void> {
   const tokenFromUrl = qs.get("token")?.trim() ?? "";
   if (tokenFromUrl) {
     setAuthToken(tokenFromUrl);
-    clearTokenFromLocation();
     return;
   }
 
   const tokenFromSession = sessionStorage.getItem(AUTH_TOKEN_KEY)?.trim() ?? "";
-  if (tokenFromSession) {
-    authToken = tokenFromSession;
+  const tokenFromLocal = localStorage.getItem(AUTH_TOKEN_KEY)?.trim() ?? "";
+  const tokenFromStorage = tokenFromSession || tokenFromLocal;
+  if (tokenFromStorage) {
+    authToken = tokenFromStorage;
     return;
   }
 
@@ -598,7 +596,9 @@ async function ensureAuthToken(): Promise<void> {
     // Ignore probe failures; we'll fall back to prompting.
   }
 
-  const entered = window.prompt("Enter AGMUX token");
+  const entered = window.prompt(
+    "Enter AGMUX token.\nIf AGMUX_TOKEN_ENABLED=1 and the token was auto-generated, check the server log for '[agmux] Token: ...'.",
+  );
   const token = entered?.trim() ?? "";
   if (!token) {
     throw new Error("AGMUX token is required");
