@@ -582,6 +582,17 @@ async function ensureAuthToken(): Promise<void> {
     return;
   }
 
+  // Auth is opt-in. Probe once: if API works without token, skip prompt.
+  // If API returns 401, a token is required for this server instance.
+  try {
+    const probe = await fetch("/api/ptys", { cache: "no-store" });
+    if (probe.status !== 401) {
+      return;
+    }
+  } catch {
+    // Ignore probe failures; we'll fall back to prompting.
+  }
+
   const entered = window.prompt("Enter AGMUX token");
   const token = entered?.trim() ?? "";
   if (!token) {

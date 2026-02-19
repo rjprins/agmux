@@ -83,7 +83,9 @@ Environment variables:
 | `PORT` | `4821` | Server port |
 | `DB_PATH` | `data/agmux.db` | SQLite database path |
 | `TRIGGERS_PATH` | `triggers/index.js` | Trigger definitions file |
-| `AGMUX_TOKEN` | *(random)* | Auth token (auto-generated if not set) |
+| `AGMUX_TOKEN_ENABLED` | `false` | Enable auth token enforcement for `/api/*` and `/ws` |
+| `AGMUX_TOKEN` | *(generated if enabled and unset)* | Auth token value when `AGMUX_TOKEN_ENABLED=1` |
+| `AGMUX_LOG_LEVEL` | `warn` | Fastify log level (`fatal`,`error`,`warn`,`info`,`debug`,`trace`) |
 | `AGMUX_SHELL` | `$SHELL` or `bash` | Shell for PTY sessions |
 | `AGMUX_SHELL_BACKEND` | `tmux` | PTY backend: `tmux` or `pty` |
 | `AGMUX_NO_OPEN` | `false` | Skip auto-opening browser |
@@ -96,6 +98,30 @@ Environment variables:
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | Root used for Claude log discovery |
 | `CODEX_HOME` | `~/.codex` | Root used for Codex log discovery |
 | `PI_HOME` | `~/.pi` | Root used for Pi log discovery |
+
+### Optional auth token
+
+By default, agmux does **not** require an auth token.
+
+To enable auth explicitly, set `AGMUX_TOKEN_ENABLED=1`:
+
+```sh
+AGMUX_TOKEN_ENABLED=1 npm run app
+```
+
+With `AGMUX_TOKEN_ENABLED=1`:
+
+- if `AGMUX_TOKEN` is set, that value is used
+- if `AGMUX_TOKEN` is unset, agmux generates a random token at startup
+
+When token auth is enabled:
+
+- all `/api/*` endpoints require the token (`x-agmux-token` header, `Authorization: Bearer`, or `?token=...`)
+- WebSocket `/ws` requires the token
+- browser auto-open includes `?token=...` automatically
+- startup logs print a clear token/auth status message
+
+See `docs/auth-token.md` for details and examples.
 
 ## Testing
 

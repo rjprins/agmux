@@ -58,8 +58,15 @@ const PORT = Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPor
 const PUBLIC_DIR = path.resolve("public");
 const DB_PATH = process.env.DB_PATH ?? path.resolve("data/agmux.db");
 const TRIGGERS_PATH = process.env.TRIGGERS_PATH ?? path.resolve("triggers/index.js");
-const AUTH_TOKEN = process.env.AGMUX_TOKEN ?? randomBytes(32).toString("hex");
+const AUTH_ENABLED = /^(1|true|yes|on)$/i.test((process.env.AGMUX_TOKEN_ENABLED ?? "").trim());
+const AUTH_TOKEN = AUTH_ENABLED
+  ? (process.env.AGMUX_TOKEN?.trim() || randomBytes(32).toString("hex"))
+  : "";
+const AUTH_TOKEN_SOURCE = !AUTH_ENABLED
+  ? "disabled"
+  : (process.env.AGMUX_TOKEN?.trim() ? "configured" : "generated");
 const ALLOW_NON_LOOPBACK_BIND = process.env.AGMUX_ALLOW_NON_LOOPBACK === "1";
+const LOG_LEVEL = (process.env.AGMUX_LOG_LEVEL?.trim() || "warn").toLowerCase();
 const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGMUX_READINESS_TRACE_MAX ?? "2000") || 2000);
 const READINESS_TRACE_LOG = process.env.AGMUX_READINESS_TRACE_LOG === "1";
 const LOG_SESSION_DISCOVERY_ENABLED = process.env.AGMUX_LOG_SESSION_DISCOVERY !== "0";
@@ -82,7 +89,10 @@ const WS_ALLOWED_ORIGINS = new Set(
 const WORKTREE_ROOT = path.resolve(REPO_ROOT, ".worktrees");
 const DEFAULT_BASE_BRANCH = "main";
 
-const fastify = Fastify({ logger: true, disableRequestLogging: true });
+const fastify = Fastify({
+  logger: { level: LOG_LEVEL },
+  disableRequestLogging: true,
+});
 
 const store = new SqliteStore(DB_PATH);
 const ptys = new PtyManager();
@@ -149,11 +159,13 @@ function parseTokenFromUrl(rawUrl: string | undefined): string | null {
 }
 
 function isTokenValid(headerToken: string | null, urlToken: string | null): boolean {
+  if (!AUTH_ENABLED) return true;
   const token = headerToken ?? urlToken;
   return token != null && token === AUTH_TOKEN;
 }
 
 function requestNeedsToken(method: string, rawUrl: string | undefined): boolean {
+  if (!AUTH_ENABLED) return false;
   if (method.toUpperCase() === "OPTIONS") return false;
   return (rawUrl ?? "").startsWith("/api/");
 }
@@ -1548,11 +1560,13 @@ fastify.server.on("upgrade", (req, socket, head) => {
       socket.destroy();
       return;
     }
-    const headerToken = parseTokenFromHeaders(req.headers as unknown as Record<string, unknown>);
-    const urlToken = parseTokenFromUrl(req.url);
-    if (!isTokenValid(headerToken, urlToken)) {
-      socket.destroy();
-      return;
+    if (AUTH_ENABLED) {
+      const headerToken = parseTokenFromHeaders(req.headers as unknown as Record<string, unknown>);
+      const urlToken = parseTokenFromUrl(req.url);
+      if (!isTokenValid(headerToken, urlToken)) {
+        socket.destroy();
+        return;
+      }
     }
     wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
   } catch {
@@ -1584,8 +1598,20 @@ await restoreAtStartup();
 await fastify.listen({ host: HOST, port: PORT });
 
 const appUrl = `http://${HOST === "0.0.0.0" || HOST === "::" ? "127.0.0.1" : HOST}:${PORT}`;
-fastify.log.info(`agmux ready at ${appUrl}`);
+const appUrlWithToken = AUTH_ENABLED ? `${appUrl}/?token=${encodeURIComponent(AUTH_TOKEN)}` : appUrl;
+console.log(`[agmux] Ready at ${appUrl}`);
+console.log(`[agmux] Log level: ${LOG_LEVEL}`);
+if (AUTH_ENABLED) {
+  console.log(`[agmux] Auth token enabled via AGMUX_TOKEN_ENABLED=1 (${AUTH_TOKEN_SOURCE}).`);
+  console.log(`[agmux] Token: ${AUTH_TOKEN}`);
+  console.log(`[agmux] URL with token: ${appUrlWithToken}`);
+  if (AUTH_TOKEN_SOURCE === "generated") {
+    console.log("[agmux] Token was generated because AGMUX_TOKEN was unset.");
+  }
+} else {
+  console.log("[agmux] Auth token disabled (opt-in). Set AGMUX_TOKEN_ENABLED=1 to enable API/WS auth.");
+}
 
 if (process.env.AGMUX_NO_OPEN !== "1") {
-  openBrowser(appUrl);
+  openBrowser(appUrlWithToken);
 }
