@@ -675,8 +675,25 @@ function onServerMsg(msg: ServerMsg): void {
     if (activePtyId) {
       const active = ptys.find((p) => p.id === activePtyId);
       if (!active || active.status !== "running") {
-        activePtyId = null;
-        saveActivePty(null);
+        // PTY ID disappeared (e.g. server restart assigned new IDs).
+        // Try to re-match by tmux session identity before giving up.
+        const saved = loadSavedActivePty();
+        const runningPtys = ptys.filter((p) => p.status === "running");
+        const fallback = saved?.tmuxSession
+          ? runningPtys.find(
+            (p) =>
+              p.backend === "tmux" &&
+              p.tmuxSession === saved.tmuxSession &&
+              (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true),
+          )
+          : null;
+        if (fallback) {
+          activePtyId = fallback.id;
+          saveActivePty(fallback.id);
+        } else {
+          activePtyId = null;
+          saveActivePty(null);
+        }
       }
     }
 
