@@ -124,8 +124,10 @@ const ACTIVE_PTY_KEY = "agmux:activePty";
 const AUTH_TOKEN_KEY = "agmux:authToken";
 const HIDDEN_AGENT_SESSIONS_KEY = "agmux:hiddenAgentSessions";
 const PINNED_DIRECTORIES_KEY = "agmux:pinnedDirectories";
+const ARCHIVED_DIRECTORIES_KEY = "agmux:archivedDirectories";
 const hiddenAgentSessionIds = new Set<string>();
 const pinnedDirectories = new Set<string>();
+const archivedDirectories = new Set<string>();
 
 function loadHiddenAgentSessions(): void {
   try {
@@ -170,6 +172,30 @@ function loadPinnedDirectories(): void {
 function savePinnedDirectories(): void {
   try {
     localStorage.setItem(PINNED_DIRECTORIES_KEY, JSON.stringify([...pinnedDirectories]));
+  } catch {
+    // ignore
+  }
+}
+
+function loadArchivedDirectories(): void {
+  try {
+    const raw = localStorage.getItem(ARCHIVED_DIRECTORIES_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    for (const value of parsed) {
+      if (typeof value === "string" && value.trim().length > 0) {
+        archivedDirectories.add(value);
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function saveArchivedDirectories(): void {
+  try {
+    localStorage.setItem(ARCHIVED_DIRECTORIES_KEY, JSON.stringify([...archivedDirectories]));
   } catch {
     // ignore
   }
@@ -237,6 +263,71 @@ const MAX_INPUT_HISTORY = 40;
 
 loadHiddenAgentSessions();
 loadPinnedDirectories();
+loadArchivedDirectories();
+
+// Cache of directory existence checks, refreshed on each PTY list update.
+const directoryExistsCache = new Map<string, boolean>();
+let directoryExistsCheckInFlight = false;
+
+async function checkDirectoryExistence(dirs: string[]): Promise<void> {
+  if (directoryExistsCheckInFlight) return;
+  directoryExistsCheckInFlight = true;
+  try {
+    for (const dir of dirs) {
+      if (!dir) continue;
+      try {
+        const res = await authFetch(`/api/directory-exists?path=${encodeURIComponent(dir)}`);
+        if (res.ok) {
+          const json = (await res.json()) as { exists: boolean };
+          directoryExistsCache.set(dir, json.exists);
+        }
+      } catch {
+        // ignore individual failures
+      }
+    }
+  } finally {
+    directoryExistsCheckInFlight = false;
+  }
+}
+
+function autoArchiveMissingDirectories(): void {
+  let changed = false;
+  for (const dir of [...pinnedDirectories]) {
+    if (!dir) continue;
+    const exists = directoryExistsCache.get(dir);
+    if (exists === false) {
+      // Only auto-archive if no running PTYs use this directory
+      const hasRunning = ptys.some(
+        (p) => p.status === "running" && p.cwd && normalizeCwdGroupKey(p.cwd) === dir,
+      );
+      if (!hasRunning) {
+        pinnedDirectories.delete(dir);
+        archivedDirectories.add(dir);
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    savePinnedDirectories();
+    saveArchivedDirectories();
+  }
+}
+
+function archiveDirectory(groupKey: string): void {
+  pinnedDirectories.delete(groupKey);
+  archivedDirectories.add(groupKey);
+  savePinnedDirectories();
+  saveArchivedDirectories();
+  renderList();
+}
+
+function unarchiveDirectory(groupKey: string): void {
+  archivedDirectories.delete(groupKey);
+  pinnedDirectories.add(groupKey);
+  saveArchivedDirectories();
+  savePinnedDirectories();
+  renderList();
+}
 
 function formatElapsedTime(sinceMs: number): string {
   const delta = Date.now() - sinceMs;
@@ -724,6 +815,25 @@ function onServerMsg(msg: ServerMsg): void {
     updateTerminalVisibility();
     reflowActiveTerm();
     renderList();
+
+    // Check directory existence for pinned dirs and inactive session dirs without running PTYs
+    const allSessionDirs = new Set<string>(pinnedDirectories);
+    for (const s of agentSessions) {
+      const key = s.projectRoot ?? (s.cwd ? normalizeCwdGroupKey(s.cwd) : null);
+      if (key) allSessionDirs.add(key);
+    }
+    const dirsToCheck = [...allSessionDirs].filter((d) => {
+      if (!d) return false;
+      if (directoryExistsCache.has(d)) return false;
+      return !ptys.some((p) => p.status === "running" && p.cwd && normalizeCwdGroupKey(p.cwd) === d);
+    });
+    if (dirsToCheck.length > 0) {
+      void checkDirectoryExistence(dirsToCheck).then(() => {
+        autoArchiveMissingDirectories();
+        renderList();
+      });
+    }
+
     return;
   }
   if (msg.type === "pty_output") {
@@ -966,6 +1076,9 @@ type WorktreeOption = { value: string; label: string };
 
 type LaunchModalState = {
   selectedAgent: string;
+  directoryOptions: { value: string; label: string }[];
+  selectedDirectory: string;
+  customDirectoryValue: string;
   selectedWorktree: string;
   branchValue: string;
   baseBranchValue: string;
@@ -980,10 +1093,13 @@ const launchModalRoot = document.createElement("div");
 document.body.appendChild(launchModalRoot);
 let launchModalState: LaunchModalState | null = null;
 let launchModalSeq = 0;
+let customDirRefreshTimer: ReturnType<typeof setTimeout> | undefined;
 const NOOP_LAUNCH_HANDLERS = {
   onClose: () => {},
   onAgentChange: () => {},
   onOptionChange: () => {},
+  onDirectoryChange: () => {},
+  onCustomDirectoryChange: () => {},
   onWorktreeChange: () => {},
   onBranchChange: () => {},
   onBaseBranchChange: () => {},
@@ -1007,6 +1123,36 @@ function buildWorktreeOptions(
     }
   }
   return options;
+}
+
+function buildDirectoryOptions(): { value: string; label: string }[] {
+  const dirs = new Set<string>();
+  // Add all active group keys: pinned dirs + dirs with running PTYs
+  for (const dir of pinnedDirectories) {
+    if (dir && !archivedDirectories.has(dir)) dirs.add(dir);
+  }
+  for (const p of ptys) {
+    if (p.status === "running" && p.cwd) {
+      const key = normalizeCwdGroupKey(p.cwd);
+      if (key && !archivedDirectories.has(key)) dirs.add(key);
+    }
+  }
+  const sorted = [...dirs].sort((a, b) => {
+    const ba = a.split("/").filter(Boolean).at(-1) ?? a;
+    const bb = b.split("/").filter(Boolean).at(-1) ?? b;
+    return ba.localeCompare(bb);
+  });
+  const options = sorted.map((d) => ({
+    value: d,
+    label: d.split("/").filter(Boolean).at(-1) ?? d,
+  }));
+  options.push({ value: "__custom__", label: "Custom path..." });
+  return options;
+}
+
+function getEffectiveProjectRoot(state: LaunchModalState): string {
+  if (state.selectedDirectory === "__custom__") return state.customDirectoryValue;
+  return state.selectedDirectory;
 }
 
 function buildLaunchOptionControls(state: LaunchModalState): LaunchOptionControl[] {
@@ -1036,17 +1182,22 @@ function closeLaunchModal(): void {
 
 function renderLaunchModalState(): void {
   const state = launchModalState;
+  const effectiveRoot = state ? getEffectiveProjectRoot(state) : "";
   const model: LaunchModalViewModel | null = state
     ? {
       agentChoices: AGENT_CHOICES,
       selectedAgent: state.selectedAgent,
       optionControls: buildLaunchOptionControls(state),
+      directoryOptions: state.directoryOptions,
+      selectedDirectory: state.selectedDirectory,
+      customDirectoryValue: state.customDirectoryValue,
       worktreeOptions: state.worktreeOptions,
       selectedWorktree: state.selectedWorktree,
       branchValue: state.branchValue,
       branchPlaceholder: state.generatedBranch,
       baseBranchValue: state.baseBranchValue,
       launching: state.launching,
+      projectName: effectiveRoot ? effectiveRoot.split("/").pop() : undefined,
     }
     : null;
 
@@ -1063,6 +1214,30 @@ function renderLaunchModalState(): void {
       agentFlags[flag] = value;
       launchModalState.savedFlags[launchModalState.selectedAgent] = agentFlags;
       renderLaunchModalState();
+    },
+    onDirectoryChange: (dir) => {
+      if (!launchModalState) return;
+      launchModalState.selectedDirectory = dir;
+      launchModalState.projectRoot = dir === "__custom__" ? launchModalState.customDirectoryValue : dir;
+      renderLaunchModalState();
+      // Re-fetch worktrees and default branch for the new directory
+      const effectiveRoot = getEffectiveProjectRoot(launchModalState);
+      if (effectiveRoot) {
+        refreshLaunchModalForDirectory(effectiveRoot);
+      }
+    },
+    onCustomDirectoryChange: (pathValue) => {
+      if (!launchModalState) return;
+      launchModalState.customDirectoryValue = pathValue;
+      launchModalState.projectRoot = pathValue;
+      renderLaunchModalState();
+      // Debounce directory refresh for custom path
+      clearTimeout(customDirRefreshTimer);
+      customDirRefreshTimer = setTimeout(() => {
+        if (!launchModalState || launchModalState.selectedDirectory !== "__custom__") return;
+        const dir = launchModalState.customDirectoryValue.trim();
+        if (dir) refreshLaunchModalForDirectory(dir);
+      }, 500);
     },
     onWorktreeChange: (worktree) => {
       if (!launchModalState) return;
@@ -1093,6 +1268,7 @@ function renderLaunchModalState(): void {
         ? (stateNow.baseBranchValue.trim() || "main")
         : undefined;
       const flags = stateNow.savedFlags[stateNow.selectedAgent] ?? {};
+      const effectiveProjectRoot = getEffectiveProjectRoot(stateNow);
 
       void authFetch("/api/ptys/launch", {
         method: "POST",
@@ -1103,7 +1279,7 @@ function renderLaunchModalState(): void {
           branch,
           baseBranch,
           flags,
-          projectRoot: stateNow.projectRoot || undefined,
+          projectRoot: effectiveProjectRoot || undefined,
         }),
       })
         .then(async (res) => {
@@ -1126,13 +1302,54 @@ function renderLaunchModalState(): void {
   });
 }
 
+function refreshLaunchModalForDirectory(dir: string): void {
+  const seq = launchModalSeq;
+
+  const branchUrl = dir
+    ? `/api/default-branch?projectRoot=${encodeURIComponent(dir)}`
+    : "/api/default-branch";
+  void authFetch(branchUrl)
+    .then(async (r) => (r.ok ? r.json() : Promise.reject(new Error(await readApiError(r)))))
+    .then((data: { branch?: string }) => {
+      if (seq !== launchModalSeq || !launchModalState) return;
+      if (data.branch) {
+        launchModalState.baseBranchValue = data.branch;
+        renderLaunchModalState();
+      }
+    })
+    .catch(() => {});
+
+  const wtUrl = dir
+    ? `/api/worktrees?projectRoot=${encodeURIComponent(dir)}`
+    : "/api/worktrees";
+  void authFetch(wtUrl)
+    .then(async (r) => (r.ok ? r.json() : Promise.reject(new Error(await readApiError(r)))))
+    .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
+      if (seq !== launchModalSeq || !launchModalState) return;
+      launchModalState.worktreeOptions = buildWorktreeOptions(dir, data.worktrees);
+      if (!launchModalState.worktreeOptions.some((w) => w.value === launchModalState!.selectedWorktree)) {
+        launchModalState.selectedWorktree = launchModalState.worktreeOptions[0]?.value ?? "";
+      }
+      renderLaunchModalState();
+    })
+    .catch(() => {});
+}
+
 function openLaunchModal(groupCwd: string, preselectedWorktree?: string): void {
   const seq = ++launchModalSeq;
+  const dirOptions = buildDirectoryOptions();
+  // If opening from an active group's +, pre-select that directory; otherwise default to __custom__
+  const preselectedDir = groupCwd && dirOptions.some((d) => d.value === groupCwd) ? groupCwd : "__custom__";
+  const homeDir = typeof window !== "undefined" ? "" : "";
+
   launchModalState = {
     selectedAgent: AGENT_CHOICES[0],
+    directoryOptions: dirOptions,
+    selectedDirectory: preselectedDir,
+    customDirectoryValue: preselectedDir === "__custom__" ? (groupCwd || homeDir) : "",
     selectedWorktree: preselectedWorktree ?? "__new__",
     branchValue: "",
-    baseBranchValue: "main",
+    baseBranchValue: "",
     generatedBranch: generateBranchName(),
     launching: false,
     savedFlags: {},
@@ -1159,20 +1376,7 @@ function openLaunchModal(groupCwd: string, preselectedWorktree?: string): void {
     })
     .catch(() => {});
 
-  const wtUrl = groupCwd
-    ? `/api/worktrees?projectRoot=${encodeURIComponent(groupCwd)}`
-    : "/api/worktrees";
-  void authFetch(wtUrl)
-    .then(async (r) => (r.ok ? r.json() : Promise.reject(new Error(await readApiError(r)))))
-    .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
-      if (seq !== launchModalSeq || !launchModalState) return;
-      launchModalState.worktreeOptions = buildWorktreeOptions(groupCwd, data.worktrees);
-      if (!launchModalState.worktreeOptions.some((w) => w.value === launchModalState.selectedWorktree)) {
-        launchModalState.selectedWorktree = launchModalState.worktreeOptions[0]?.value ?? "";
-      }
-      renderLaunchModalState();
-    })
-    .catch(() => {});
+  refreshLaunchModalForDirectory(groupCwd);
 }
 
 // --- Close worktree modal ---
@@ -1822,6 +2026,14 @@ function saveBooleanPreference(key: string, value: boolean): void {
 let hasStoredAgentGroupCollapsePref = loadCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
 let hasStoredAgentWorktreeCollapsePref = loadCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
 let inactiveSessionsExpandedOverride = loadBooleanPreference(AGENT_SECTION_EXPANDED_KEY);
+const ARCHIVED_SECTION_EXPANDED_KEY = "agmux:archivedSectionExpanded";
+const ARCHIVED_GROUPS_COLLAPSED_KEY = "agmux:archivedGroupsCollapsed";
+const ARCHIVED_WORKTREES_COLLAPSED_KEY = "agmux:archivedWorktreesCollapsed";
+const collapsedArchivedGroups = new Set<string>();
+const collapsedArchivedWorktrees = new Set<string>();
+loadCollapsedSet(ARCHIVED_GROUPS_COLLAPSED_KEY, collapsedArchivedGroups);
+loadCollapsedSet(ARCHIVED_WORKTREES_COLLAPSED_KEY, collapsedArchivedWorktrees);
+let archivedSectionExpandedOverride = loadBooleanPreference(ARCHIVED_SECTION_EXPANDED_KEY);
 
 function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const title = (ptyTitles.get(p.id) ?? "").trim();
@@ -1933,8 +2145,10 @@ function renderList(): void {
     inactiveByProject.set(key, items);
   }
 
-  // Collect all visible directory keys: pinned dirs + dirs with running PTYs.
-  const visibleDirKeys = new Set<string>([...pinnedDirectories, ...runningByDir.keys()]);
+  // Collect all visible directory keys: pinned dirs + dirs with running PTYs (exclude archived).
+  const visibleDirKeys = new Set<string>(
+    [...pinnedDirectories, ...runningByDir.keys()].filter((k) => !archivedDirectories.has(k)),
+  );
 
   // Helper to sort directory keys: non-empty alphabetically by basename, empty last.
   const sortByBasename = (a: string, b: string) => {
@@ -1998,10 +2212,19 @@ function renderList(): void {
     };
   });
 
-  // Catch-all: sessions for directories not visible in the sidebar
-  const orphanInactiveKeys = [...inactiveByProject.keys()]
-    .filter((k) => !visibleDirKeys.has(k))
-    .sort(sortByBasename);
+  // Build "Inactive" section: directories with sessions that are not pinned, not running, and not archived.
+  // Directories confirmed to not exist on disk are treated as archived.
+  const orphanInactiveKeys: string[] = [];
+  const autoArchivedKeys: string[] = [];
+  for (const k of [...inactiveByProject.keys()].sort(sortByBasename)) {
+    if (visibleDirKeys.has(k) || archivedDirectories.has(k)) continue;
+    const exists = directoryExistsCache.get(k);
+    if (exists === false) {
+      autoArchivedKeys.push(k);
+    } else {
+      orphanInactiveKeys.push(k);
+    }
+  }
 
   const orphanGroups = orphanInactiveKeys.map((key) => {
     const allItems = inactiveByProject.get(key) ?? [];
@@ -2022,22 +2245,59 @@ function renderList(): void {
 
   const orphanTotal = orphanGroups.reduce((acc, g) => acc + g.total, 0);
   const largestOrphanGroup = orphanGroups.reduce((max, g) => Math.max(max, g.total), 0);
-  const autoExpanded = !(
+  const inactiveAutoExpanded = !(
     orphanTotal >= AUTO_COLLAPSE_SECTION_TOTAL ||
     orphanGroups.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD ||
     largestOrphanGroup >= AUTO_COLLAPSE_PROJECT_SIZE
   );
-  const inactiveExpanded = inactiveSessionsExpandedOverride ?? autoExpanded;
+  const inactiveExpanded = inactiveSessionsExpandedOverride ?? inactiveAutoExpanded;
+
+  // Build "Archived" section: explicitly archived directories + dirs that no longer exist on disk.
+  const archivedKeys = [
+    ...[...archivedDirectories].filter((k) => inactiveByProject.has(k)),
+    ...autoArchivedKeys,
+  ].sort(sortByBasename);
+
+  const archivedGroups = archivedKeys.map((key) => {
+    const allItems = inactiveByProject.get(key) ?? [];
+    const sub = buildInactiveWorktreeSubgroups(allItems, key);
+    const groupTotal = allItems.length;
+    return {
+      key,
+      label: key ? key.split("/").filter(Boolean).at(-1) ?? key : "(unknown project)",
+      title: key || undefined,
+      collapsed: collapsedArchivedGroups.has(key),
+      total: groupTotal,
+      items: sub.rootItems,
+      worktrees: sub.worktrees,
+      archived: true as const,
+    };
+  });
+
+  const archivedTotal = archivedGroups.reduce((acc, g) => acc + g.total, 0);
+  const archivedAutoExpanded = !(
+    archivedTotal >= AUTO_COLLAPSE_SECTION_TOTAL ||
+    archivedGroups.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD
+  );
+  const archivedExpanded = archivedSectionExpandedOverride ?? archivedAutoExpanded;
 
   const model: PtyListModel = {
     groups,
     showHeaders: allVisibleKeys.length >= 1,
     inactive: orphanTotal > 0
       ? {
-        label: "Inactive sessions",
+        label: "Inactive",
         expanded: inactiveExpanded,
         total: orphanTotal,
         groups: orphanGroups,
+      }
+      : null,
+    archived: archivedTotal > 0
+      ? {
+        label: "Archived",
+        expanded: archivedExpanded,
+        total: archivedTotal,
+        groups: archivedGroups,
       }
       : null,
   };
@@ -2095,6 +2355,26 @@ function renderList(): void {
       else collapsedAgentSessionWorktrees.add(key);
       hasStoredAgentWorktreeCollapsePref = true;
       saveCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
+      renderList();
+    },
+    onArchive: (groupKey) => archiveDirectory(groupKey),
+    onUnarchive: (groupKey) => unarchiveDirectory(groupKey),
+    onToggleArchived: () => {
+      archivedSectionExpandedOverride = !archivedExpanded;
+      saveBooleanPreference(ARCHIVED_SECTION_EXPANDED_KEY, archivedSectionExpandedOverride);
+      renderList();
+    },
+    onToggleArchivedGroup: (groupKey) => {
+      if (collapsedArchivedGroups.has(groupKey)) collapsedArchivedGroups.delete(groupKey);
+      else collapsedArchivedGroups.add(groupKey);
+      saveCollapsedSet(ARCHIVED_GROUPS_COLLAPSED_KEY, collapsedArchivedGroups);
+      renderList();
+    },
+    onToggleArchivedWorktree: (groupKey, wtName) => {
+      const key = `${groupKey}::${wtName}`;
+      if (collapsedArchivedWorktrees.has(key)) collapsedArchivedWorktrees.delete(key);
+      else collapsedArchivedWorktrees.add(key);
+      saveCollapsedSet(ARCHIVED_WORKTREES_COLLAPSED_KEY, collapsedArchivedWorktrees);
       renderList();
     },
   });

@@ -38,6 +38,7 @@ export type InactiveGroup = {
   total: number;
   items: InactivePtyItem[];
   worktrees: InactiveWorktreeSubgroup[];
+  archived?: boolean;
 };
 
 export type InactiveWorktreeSubgroup = {
@@ -79,6 +80,7 @@ export type PtyListModel = {
   groups: PtyGroup[];
   showHeaders: boolean;
   inactive: InactiveSection | null;
+  archived: InactiveSection | null;
 };
 
 export type PtyListHandlers = {
@@ -95,6 +97,11 @@ export type PtyListHandlers = {
   onToggleInactive: () => void;
   onToggleInactiveGroup: (groupKey: string) => void;
   onToggleInactiveWorktree: (groupKey: string, worktreeName: string) => void;
+  onArchive: (groupKey: string) => void;
+  onUnarchive: (groupKey: string) => void;
+  onToggleArchived: () => void;
+  onToggleArchivedGroup: (groupKey: string) => void;
+  onToggleArchivedWorktree: (groupKey: string, worktreeName: string) => void;
 };
 
 function InactiveItemRow(
@@ -222,13 +229,24 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
               <button
                 type="button"
                 className={`group-pin${group.pinned ? " pinned" : ""}`}
-                title={group.pinned ? "Unpin directory" : "Pin directory"}
+                title={group.pinned ? "Unpin project" : "Pin project"}
                 onClick={(ev) => {
                   ev.stopPropagation();
                   handlers.onTogglePin(group.key);
                 }}
               >
                 {"\u25C8"}
+              </button>
+              <button
+                type="button"
+                className="group-archive"
+                title="Archive project"
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  handlers.onArchive(group.key);
+                }}
+              >
+                {"\u2298"}
               </button>
               <button
                 type="button"
@@ -389,13 +407,24 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       <button
                         type="button"
                         className="group-pin"
-                        title="Pin directory"
+                        title="Pin project"
                         onClick={(ev) => {
                           ev.stopPropagation();
                           handlers.onTogglePin(group.key);
                         }}
                       >
                         {"\u25C8"}
+                      </button>
+                      <button
+                        type="button"
+                        className="group-archive"
+                        title="Archive project"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onArchive(group.key);
+                        }}
+                      >
+                        {"\u2298"}
                       </button>
                       <button
                         type="button"
@@ -436,6 +465,75 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                                 >
                                   +
                                 </button>
+                              </li>
+                              {wt.collapsed
+                                ? null
+                                : wt.items.map((item) => (
+                                  <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
+                                ))}
+                            </Fragment>
+                          ))}
+                        </div>
+                      )}
+                  </Fragment>
+                ))}
+              </>
+            )
+            : null}
+        </>
+      ) : null}
+
+      {model.archived ? (
+        <>
+          <li
+            className={`pty-group-header${model.archived.expanded ? "" : " collapsed"}`}
+            onClick={() => handlers.onToggleArchived()}
+          >
+            <span className="group-chevron">{model.archived.expanded ? "\u25bc" : "\u25b6"}</span>
+            <span>{model.archived.label}</span>
+            <span className="group-count">{model.archived.total}</span>
+          </li>
+
+          {model.archived.expanded
+            ? (
+              <>
+                {model.archived.groups.map((group) => (
+                  <Fragment key={`archived-group:${group.key}`}>
+                    <li
+                      className={`worktree-subheader${group.collapsed ? " collapsed" : ""}`}
+                      title={group.title}
+                      onClick={() => handlers.onToggleArchivedGroup(group.key)}
+                    >
+                      <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
+                      <span>{group.label}</span>
+                      <button
+                        type="button"
+                        className="group-unarchive"
+                        title="Unarchive (re-pin) project"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onUnarchive(group.key);
+                        }}
+                      >
+                        {"\u21A9"}
+                      </button>
+                    </li>
+                    {group.collapsed
+                      ? null
+                      : (
+                        <div className="group-body">
+                          {group.items.map((item) => (
+                            <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
+                          ))}
+                          {group.worktrees.map((wt) => (
+                            <Fragment key={`archived-wt:${group.key}::${wt.name}`}>
+                              <li
+                                className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
+                                title={wt.path}
+                                onClick={() => handlers.onToggleArchivedWorktree(group.key, wt.name)}
+                              >
+                                <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
+                                <span>{wt.name}</span>
                               </li>
                               {wt.collapsed
                                 ? null

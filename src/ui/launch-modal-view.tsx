@@ -19,18 +19,24 @@ export type LaunchModalViewModel = {
   agentChoices: string[];
   selectedAgent: string;
   optionControls: LaunchOptionControl[];
+  directoryOptions: { value: string; label: string }[];
+  selectedDirectory: string;
+  customDirectoryValue: string;
   worktreeOptions: { value: string; label: string }[];
   selectedWorktree: string;
   branchValue: string;
   branchPlaceholder: string;
   baseBranchValue: string;
   launching: boolean;
+  projectName?: string;
 };
 
 export type LaunchModalHandlers = {
   onClose: () => void;
   onAgentChange: (agent: string) => void;
   onOptionChange: (flag: string, value: string | boolean) => void;
+  onDirectoryChange: (dir: string) => void;
+  onCustomDirectoryChange: (path: string) => void;
   onWorktreeChange: (worktree: string) => void;
   onBranchChange: (branch: string) => void;
   onBaseBranchChange: (baseBranch: string) => void;
@@ -48,6 +54,7 @@ export function renderLaunchModal(
   }
 
   const showBranchInput = model.selectedWorktree === "__new__";
+  const showCustomDirectory = model.selectedDirectory === "__custom__";
 
   render(
     <div
@@ -67,7 +74,7 @@ export function renderLaunchModal(
           handlers.onLaunch();
         }}
       >
-        <h3>Launch agent</h3>
+        <h3>Launch agent{model.projectName ? ` — ${model.projectName}` : ""}</h3>
 
         <label className="launch-modal-label">
           Agent
@@ -111,6 +118,32 @@ export function renderLaunchModal(
               )
           )}
         </div>
+
+        <label className="launch-modal-label">
+          Project directory
+          <select
+            className="launch-modal-select"
+            value={model.selectedDirectory}
+            onChange={(ev) => handlers.onDirectoryChange((ev.currentTarget as HTMLSelectElement).value)}
+          >
+            {model.directoryOptions.map((dir) => (
+              <option key={dir.value} value={dir.value}>{dir.label}</option>
+            ))}
+          </select>
+        </label>
+
+        {showCustomDirectory ? (
+          <label className="launch-modal-label">
+            Custom path
+            <input
+              type="text"
+              className="launch-modal-input"
+              value={model.customDirectoryValue}
+              placeholder="~/projects/my-app"
+              onInput={(ev) => handlers.onCustomDirectoryChange((ev.currentTarget as HTMLInputElement).value)}
+            />
+          </label>
+        ) : null}
 
         <label className="launch-modal-label">
           Worktree

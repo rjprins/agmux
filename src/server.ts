@@ -864,6 +864,18 @@ fastify.get("/api/tmux/check", async (req, reply) => {
 });
 
 // Create an interactive login shell with zero UI configuration.
+fastify.get("/api/directory-exists", async (req, reply) => {
+  const q = req.query as Record<string, unknown>;
+  const rawPath = typeof q.path === "string" ? q.path.trim() : "";
+  if (!rawPath) {
+    reply.code(400);
+    return { error: "path is required" };
+  }
+  const resolved = path.resolve(rawPath);
+  const exists = await pathExistsAndIsDirectory(resolved);
+  return { exists };
+});
+
 fastify.get("/api/worktrees", async (req) => {
   const q = req.query as Record<string, unknown>;
   const projectRoot = await resolveProjectRoot(q.projectRoot);
@@ -885,6 +897,31 @@ fastify.get("/api/worktrees", async (req) => {
     }
   }
   return { worktrees };
+});
+
+fastify.get("/api/default-branch", async (req) => {
+  const q = req.query as Record<string, unknown>;
+  const projectRoot = await resolveProjectRoot(q.projectRoot);
+  const cwd = projectRoot ?? REPO_ROOT;
+  // Try symbolic-ref first (remote HEAD)
+  try {
+    const ref = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout.trim());
+      });
+    });
+    // ref looks like "refs/remotes/origin/main"
+    const branch = ref.replace(/^refs\/remotes\/origin\//, "");
+    if (branch) return { branch };
+  } catch {
+    // fall through
+  }
+  // Fallback: check if main or master exists
+  for (const candidate of ["main", "master"]) {
+    if (await gitRefExists(candidate, cwd)) return { branch: candidate };
+  }
+  return { branch: "main" };
 });
 
 fastify.get("/api/worktrees/status", async (req, reply) => {
@@ -1018,6 +1055,10 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
   }
 
   const projectRoot = await resolveProjectRoot(body.projectRoot);
+  if (body.projectRoot && !projectRoot) {
+    reply.code(400);
+    return { error: `project directory not found: ${body.projectRoot}` };
+  }
   const effectiveRepoRoot = projectRoot ?? REPO_ROOT;
   const effectiveWtRoot = path.resolve(effectiveRepoRoot, ".worktrees");
 
