@@ -5,6 +5,7 @@ import { THEMES, DEFAULT_THEME_KEY, applyTheme, type Theme } from "./themes";
 import {
   renderPtyList,
   type InactivePtyItem,
+  type InactiveWorktreeSubgroup,
   type PtyGroup,
   type PtyListModel,
   type RunningPtyItem,
@@ -123,7 +124,9 @@ let inputHistoryExpanded = false;
 const ACTIVE_PTY_KEY = "agmux:activePty";
 const AUTH_TOKEN_KEY = "agmux:authToken";
 const HIDDEN_AGENT_SESSIONS_KEY = "agmux:hiddenAgentSessions";
+const PINNED_DIRECTORIES_KEY = "agmux:pinnedDirectories";
 const hiddenAgentSessionIds = new Set<string>();
+const pinnedDirectories = new Set<string>();
 
 function loadHiddenAgentSessions(): void {
   try {
@@ -144,6 +147,30 @@ function loadHiddenAgentSessions(): void {
 function saveHiddenAgentSessions(): void {
   try {
     localStorage.setItem(HIDDEN_AGENT_SESSIONS_KEY, JSON.stringify([...hiddenAgentSessionIds]));
+  } catch {
+    // ignore
+  }
+}
+
+function loadPinnedDirectories(): void {
+  try {
+    const raw = localStorage.getItem(PINNED_DIRECTORIES_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    for (const value of parsed) {
+      if (typeof value === "string" && value.trim().length > 0) {
+        pinnedDirectories.add(value);
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function savePinnedDirectories(): void {
+  try {
+    localStorage.setItem(PINNED_DIRECTORIES_KEY, JSON.stringify([...pinnedDirectories]));
   } catch {
     // ignore
   }
@@ -210,6 +237,7 @@ const ptyStateChangedAt = new Map<string, number>();
 const MAX_INPUT_HISTORY = 40;
 
 loadHiddenAgentSessions();
+loadPinnedDirectories();
 
 function formatElapsedTime(sinceMs: number): string {
   const delta = Date.now() - sinceMs;
@@ -1873,37 +1901,93 @@ function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePt
   };
 }
 
+function buildInactiveWorktreeSubgroups(
+  items: InactivePtyItem[],
+  keyPrefix: string,
+): { rootItems: InactivePtyItem[]; worktrees: InactiveWorktreeSubgroup[] } {
+  const rootItems: InactivePtyItem[] = [];
+  const wtMap = new Map<string, { items: InactivePtyItem[]; path: string }>();
+  for (const item of items) {
+    if (item.worktree) {
+      let wt = wtMap.get(item.worktree);
+      if (!wt) {
+        wt = { items: [], path: item.cwd ?? "" };
+        wtMap.set(item.worktree, wt);
+      }
+      wt.items.push(item);
+    } else {
+      rootItems.push(item);
+    }
+  }
+  const worktrees = [...wtMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([name, wt]) => {
+      const wtKey = `${keyPrefix}::${name}`;
+      const worktreeCount = wtMap.size;
+      const autoCollapseWorktree = !hasStoredAgentWorktreeCollapsePref &&
+        (worktreeCount >= AUTO_COLLAPSE_WORKTREE_THRESHOLD || wt.items.length >= AUTO_COLLAPSE_WORKTREE_SIZE);
+      return {
+        name,
+        path: wt.path,
+        collapsed: collapsedAgentSessionWorktrees.has(wtKey) || autoCollapseWorktree,
+        items: wt.items,
+      };
+    });
+  return { rootItems, worktrees };
+}
+
 function renderList(): void {
   // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo).
   const runningPtys = ptys.filter((p) => p.status === "running");
-  const grouped = new Map<string, RunningPtyItem[]>();
+  const runningByDir = new Map<string, RunningPtyItem[]>();
   for (const p of runningPtys) {
     const key = p.cwd ? normalizeCwdGroupKey(p.cwd) : "";
-    let arr = grouped.get(key);
+    let arr = runningByDir.get(key);
     if (!arr) {
       arr = [];
-      grouped.set(key, arr);
+      runningByDir.set(key, arr);
     }
     arr.push(buildRunningPtyItem(p));
   }
 
-  // Sort: non-empty CWDs alphabetically by basename, empty last.
-  const sortedKeys = [...grouped.keys()].sort((a, b) => {
+  // Group inactive agent sessions by projectRoot.
+  const sortedAgentSessions = [...agentSessions]
+    .filter((s) => !hiddenAgentSessionIds.has(s.id))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  const inactiveByProject = new Map<string, InactivePtyItem[]>();
+  for (const session of sortedAgentSessions) {
+    const key = session.projectRoot ?? "";
+    const item = buildInactiveAgentSessionItem(session);
+    const items = inactiveByProject.get(key) ?? [];
+    items.push(item);
+    inactiveByProject.set(key, items);
+  }
+
+  // Collect all visible directory keys: pinned dirs + dirs with running PTYs.
+  const visibleDirKeys = new Set<string>([...pinnedDirectories, ...runningByDir.keys()]);
+
+  // Helper to sort directory keys: non-empty alphabetically by basename, empty last.
+  const sortByBasename = (a: string, b: string) => {
     if (!a) return 1;
     if (!b) return -1;
     const ba = a.split("/").filter(Boolean).at(-1) ?? a;
     const bb = b.split("/").filter(Boolean).at(-1) ?? b;
     return ba.localeCompare(bb);
-  });
+  };
 
-  const groups: PtyGroup[] = sortedKeys.map((key) => {
+  // Build unified directory groups: pinned first, then non-pinned, both alphabetical.
+  const pinnedKeys = [...visibleDirKeys].filter((k) => pinnedDirectories.has(k)).sort(sortByBasename);
+  const nonPinnedKeys = [...visibleDirKeys].filter((k) => !pinnedDirectories.has(k)).sort(sortByBasename);
+  const allVisibleKeys = [...pinnedKeys, ...nonPinnedKeys];
+
+  const groups: PtyGroup[] = allVisibleKeys.map((key) => {
     const basename = key ? key.split("/").filter(Boolean).at(-1) ?? key : "Other";
-    const allItems = grouped.get(key) ?? [];
+    const runningItems = runningByDir.get(key) ?? [];
 
-    // Sub-group items by worktree
+    // Sub-group running items by worktree
     const rootItems: RunningPtyItem[] = [];
     const wtMap = new Map<string, { items: RunningPtyItem[]; path: string }>();
-    for (const item of allItems) {
+    for (const item of runningItems) {
       if (item.worktree) {
         let wt = wtMap.get(item.worktree);
         if (!wt) {
@@ -1925,104 +2009,64 @@ function renderList(): void {
         items: wt.items,
       }));
 
+    // Inline inactive sessions for this directory
+    const dirInactiveItems = inactiveByProject.get(key) ?? [];
+    const inactiveSub = buildInactiveWorktreeSubgroups(dirInactiveItems, key);
+
     return {
       key,
       label: basename,
       title: key || undefined,
+      pinned: pinnedDirectories.has(key),
       collapsed: collapsedGroups.has(key),
       worktrees,
       items: rootItems,
+      inactiveSessions: inactiveSub.rootItems,
+      inactiveWorktrees: inactiveSub.worktrees,
+      inactiveTotal: dirInactiveItems.length,
     };
   });
 
-  const sortedAgentSessions = [...agentSessions]
-    .filter((s) => !hiddenAgentSessionIds.has(s.id))
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
-  const inactiveByProject = new Map<string, InactivePtyItem[]>();
-  for (const session of sortedAgentSessions) {
-    const key = session.projectRoot ?? "";
-    const item = buildInactiveAgentSessionItem(session);
-    const items = inactiveByProject.get(key) ?? [];
-    items.push(item);
-    inactiveByProject.set(key, items);
-  }
-  const inactiveGroupKeys = [...inactiveByProject.keys()].sort((a, b) => {
-    if (!a) return 1;
-    if (!b) return -1;
-    const ba = a.split("/").filter(Boolean).at(-1) ?? a;
-    const bb = b.split("/").filter(Boolean).at(-1) ?? b;
-    return ba.localeCompare(bb);
-  });
-  const inactiveGroups = inactiveGroupKeys.map((key) => {
+  // Catch-all: sessions for directories not visible in the sidebar
+  const orphanInactiveKeys = [...inactiveByProject.keys()]
+    .filter((k) => !visibleDirKeys.has(k))
+    .sort(sortByBasename);
+
+  const orphanGroups = orphanInactiveKeys.map((key) => {
     const allItems = inactiveByProject.get(key) ?? [];
-    const rootItems: InactivePtyItem[] = [];
-    const wtMap = new Map<string, { items: InactivePtyItem[]; path: string }>();
-    for (const item of allItems) {
-      if (item.worktree) {
-        let wt = wtMap.get(item.worktree);
-        if (!wt) {
-          wt = { items: [], path: item.cwd ?? "" };
-          wtMap.set(item.worktree, wt);
-        }
-        wt.items.push(item);
-      } else {
-        rootItems.push(item);
-      }
-    }
-    const worktrees = [...wtMap.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([name, wt]) => ({
-        name,
-        path: wt.path,
-        collapsed: false,
-        items: wt.items,
-      }));
+    const sub = buildInactiveWorktreeSubgroups(allItems, key);
     const groupTotal = allItems.length;
     const autoCollapseGroup = !hasStoredAgentGroupCollapsePref &&
-      (inactiveGroupKeys.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD || groupTotal >= AUTO_COLLAPSE_PROJECT_SIZE);
-    const worktreeCount = worktrees.length;
-    const nextWorktrees = worktrees.map((wt) => {
-      const wtKey = `${key}::${wt.name}`;
-      const autoCollapseWorktree = !hasStoredAgentWorktreeCollapsePref &&
-        (worktreeCount >= AUTO_COLLAPSE_WORKTREE_THRESHOLD || wt.items.length >= AUTO_COLLAPSE_WORKTREE_SIZE);
-      return {
-        ...wt,
-        collapsed: collapsedAgentSessionWorktrees.has(wtKey) || autoCollapseWorktree,
-      };
-    });
+      (orphanInactiveKeys.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD || groupTotal >= AUTO_COLLAPSE_PROJECT_SIZE);
     return {
       key,
       label: key ? key.split("/").filter(Boolean).at(-1) ?? key : "(unknown project)",
       title: key || undefined,
       collapsed: collapsedAgentSessionGroups.has(key) || autoCollapseGroup,
       total: groupTotal,
-      items: rootItems,
-      worktrees: nextWorktrees,
+      items: sub.rootItems,
+      worktrees: sub.worktrees,
     };
   });
-  const inactiveRootTotal = inactiveGroups.reduce((acc, group) => acc + group.items.length, 0);
-  const inactiveWorktreeTotal = inactiveGroups.reduce(
-    (acc, group) => acc + group.worktrees.reduce((inner, wt) => inner + wt.items.length, 0),
-    0,
-  );
-  const inactiveTotal = inactiveRootTotal + inactiveWorktreeTotal;
-  const largestInactiveGroup = inactiveGroups.reduce((max, group) => Math.max(max, group.total), 0);
+
+  const orphanTotal = orphanGroups.reduce((acc, g) => acc + g.total, 0);
+  const largestOrphanGroup = orphanGroups.reduce((max, g) => Math.max(max, g.total), 0);
   const autoExpanded = !(
-    inactiveTotal >= AUTO_COLLAPSE_SECTION_TOTAL ||
-    inactiveGroups.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD ||
-    largestInactiveGroup >= AUTO_COLLAPSE_PROJECT_SIZE
+    orphanTotal >= AUTO_COLLAPSE_SECTION_TOTAL ||
+    orphanGroups.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD ||
+    largestOrphanGroup >= AUTO_COLLAPSE_PROJECT_SIZE
   );
   const inactiveExpanded = inactiveSessionsExpandedOverride ?? autoExpanded;
 
   const model: PtyListModel = {
     groups,
-    showHeaders: sortedKeys.length >= 1,
-    inactive: inactiveTotal > 0
+    showHeaders: allVisibleKeys.length >= 1,
+    inactive: orphanTotal > 0
       ? {
-        label: "Recent agent sessions",
+        label: "Recent sessions",
         expanded: inactiveExpanded,
-        total: inactiveTotal,
-        groups: inactiveGroups,
+        total: orphanTotal,
+        groups: orphanGroups,
       }
       : null,
   };
@@ -2037,6 +2081,12 @@ function renderList(): void {
       const key = `${groupKey}::${wtName}`;
       if (collapsedWorktrees.has(key)) collapsedWorktrees.delete(key);
       else collapsedWorktrees.add(key);
+      renderList();
+    },
+    onTogglePin: (groupKey) => {
+      if (pinnedDirectories.has(groupKey)) pinnedDirectories.delete(groupKey);
+      else pinnedDirectories.add(groupKey);
+      savePinnedDirectories();
       renderList();
     },
     onOpenLaunch: (groupKey) => openLaunchModal(groupKey),

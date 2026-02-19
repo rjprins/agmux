@@ -58,9 +58,13 @@ export type PtyGroup = {
   key: string;
   label: string;
   title?: string;
+  pinned: boolean;
   collapsed: boolean;
   worktrees: WorktreeSubgroup[];
   items: RunningPtyItem[];
+  inactiveSessions: InactivePtyItem[];
+  inactiveWorktrees: InactiveWorktreeSubgroup[];
+  inactiveTotal: number;
 };
 
 export type InactiveSection = {
@@ -79,6 +83,7 @@ export type PtyListModel = {
 export type PtyListHandlers = {
   onToggleGroup: (groupKey: string) => void;
   onToggleWorktree: (groupKey: string, worktreeName: string) => void;
+  onTogglePin: (groupKey: string) => void;
   onOpenLaunch: (groupKey: string) => void;
   onSelectPty: (ptyId: string) => void;
   onKillPty: (ptyId: string) => void;
@@ -199,18 +204,30 @@ function PtyItemRow(
 }
 
 export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyListHandlers): void {
+  const hasRunning = (group: PtyGroup) => group.items.length > 0 || group.worktrees.length > 0;
   render(
     <>
       {model.groups.map((group) => (
         <Fragment key={`group:${group.key}`}>
           {model.showHeaders ? (
             <li
-              className={`pty-group-header${group.collapsed ? " collapsed" : ""}`}
+              className={`pty-group-header${group.collapsed ? " collapsed" : ""}${group.pinned && !hasRunning(group) ? " pinned-empty" : ""}`}
               title={group.title}
               onClick={() => handlers.onToggleGroup(group.key)}
             >
               <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
               <span>{group.label}</span>
+              <button
+                type="button"
+                className={`group-pin${group.pinned ? " pinned" : ""}`}
+                title={group.pinned ? "Unpin directory" : "Pin directory"}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  handlers.onTogglePin(group.key);
+                }}
+              >
+                {group.pinned ? "\u{1F4CC}" : "\u{1F4CC}"}
+              </button>
               <button
                 type="button"
                 className="group-launch"
@@ -255,6 +272,33 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       )}
                   </Fragment>
                 ))}
+
+                {group.inactiveTotal > 0 ? (
+                  <>
+                    {hasRunning(group) ? <li className="inline-inactive-divider"><span>Recent</span></li> : null}
+                    {group.inactiveSessions.map((item) => (
+                      <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
+                    ))}
+                    {group.inactiveWorktrees.map((wt) => (
+                      <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
+                        <li
+                          className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
+                          title={wt.path}
+                          onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
+                        >
+                          <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
+                          <span>{wt.name}</span>
+                          <span className="group-count">{wt.items.length}</span>
+                        </li>
+                        {wt.collapsed
+                          ? null
+                          : wt.items.map((item) => (
+                            <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
+                          ))}
+                      </Fragment>
+                    ))}
+                  </>
+                ) : null}
               </>
             )}
         </Fragment>

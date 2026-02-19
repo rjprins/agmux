@@ -1077,6 +1077,59 @@ button:disabled {
   background: var(--surface);
 }
 
+.group-pin {
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.pty-group-header:hover .group-pin,
+.group-pin.pinned {
+  opacity: 0.5;
+}
+.group-pin.pinned {
+  opacity: 0.7;
+}
+.group-pin:hover {
+  opacity: 1 !important;
+}
+
+.pty-group-header.pinned-empty {
+  opacity: 0.6;
+}
+
+.inline-inactive-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  user-select: none;
+}
+.inline-inactive-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+  opacity: 0.5;
+}
+
+.sidebar.collapsed .group-pin {
+  display: none;
+}
+.sidebar.collapsed .inline-inactive-divider {
+  display: none;
+}
+
 @media (max-width: 920px) {
   #app {
     grid-template-columns: 1fr;
