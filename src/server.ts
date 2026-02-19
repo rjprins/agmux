@@ -198,20 +198,32 @@ function isBranchFormatLikelySafe(branch: string): boolean {
   return true;
 }
 
-async function gitBranchNameValid(branch: string): Promise<boolean> {
+async function gitBranchNameValid(branch: string, cwd: string = REPO_ROOT): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
-    execFile("git", ["check-ref-format", "--branch", branch], { cwd: REPO_ROOT }, (err) => {
+    execFile("git", ["check-ref-format", "--branch", branch], { cwd }, (err) => {
       resolve(!err);
     });
   });
 }
 
-async function gitRefExists(ref: string): Promise<boolean> {
+async function gitRefExists(ref: string, cwd: string = REPO_ROOT): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
-    execFile("git", ["rev-parse", "--verify", "--quiet", ref], { cwd: REPO_ROOT }, (err) => {
+    execFile("git", ["rev-parse", "--verify", "--quiet", ref], { cwd }, (err) => {
       resolve(!err);
     });
   });
+}
+
+async function resolveProjectRoot(raw: unknown): Promise<string | null> {
+  if (typeof raw !== "string" || !raw.trim()) return null;
+  const resolved = path.resolve(raw.trim());
+  if (!(await pathExistsAndIsDirectory(resolved))) return null;
+  try {
+    await fs.stat(path.join(resolved, ".git"));
+    return resolved;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -888,8 +900,10 @@ fastify.post("/api/ptys", async (req, reply) => {
 });
 
 // Create an interactive login shell with zero UI configuration.
-fastify.get("/api/worktrees", async () => {
-  const wtDir = WORKTREE_ROOT;
+fastify.get("/api/worktrees", async (req) => {
+  const q = req.query as Record<string, unknown>;
+  const projectRoot = await resolveProjectRoot(q.projectRoot);
+  const wtDir = projectRoot ? path.resolve(projectRoot, ".worktrees") : WORKTREE_ROOT;
   let entries: string[];
   try {
     entries = await fs.readdir(wtDir);
@@ -1039,6 +1053,10 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     return { error: "worktree is required" };
   }
 
+  const projectRoot = await resolveProjectRoot(body.projectRoot);
+  const effectiveRepoRoot = projectRoot ?? REPO_ROOT;
+  const effectiveWtRoot = path.resolve(effectiveRepoRoot, ".worktrees");
+
   let cwd: string;
   if (worktree === "__new__") {
     const branch = typeof body.branch === "string" && body.branch.trim()
@@ -1047,7 +1065,7 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     const baseBranch = typeof body.baseBranch === "string" && body.baseBranch.trim().length > 0
       ? body.baseBranch.trim()
       : DEFAULT_BASE_BRANCH;
-    if (!isBranchFormatLikelySafe(branch) || !(await gitBranchNameValid(branch))) {
+    if (!isBranchFormatLikelySafe(branch) || !(await gitBranchNameValid(branch, effectiveRepoRoot))) {
       reply.code(400);
       return { error: "invalid branch name" };
     }
@@ -1055,29 +1073,31 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
       reply.code(400);
       return { error: "invalid base branch" };
     }
-    if (!(await gitRefExists(`${baseBranch}^{commit}`))) {
+    if (!(await gitRefExists(`${baseBranch}^{commit}`, effectiveRepoRoot))) {
       reply.code(400);
       return { error: `base branch not found: ${baseBranch}` };
     }
 
     const wtLeaf = branch.replace(/[\\/]+/g, "-");
-    const wtPath = path.resolve(WORKTREE_ROOT, wtLeaf);
-    if (!isPathInside(WORKTREE_ROOT, wtPath)) {
+    const wtPath = path.resolve(effectiveWtRoot, wtLeaf);
+    if (!isPathInside(effectiveWtRoot, wtPath)) {
       reply.code(400);
       return { error: "resolved worktree path escapes .worktrees/" };
     }
 
-    const branchExists = await gitRefExists(`refs/heads/${branch}`);
+    await fs.mkdir(effectiveWtRoot, { recursive: true });
+
+    const branchExists = await gitRefExists(`refs/heads/${branch}`, effectiveRepoRoot);
     if (branchExists) {
       await new Promise<void>((resolve, reject) => {
-        execFile("git", ["worktree", "add", wtPath, branch], { cwd: REPO_ROOT }, (err) => {
+        execFile("git", ["worktree", "add", wtPath, branch], { cwd: effectiveRepoRoot }, (err) => {
           if (err) reject(err);
           else resolve();
         });
       });
     } else {
       await new Promise<void>((resolve, reject) => {
-        execFile("git", ["worktree", "add", "-b", branch, wtPath, baseBranch], { cwd: REPO_ROOT }, (err) => {
+        execFile("git", ["worktree", "add", "-b", branch, wtPath, baseBranch], { cwd: effectiveRepoRoot }, (err) => {
           if (err) reject(err);
           else resolve();
         });
@@ -1086,10 +1106,6 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     cwd = wtPath;
   } else {
     const resolved = path.resolve(worktree);
-    if (!isPathInside(REPO_ROOT, resolved)) {
-      reply.code(400);
-      return { error: "worktree path must be under repository root" };
-    }
     if (!(await pathExistsAndIsDirectory(resolved))) {
       reply.code(400);
       return { error: "worktree path does not exist or is not a directory" };

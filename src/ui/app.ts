@@ -986,6 +986,7 @@ type LaunchModalState = {
   launching: boolean;
   savedFlags: Record<string, Record<string, string | boolean>>;
   worktreeOptions: WorktreeOption[];
+  projectRoot: string;
 };
 
 const launchModalRoot = document.createElement("div");
@@ -1115,6 +1116,7 @@ function renderLaunchModalState(): void {
           branch,
           baseBranch,
           flags,
+          projectRoot: stateNow.projectRoot || undefined,
         }),
       })
         .then(async (res) => {
@@ -1148,6 +1150,7 @@ function openLaunchModal(groupCwd: string): void {
     launching: false,
     savedFlags: {},
     worktreeOptions: buildWorktreeOptions(groupCwd),
+    projectRoot: groupCwd,
   };
   renderLaunchModalState();
 
@@ -1169,7 +1172,10 @@ function openLaunchModal(groupCwd: string): void {
     })
     .catch(() => {});
 
-  void authFetch("/api/worktrees")
+  const wtUrl = groupCwd
+    ? `/api/worktrees?projectRoot=${encodeURIComponent(groupCwd)}`
+    : "/api/worktrees";
+  void authFetch(wtUrl)
     .then(async (r) => (r.ok ? r.json() : Promise.reject(new Error(await readApiError(r)))))
     .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
       if (seq !== launchModalSeq || !launchModalState) return;
