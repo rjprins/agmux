@@ -4,79 +4,90 @@ import process from "node:process";
 import fs from "node:fs";
 
 const repo = process.cwd();
-const supDir = path.join(repo, "supervisor");
-const DEFAULT_APP_PORT = 4821;
-const DEFAULT_SUP_PORT = 4822;
-const requestedAppPort = Number(process.env.APP_PORT ?? String(DEFAULT_APP_PORT));
-const requestedSupPort = Number(process.env.SUP_PORT ?? String(DEFAULT_SUP_PORT));
-const appPort = Number.isInteger(requestedAppPort) && requestedAppPort > 0 ? requestedAppPort : DEFAULT_APP_PORT;
-const supPort = Number.isInteger(requestedSupPort) && requestedSupPort > 0 ? requestedSupPort : DEFAULT_SUP_PORT;
-if (appPort === supPort) {
-  // eslint-disable-next-line no-console
-  console.error(`APP_PORT and SUP_PORT must differ (both are ${appPort}).`);
-  process.exit(2);
-}
+const DEFAULT_PORT = 4821;
+const requestedPort = Number(process.env.PORT ?? process.env.APP_PORT ?? String(DEFAULT_PORT));
+const port = Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : DEFAULT_PORT;
 
-function checkPortAvailable(port) {
+function checkPortAvailable(p) {
   try {
     const out = execSync("ss -ltnp", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const re = new RegExp(`:${port}(\\s|$)`);
+    const re = new RegExp(`:${p}(\\s|$)`);
     const lines = out.split("\n").filter((l) => re.test(l));
     if (lines.length === 0) return;
 
-    // eslint-disable-next-line no-console
-    console.error(`Port ${port} is already in use:\n${lines.join("\n")}\n`);
-    // eslint-disable-next-line no-console
-    console.error(
-      `Stop the process using it, or pick different ports:\n` +
-        `  APP_PORT=4823 SUP_PORT=4824 npm run live\n`,
-    );
+    console.error(`Port ${p} is already in use:\n${lines.join("\n")}\n`);
+    console.error(`Stop the process using it, or pick a different port:\n  PORT=${p + 2} npm run live\n`);
     process.exit(2);
   } catch {
-    // If ss isn't available, we won't block startup; Go/Node will error clearly.
+    // If ss isn't available, we won't block startup.
   }
 }
 
-checkPortAvailable(appPort);
-checkPortAvailable(supPort);
+checkPortAvailable(port);
 
-const goCache = process.env.GOCACHE ?? "/tmp/go-build-cache";
-try {
-  fs.mkdirSync(goCache, { recursive: true });
-} catch {
-  // ignore
-}
+// Build UI once before starting the server.
+console.log("[live] Building UI...");
+execSync("node scripts/build-ui.mjs", { cwd: repo, stdio: "inherit" });
 
-const args = [
-  "run",
-  ".",
-  "-repo",
-  repo,
-  "-app-port",
-  String(appPort),
-  "-sup-port",
-  String(supPort),
-];
+// Watch src/ui/ for changes and rebuild UI automatically.
+import("node:fs").then(({ watch }) => {
+  const uiDir = path.join(repo, "src", "ui");
+  let rebuildTimer = null;
 
-const child = spawn("go", args, {
-  cwd: supDir,
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    GOCACHE: goCache,
-    // Prevent the Node server from opening a browser on every supervisor restart.
-    AGENT_TIDE_NO_OPEN: "1",
-  },
+  function scheduleRebuild() {
+    if (rebuildTimer) return;
+    rebuildTimer = setTimeout(() => {
+      rebuildTimer = null;
+      console.log("[live] UI source changed, rebuilding...");
+      try {
+        execSync("node scripts/build-ui.mjs", { cwd: repo, stdio: "inherit" });
+      } catch (err) {
+        console.error("[live] UI rebuild failed:", err.message);
+      }
+    }, 200);
+  }
+
+  try {
+    fs.watch(uiDir, { recursive: true }, (_event, filename) => {
+      if (!filename) return;
+      if (filename.endsWith(".ts") || filename.endsWith(".tsx") || filename.endsWith(".css")) {
+        scheduleRebuild();
+      }
+    });
+  } catch {
+    console.warn("[live] Could not watch src/ui/ for changes");
+  }
 });
+
+// Start Node server with --watch (restarts on src/ changes, excluding src/ui/).
+const child = spawn(
+  process.execPath,
+  [
+    "--watch",
+    "--watch-path=src",
+    "--watch-preserve-output",
+    "--import", "tsx",
+    "src/server.ts",
+  ],
+  {
+    cwd: repo,
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      PORT: String(port),
+      // Prevent the Node server from opening a browser on every restart.
+      AGMUX_NO_OPEN: "1",
+    },
+  },
+);
 
 child.on("exit", (code) => process.exit(code ?? 1));
 
 // Open the browser once the server is actually listening.
-const appUrl = `http://127.0.0.1:${appPort}`;
-// eslint-disable-next-line no-console
-console.log(`app: ${appUrl}`);
+const appUrl = `http://127.0.0.1:${port}`;
+console.log(`[live] app: ${appUrl}`);
 
-if (process.env.AGENT_TIDE_NO_OPEN !== "1") {
+if (process.env.AGMUX_NO_OPEN !== "1") {
   const open =
     process.platform === "darwin"
       ? ["open", [appUrl]]
@@ -84,7 +95,6 @@ if (process.env.AGENT_TIDE_NO_OPEN !== "1") {
         ? ["cmd", ["/c", "start", appUrl]]
         : ["xdg-open", [appUrl]];
 
-  // Poll until the server responds before opening the browser.
   const poll = async () => {
     for (let i = 0; i < 120; i++) {
       try {

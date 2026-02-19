@@ -7,7 +7,7 @@ import type { PtyId, PtySummary, TmuxServer } from "../types.js";
 export type PtySpawnRequest = {
   id?: string;
   name?: string;
-  backend?: "pty" | "tmux";
+  backend?: "tmux";
   tmuxSession?: string | null;
   tmuxServer?: TmuxServer | null;
   command: string;
@@ -61,7 +61,7 @@ export class PtyManager extends EventEmitter {
     const summary: PtySummary = {
       id,
       name: req.name ?? req.command,
-      backend: req.backend,
+      backend: "tmux",
       tmuxSession: req.tmuxSession ?? null,
       tmuxServer: req.tmuxServer ?? null,
       command: req.command,

@@ -476,7 +476,6 @@ async function reconcileTmuxAttachments(): Promise<void> {
     const runningByTarget = new Map<string, string>();
     for (const p of ptys.list()) {
       if (
-        p.backend === "tmux" &&
         p.status === "running" &&
         p.tmuxSession &&
         p.tmuxServer !== "default" &&
@@ -607,8 +606,7 @@ async function loadTriggersAndBroadcast(reason: string): Promise<void> {
 
 // PTY events -> persistence + triggers + WS
 ptys.on("output", (ptyId: string, data: string) => {
-  const summary = ptys.getSummary(ptyId);
-  const out = summary?.backend === "tmux" ? stripAlternateScreenSequences(data) : data;
+  const out = stripAlternateScreenSequences(data);
   readinessEngine.markOutput(ptyId, out);
 
   hub.queuePtyOutput(ptyId, out);
@@ -656,9 +654,9 @@ ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
     tmuxKillSession(linked.name, linked.server).catch(() => {});
   }
 
-  // If this was a tmux attachment, reconcile after a brief delay to reattach
-  // if the window still exists (or clean up if it doesn't).
-  if (summary?.backend === "tmux" && summary.tmuxSession && summary.tmuxServer !== "default") {
+  // Reconcile after a brief delay to reattach if the window still exists
+  // (or clean up if it doesn't).
+  if (summary?.tmuxSession && summary.tmuxServer !== "default") {
     void (async () => {
       // Small delay to avoid tight loops if tmux is unstable.
       await new Promise((r) => setTimeout(r, 250));
@@ -774,22 +772,40 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
   if (!cwd) cwd = REPO_ROOT;
 
   try {
+    // Use tmux so the agent process survives server restarts.
+    const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
+    const SESSION_NAME = "agmux";
+    await tmuxEnsureSession(SESSION_NAME, shell);
+    const tmuxTarget = await tmuxCreateWindow(SESSION_NAME, shell, cwd);
+    const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(tmuxTarget);
+
     const summary = ptys.spawn({
       name: session.name,
-      command: provider,
-      args: resumeArgsForProvider(provider, providerSessionId),
-      cwd,
+      backend: "tmux",
+      tmuxSession: tmuxTarget,
+      tmuxServer: "agmux",
+      command: "tmux",
+      args: attachArgs,
       cols: 120,
       rows: 30,
     });
+    linkedSessionsByPty.set(summary.id, { name: linkedSession, server: "agmux" });
     const now = Date.now();
     store.upsertSession(summary);
     agentSessionRefByPty.set(summary.id, { provider, providerSessionId });
+
+    // Type the resume command into the tmux shell after a short delay.
+    const resumeArgs = resumeArgsForProvider(provider, providerSessionId);
+    setTimeout(() => {
+      const cmd = `unset CLAUDECODE; ${provider} ${resumeArgs.join(" ")}`;
+      ptys.write(summary.id, `${cmd}\n`);
+    }, 300);
+
     upsertAgentSessionSummary({
       ...session,
       id: agentSessionPublicId(provider, providerSessionId),
       command: provider,
-      args: resumeArgsForProvider(provider, providerSessionId),
+      args: resumeArgs,
       cwd: cwd ?? null,
       cwdSource,
       projectRoot: projectRootFromCwd(cwd ?? null),
@@ -798,8 +814,8 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
       lastRestoredAt: now,
     });
     fastify.log.info(
-      { ptyId: summary.id, provider, providerSessionId, cwd: cwd ?? null, target },
-      "agent session restored",
+      { ptyId: summary.id, provider, providerSessionId, cwd: cwd ?? null, target, tmuxSession: tmuxTarget },
+      "agent session restored (tmux)",
     );
     await broadcastPtyList();
     return { id: summary.id };
@@ -845,58 +861,6 @@ fastify.get("/api/tmux/check", async (req, reply) => {
   }
   const checks = await tmuxCheckSessionConfig(name, requestedServer);
   return { checks };
-});
-
-fastify.post("/api/ptys", async (req, reply) => {
-  const body = isRecord(req.body) ? req.body : {};
-  const command = typeof body.command === "string" ? body.command.trim() : "";
-  if (command.length === 0) {
-    reply.code(400);
-    return { error: "command is required" };
-  }
-  if (body.args != null && !Array.isArray(body.args)) {
-    reply.code(400);
-    return { error: "args must be an array" };
-  }
-  if (body.cwd != null && typeof body.cwd !== "string") {
-    reply.code(400);
-    return { error: "cwd must be a string" };
-  }
-
-  let env: Record<string, string> | undefined;
-  if (body.env != null) {
-    if (!isRecord(body.env)) {
-      reply.code(400);
-      return { error: "env must be an object" };
-    }
-    const nextEnv: Record<string, string> = {};
-    for (const [k, v] of Object.entries(body.env)) {
-      if (typeof v !== "string") {
-        reply.code(400);
-        return { error: `env.${k} must be a string` };
-      }
-      nextEnv[k] = v;
-    }
-    env = nextEnv;
-  }
-
-  const args = (body.args ?? []).map(String);
-  const cols = Number.isInteger(body.cols) && Number(body.cols) > 0 ? Number(body.cols) : undefined;
-  const rows = Number.isInteger(body.rows) && Number(body.rows) > 0 ? Number(body.rows) : undefined;
-
-  const summary = ptys.spawn({
-    name: typeof body.name === "string" ? body.name : undefined,
-    command,
-    args,
-    cwd: typeof body.cwd === "string" ? body.cwd : undefined,
-    env,
-    cols,
-    rows,
-  });
-  store.upsertSession(summary);
-  fastify.log.info({ ptyId: summary.id, command, args }, "pty spawned");
-  await broadcastPtyList();
-  return { id: summary.id };
 });
 
 // Create an interactive login shell with zero UI configuration.
@@ -1173,20 +1137,6 @@ fastify.get("/api/launch-preferences", async () => {
 
 fastify.post("/api/ptys/shell", async (_req, reply) => {
   const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
-  const backend = process.env.AGMUX_SHELL_BACKEND ?? "tmux";
-
-  if (backend === "pty") {
-    const summary = ptys.spawn({
-      name: `shell:${path.basename(shell)}`,
-      command: shell,
-      cols: 120,
-      rows: 30,
-    });
-    store.upsertSession(summary);
-    fastify.log.info({ ptyId: summary.id, shell, backend }, "shell spawned");
-    await broadcastPtyList();
-    return { id: summary.id };
-  }
 
   // Use a single tmux session with one window per shell.
   try {
@@ -1204,7 +1154,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
   const windows = await tmuxListWindows(AGMUX_SESSION);
   const attachedTargets = new Set(
     ptys.list()
-      .filter((p) => p.backend === "tmux" && p.tmuxSession && p.tmuxServer !== "default")
+      .filter((p) => p.tmuxSession && p.tmuxServer !== "default")
       .map((p) => p.tmuxSession),
   );
   let tmuxTarget: string | null = null;
@@ -1231,7 +1181,7 @@ fastify.post("/api/ptys/shell", async (_req, reply) => {
   });
   linkedSessionsByPty.set(summary.id, { name: linkedSession, server: "agmux" });
   store.upsertSession(summary);
-  fastify.log.info({ ptyId: summary.id, shell, backend, tmuxSession: tmuxTarget }, "shell spawned");
+  fastify.log.info({ ptyId: summary.id, shell, tmuxSession: tmuxTarget }, "shell spawned");
   await broadcastPtyList();
   return { id: summary.id };
 });
@@ -1297,7 +1247,7 @@ fastify.post("/api/ptys/:id/kill", async (req, reply) => {
     return { error: "unknown PTY" };
   }
 
-  if (summary.backend === "tmux" && summary.tmuxSession) {
+  if (summary.tmuxSession) {
     try {
       await tmuxKillWindow(summary.tmuxSession, summary.tmuxServer);
     } catch {
@@ -1529,7 +1479,7 @@ wss.on("connection", (ws) => {
     if (msg.type === "subscribe") {
       client.subscribed.add(msg.ptyId);
       const summary = ptys.getSummary(msg.ptyId);
-      if (summary?.backend === "tmux" && summary.tmuxSession) {
+      if (summary?.tmuxSession) {
         void tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer)
           .then((snapshot) => {
             if (!snapshot || ws.readyState !== ws.OPEN) return;
@@ -1556,7 +1506,7 @@ wss.on("connection", (ws) => {
     }
     if (msg.type === "tmux_control") {
       const summary = ptys.getSummary(msg.ptyId);
-      if (!summary || summary.backend !== "tmux" || !summary.tmuxSession) return;
+      if (!summary || !summary.tmuxSession) return;
       void tmuxScrollHistory(summary.tmuxSession, msg.direction, msg.lines, summary.tmuxServer).catch(() => {
         // ignore best-effort tmux history control
       });

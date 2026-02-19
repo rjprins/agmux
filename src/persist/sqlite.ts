@@ -206,7 +206,7 @@ export class SqliteStore {
     return rows.map((r) => ({
       id: r.id,
       name: r.name,
-      backend: r.backend === "tmux" ? "tmux" : r.backend === "pty" ? "pty" : undefined,
+      backend: "tmux" as const,
       tmuxSession: r.tmux_session,
       tmuxServer: r.tmux_server === "default" ? "default" : r.tmux_server === "agmux" ? "agmux" : null,
       command: r.command,

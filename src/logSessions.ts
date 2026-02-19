@@ -273,6 +273,7 @@ export function discoverInactiveLogSessions(options: DiscoveryOptions = {}): Pty
     const summary: PtySummary = {
       id: buildStableId(candidate.source, derivedSessionId, candidate.logPath),
       name: `${candidate.source}:${leafOrDefault(projectPath, fallbackName)}`,
+      backend: "tmux",
       command: candidate.source,
       args: resumeArgsForSource(candidate.source, derivedSessionId),
       cwd: projectPath,

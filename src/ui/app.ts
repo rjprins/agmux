@@ -32,7 +32,6 @@ type PtyReadinessIndicator = "ready" | "busy";
 type PtySummary = {
   id: string;
   name: string;
-  backend?: "pty" | "tmux";
   tmuxSession?: string | null;
   tmuxServer?: "agmux" | "default" | null;
   activeProcess?: string | null;
@@ -375,7 +374,6 @@ themeSelect.addEventListener("change", () => {
 
 type TermState = {
   ptyId: string;
-  backend: "pty" | "tmux" | undefined;
   container: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
@@ -386,8 +384,7 @@ const terms = new Map<string, TermState>();
 const subscribed = new Set<string>();
 let authToken = "";
 let ws: WebSocket | null = null;
-const TERMINAL_SCROLLBACK_LINES = 50_000;
-const TMUX_TERMINAL_SCROLLBACK_LINES = 0;
+const TERMINAL_SCROLLBACK_LINES = 0;
 let tmuxSessions: TmuxSessionInfo[] = [];
 
 const placeholderEl = document.createElement("div");
@@ -422,12 +419,11 @@ function startAssetReloadPoller(): void {
     }
   }
 
-  // Cheap fallback when the supervisor isn't running (or ports don't match).
   setInterval(() => void tick(), 1500);
   void tick();
 }
 
-function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
+function createTermState(ptyId: string): TermState {
   const container = document.createElement("div");
   container.className = "term-pane hidden";
   container.dataset.ptyId = ptyId;
@@ -439,20 +435,18 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
     fontFamily:
       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
     theme: activeTheme.terminal,
-    scrollback: backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES,
+    scrollback: TERMINAL_SCROLLBACK_LINES,
   });
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
   term.open(container);
 
-  // For tmux PTYs, intercept wheel events and scroll tmux history instead.
+  // Intercept wheel events and scroll tmux history instead.
   container.addEventListener(
     "wheel",
     (ev) => {
       if (ev.ctrlKey) return;
-      const st = terms.get(ptyId);
-      if (st?.backend !== "tmux") return;
       const dy = ev.deltaY;
       if (!Number.isFinite(dy) || dy === 0) return;
       ev.preventDefault();
@@ -497,23 +491,13 @@ function createTermState(ptyId: string, backend?: "pty" | "tmux"): TermState {
     renderList();
   });
 
-  return { ptyId, backend, container, term, fit, lastResize: null };
+  return { ptyId, container, term, fit, lastResize: null };
 }
 
-function ensureTerm(ptyId: string, backend?: "pty" | "tmux"): TermState {
+function ensureTerm(ptyId: string): TermState {
   const existing = terms.get(ptyId);
-  if (existing) {
-    if (backend && existing.backend !== backend) {
-      existing.backend = backend;
-      const target = backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES;
-      if (existing.term.options.scrollback !== target) {
-        existing.term.options.scrollback = target;
-        if (backend === "tmux") existing.term.clear();
-      }
-    }
-    return existing;
-  }
-  const created = createTermState(ptyId, backend);
+  if (existing) return existing;
+  const created = createTermState(ptyId);
   terms.set(ptyId, created);
   return created;
 }
@@ -558,18 +542,42 @@ async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
   });
 }
 
+let wsReconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let wsReconnectDelay = 0;
+const WS_RECONNECT_BASE = 500;
+const WS_RECONNECT_MAX = 10_000;
+
+function scheduleWsReconnect(): void {
+  if (wsReconnectTimer !== null) return;
+  wsReconnectDelay = wsReconnectDelay === 0
+    ? WS_RECONNECT_BASE
+    : Math.min(wsReconnectDelay * 2, WS_RECONNECT_MAX);
+  addEvent(`WS reconnecting in ${wsReconnectDelay}ms…`);
+  wsReconnectTimer = setTimeout(() => {
+    wsReconnectTimer = null;
+    connectWs();
+  }, wsReconnectDelay);
+}
+
 function connectWs(): void {
   ws = new WebSocket(wsUrl());
 
   ws.addEventListener("open", () => {
+    wsReconnectDelay = 0;
     addEvent(`WS connected`);
     for (const ptyId of subscribed) {
       sendWsMessage({ type: "subscribe", ptyId });
     }
+    refreshList();
   });
 
   ws.addEventListener("close", () => {
     addEvent(`WS disconnected`);
+    scheduleWsReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    // close will fire after error, triggering reconnect
   });
 
   ws.addEventListener("message", (ev) => {
@@ -650,44 +658,8 @@ async function readApiError(res: Response): Promise<string> {
   return `HTTP ${res.status}`;
 }
 
-// Supervisor control plane: tells us when to reload after agent edits.
-(() => {
-  const qs = new URLSearchParams(location.search);
-  if (qs.has("nosup")) {
-    startAssetReloadPoller();
-    return;
-  }
-
-  const supUrl = `${location.protocol}//127.0.0.1:4822/events`;
-  const es = new EventSource(supUrl);
-  let supOk = false;
-  const pollFallback = window.setTimeout(() => {
-    if (!supOk) startAssetReloadPoller();
-  }, 1200);
-
-  es.onopen = () => {
-    supOk = true;
-    window.clearTimeout(pollFallback);
-  };
-  es.onmessage = (ev) => {
-    try {
-      const m = JSON.parse(ev.data) as any;
-      if (m?.type === "commit") addEvent(`commit ${String(m.sha ?? "").slice(0, 12)} ${m.msg ?? ""}`);
-      if (m?.type === "status") addEvent(`server ${m.server}`);
-      if (m?.type === "reload") {
-        // Ignore informational reload events that don't require refresh.
-        if (m.reason === "triggers_updated") return;
-        addEvent(`reload (${m.reason ?? "unknown"})`);
-        location.reload();
-      }
-    } catch {
-      // ignore
-    }
-  };
-  es.onerror = () => {
-    addEvent("supervisor events disconnected");
-  };
-})();
+// Use ETag-based asset reload poller as the sole reload mechanism.
+startAssetReloadPoller();
 
 function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_list") {
@@ -716,15 +688,6 @@ function onServerMsg(msg: ServerMsg): void {
     for (const ptyId of terms.keys()) {
       if (!running.has(ptyId)) removeTerm(ptyId);
     }
-    for (const [ptyId, st] of terms) {
-      const p = ptys.find((x) => x.id === ptyId);
-      if (p?.backend) st.backend = p.backend;
-      const targetScrollback = p?.backend === "tmux" ? TMUX_TERMINAL_SCROLLBACK_LINES : TERMINAL_SCROLLBACK_LINES;
-      if (st.term.options.scrollback !== targetScrollback) {
-        st.term.options.scrollback = targetScrollback;
-        if (targetScrollback === 0) st.term.clear();
-      }
-    }
 
     if (pendingActivePtyId) {
       const pending = ptys.find((p) => p.id === pendingActivePtyId);
@@ -739,8 +702,7 @@ function onServerMsg(msg: ServerMsg): void {
     return;
   }
   if (msg.type === "pty_output") {
-    const backend = ptys.find((p) => p.id === msg.ptyId)?.backend;
-    const st = ensureTerm(msg.ptyId, backend);
+    const st = ensureTerm(msg.ptyId);
     st.term.write(msg.data);
     if (msg.ptyId === activePtyId) scheduleReflow();
     return;
@@ -1326,17 +1288,6 @@ function appendPtyInputHistory(ptyId: string, input: string, bufferLine: number)
   ptyInputHistory.set(ptyId, next);
 }
 
-function scrollToHistoryLine(ptyId: string, bufferLine: number): void {
-  const st = terms.get(ptyId);
-  if (!st || st.backend === "tmux") return;
-  if (bufferLine <= 0) return;
-  const buf = st.term.buffer.active;
-  // If the line has been discarded from scrollback, do nothing.
-  const firstAvailable = buf.length - (buf.baseY + st.term.rows);
-  if (bufferLine < firstAvailable) return;
-  st.term.scrollToLine(bufferLine);
-}
-
 function renderInputContextBar(): void {
   if (!activePtyId) {
     inputContextEl.classList.add("hidden");
@@ -1356,15 +1307,8 @@ function renderInputContextBar(): void {
   inputContextLastEl.textContent = latest;
   inputContextLastEl.title = latest;
 
-  // Make the "last input" element clickable to scroll to the most recent command.
-  const lastPtyId = activePtyId;
-  if (lastEntry && lastEntry.bufferLine > 0) {
-    inputContextLastEl.classList.add("clickable");
-    inputContextLastEl.onclick = () => scrollToHistoryLine(lastPtyId, lastEntry.bufferLine);
-  } else {
-    inputContextLastEl.classList.remove("clickable");
-    inputContextLastEl.onclick = null;
-  }
+  inputContextLastEl.classList.remove("clickable");
+  inputContextLastEl.onclick = null;
 
   inputHistoryLabelEl.textContent = `History (${history.length})`;
   inputContextToggleEl.setAttribute("aria-expanded", inputHistoryExpanded ? "true" : "false");
@@ -1385,12 +1329,6 @@ function renderInputContextBar(): void {
       const li = document.createElement("li");
       li.textContent = entry.text;
       li.title = entry.text;
-      if (entry.bufferLine > 0) {
-        li.classList.add("clickable");
-        const ptyId = activePtyId!;
-        const line = entry.bufferLine;
-        li.addEventListener("click", () => scrollToHistoryLine(ptyId, line));
-      }
       inputHistoryListEl.appendChild(li);
     }
   }
@@ -2146,7 +2084,7 @@ function setActive(ptyId: string): void {
 
   activePtyId = ptyId;
   saveActivePty(ptyId);
-  ensureTerm(ptyId, summary.backend);
+  ensureTerm(ptyId);
   updateTerminalVisibility();
   subscribeIfNeeded(ptyId);
   requestAnimationFrame(() => {

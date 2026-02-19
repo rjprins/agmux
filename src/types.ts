@@ -8,7 +8,7 @@ export type TmuxServer = "agmux" | "default";
 export type PtySummary = {
   id: PtyId;
   name: string;
-  backend?: "pty" | "tmux";
+  backend: "tmux";
   tmuxSession?: string | null;
   tmuxServer?: TmuxServer | null;
   activeProcess?: string | null;

@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import type { PtyManager } from "../pty/manager.js";
 import type { PtyReadinessIndicator, PtyReadinessState, PtySummary } from "../types.js";
 import { tmuxCapturePaneVisible, tmuxPaneActiveProcess, tmuxPaneCurrentPath, tmuxPaneDimensions } from "../tmux.js";
@@ -120,52 +119,48 @@ export class ReadinessEngine {
     let activeProcess: string | null = summary.activeProcess ?? null;
     let cwd: string | null = summary.cwd ?? null;
 
-    if (summary.backend === "tmux" && summary.tmuxSession) {
-      const [proc, liveCwd] = await Promise.all([
-        tmuxPaneActiveProcess(summary.tmuxSession, summary.tmuxServer),
-        tmuxPaneCurrentPath(summary.tmuxSession, summary.tmuxServer),
-      ]);
-      activeProcess = proc;
-      if (liveCwd) {
-        this.deps.ptys.updateCwd(ptyId, liveCwd);
-        cwd = liveCwd;
-      }
+    if (!summary.tmuxSession) {
+      return {
+        state: "unknown",
+        indicator: st.indicator,
+        reason: "no-tmux-session",
+        nextCheckInMs: null,
+        activeProcess,
+        cwd,
+      };
+    }
 
-      const [paneContent, paneSize] = await Promise.all([
-        tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer),
-        tmuxPaneDimensions(summary.tmuxSession, summary.tmuxServer),
-      ]);
-      if (paneContent == null) {
-        return {
-          state: "unknown",
-          indicator: st.indicator,
-          reason: "tmux:capture-unavailable",
-          nextCheckInMs: null,
-          activeProcess,
-          cwd,
-        };
-      }
+    const [proc, liveCwd] = await Promise.all([
+      tmuxPaneActiveProcess(summary.tmuxSession, summary.tmuxServer),
+      tmuxPaneCurrentPath(summary.tmuxSession, summary.tmuxServer),
+    ]);
+    activeProcess = proc;
+    if (liveCwd) {
+      this.deps.ptys.updateCwd(ptyId, liveCwd);
+      cwd = liveCwd;
+    }
 
-      const inferred = inferPaneStatus({
-        prev: st.paneCache,
-        next: {
-          content: paneContent,
-          width: paneSize?.width ?? 120,
-          height: paneSize?.height ?? 30,
-        },
-        now: Date.now(),
-        workingGracePeriodMs: READINESS_WORKING_GRACE_MS,
-      });
-      st.paneCache = inferred.nextCache;
-      return this.mapInferred(inferred.status, inferred.nextCheckInMs, activeProcess, cwd, st.indicator);
+    const [paneContent, paneSize] = await Promise.all([
+      tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer),
+      tmuxPaneDimensions(summary.tmuxSession, summary.tmuxServer),
+    ]);
+    if (paneContent == null) {
+      return {
+        state: "unknown",
+        indicator: st.indicator,
+        reason: "tmux:capture-unavailable",
+        nextCheckInMs: null,
+        activeProcess,
+        cwd,
+      };
     }
 
     const inferred = inferPaneStatus({
       prev: st.paneCache,
       next: {
-        content: st.outputBuffer,
-        width: 80,
-        height: 24,
+        content: paneContent,
+        width: paneSize?.width ?? 120,
+        height: paneSize?.height ?? 30,
       },
       now: Date.now(),
       workingGracePeriodMs: READINESS_WORKING_GRACE_MS,
@@ -304,19 +299,6 @@ export class ReadinessEngine {
     if (!summary || summary.status !== "running") {
       this.setPtyReadiness(ptyId, "busy", "exited");
       return;
-    }
-
-    // Keep cwd up to date for non-tmux PTYs.
-    if (summary.backend !== "tmux") {
-      const pid = this.deps.ptys.getPid(ptyId);
-      if (pid) {
-        try {
-          const liveCwd = await fs.readlink(`/proc/${pid}/cwd`);
-          if (liveCwd) this.deps.ptys.updateCwd(ptyId, liveCwd);
-        } catch {
-          // Process may have exited; ignore.
-        }
-      }
     }
 
     const evaluation = await this.evaluateReadiness(ptyId, summary);

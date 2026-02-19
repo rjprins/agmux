@@ -134,7 +134,7 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
   async stop(request: RuntimeStopRequest): Promise<void> {
     const summary = this.deps.ptys.getSummary(request.id);
     if (!summary) return;
-    if (summary.backend === "tmux" && summary.tmuxSession) {
+    if (summary.tmuxSession) {
       try {
         await tmuxKillWindow(summary.tmuxSession, summary.tmuxServer);
       } catch {
@@ -189,12 +189,12 @@ export class TmuxProvider implements RuntimeProvider, StatusProvider, WorktreePr
       };
     }
 
-    if (summary.backend !== "tmux" || !summary.tmuxSession) {
+    if (!summary.tmuxSession) {
       return {
         id,
         readiness: "unknown",
         sessionState: "running",
-        reason: "non-tmux-session",
+        reason: "no-tmux-session",
         observedAt: this.now(),
         activeProcess: summary.activeProcess ?? null,
         cwd: summary.cwd ?? null,
