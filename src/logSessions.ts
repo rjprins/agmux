@@ -179,7 +179,7 @@ const SKIP_PATTERNS = [
   /^# INSTRUCTIONS/,
 ];
 
-const CONVERSATIONAL_PREFIX = /^(?:hey[,!]?\s+|hi[,!]?\s+|can you\s+|could you\s+|please\s+)/i;
+const CONVERSATIONAL_PREFIX = /^(?:hey[,!]?\s+|hi[,!]?\s+|can you\s+|could you\s+|please\s+|i (?:seem to|think i|believe i|guess i)\s+(?:have\s+)?)/i;
 // Strip common imperative verbs that don't add meaning to the session title.
 // Keep "review" and "report" — those describe the session's purpose.
 const LEADING_VERB = /^(?:implement|add|create|build|make|write|update|change|modify|set up|fix|refactor|remove|delete|move|rename|convert|migrate|ensure|check|run|execute|help me(?:\s+to)?|i want(?:\s+you)?\s+to|i need(?:\s+you)?\s+to|i'd like(?:\s+you)?\s+to)\s+/i;
