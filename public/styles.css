@@ -1193,6 +1193,32 @@ button:disabled {
   display: none;
 }
 
+/* Settings modal */
+#btn-settings {
+  padding: 6px 8px;
+  min-width: 0;
+  font-size: 13px;
+}
+
+.settings-help {
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0.85;
+  line-height: 1.5;
+}
+
+.settings-help code {
+  background: var(--surface-hover);
+  border: 1px solid var(--surface-border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11px;
+}
+
+.sidebar.collapsed .controls #btn-settings {
+  display: none;
+}
+
 @media (max-width: 920px) {
   #app {
     grid-template-columns: 1fr;

@@ -39,6 +39,16 @@ import {
 } from "./tmux.js";
 
 import { execFileSync } from "node:child_process";
+import {
+  DEFAULT_WORKTREE_TEMPLATE,
+  resolveWorktreePath,
+  refreshWorktreeCacheSync,
+  getWorktreeCache,
+  worktreeFromCwd,
+  projectRootFromCwd,
+  isKnownWorktree,
+  type WorktreeEntry,
+} from "./worktree.js";
 
 /** Resolve the top-level git repo root (handles running inside a worktree). */
 const REPO_ROOT = (() => {
@@ -86,7 +96,6 @@ const WS_ALLOWED_ORIGINS = new Set(
       .filter((v) => v.length > 0),
   ].map((v) => v.toLowerCase()),
 );
-const WORKTREE_ROOT = path.resolve(REPO_ROOT, ".worktrees");
 const DEFAULT_BASE_BRANCH = "main";
 
 const fastify = Fastify({
@@ -282,17 +291,17 @@ function agentSessionPublicId(provider: AgentProvider, providerSessionId: string
   return `agent:${provider}:${providerSessionId}`;
 }
 
-function worktreeFromCwd(cwd: string | null): string | null {
-  if (!cwd) return null;
-  const m = cwd.match(/\/\.worktrees\/([^/]+)/);
-  return m ? m[1] : null;
+function getWorktreeTemplate(): string {
+  const settings = store.getPreference<{ worktreePathTemplate?: string }>("settings");
+  return settings?.worktreePathTemplate || DEFAULT_WORKTREE_TEMPLATE;
 }
 
-function projectRootFromCwd(cwd: string | null): string | null {
-  if (!cwd) return null;
-  const idx = cwd.indexOf("/.worktrees/");
-  if (idx !== -1) return cwd.slice(0, idx);
-  return cwd;
+function serverWorktreeFromCwd(cwd: string | null): string | null {
+  return worktreeFromCwd(cwd, REPO_ROOT);
+}
+
+function serverProjectRootFromCwd(cwd: string | null): string | null {
+  return projectRootFromCwd(cwd, REPO_ROOT);
 }
 
 function mergeAgentSessions(base: AgentSessionSummary, next: AgentSessionSummary): AgentSessionSummary {
@@ -316,8 +325,8 @@ function mergeAgentSessions(base: AgentSessionSummary, next: AgentSessionSummary
     args: newer.args,
     cwd,
     cwdSource,
-    projectRoot: projectRootFromCwd(cwd),
-    worktree: worktreeFromCwd(cwd),
+    projectRoot: serverProjectRootFromCwd(cwd),
+    worktree: serverWorktreeFromCwd(cwd),
     createdAt: Math.min(base.createdAt, next.createdAt),
     lastSeenAt: Math.max(base.lastSeenAt, next.lastSeenAt),
     lastRestoredAt: Math.max(base.lastRestoredAt ?? 0, next.lastRestoredAt ?? 0) || null,
@@ -348,8 +357,8 @@ function toAgentSessionFromLog(summary: PtySummary): AgentSessionSummary | null 
     args: resumeArgsForProvider(provider, providerSessionId),
     cwd,
     cwdSource: "log",
-    projectRoot: projectRootFromCwd(cwd),
-    worktree: worktreeFromCwd(cwd),
+    projectRoot: serverProjectRootFromCwd(cwd),
+    worktree: serverWorktreeFromCwd(cwd),
     createdAt: summary.createdAt,
     lastSeenAt: summary.lastSeenAt ?? summary.createdAt,
     lastRestoredAt: null,
@@ -372,8 +381,8 @@ function toAgentSessionFromRecord(record: AgentSessionRecord): AgentSessionSumma
     args: record.args.length > 0 ? record.args : resumeArgsForProvider(provider, providerSessionId),
     cwd,
     cwdSource: record.cwdSource,
-    projectRoot: projectRootFromCwd(cwd),
-    worktree: worktreeFromCwd(cwd),
+    projectRoot: serverProjectRootFromCwd(cwd),
+    worktree: serverWorktreeFromCwd(cwd),
     createdAt: record.createdAt,
     lastSeenAt: record.lastSeenAt,
     lastRestoredAt: record.lastRestoredAt ?? null,
@@ -396,8 +405,8 @@ function toAgentSessionFromLegacySessionRow(summary: PtySummary): AgentSessionSu
     args: resumeArgsForProvider(provider, providerSessionId),
     cwd,
     cwdSource: "db",
-    projectRoot: projectRootFromCwd(cwd),
-    worktree: worktreeFromCwd(cwd),
+    projectRoot: serverProjectRootFromCwd(cwd),
+    worktree: serverWorktreeFromCwd(cwd),
     createdAt: summary.createdAt,
     lastSeenAt: summary.lastSeenAt ?? summary.createdAt,
     lastRestoredAt: null,
@@ -456,8 +465,8 @@ function persistRuntimeCwdForAgentPty(ptyId: string, cwd: string | null | undefi
     args: persisted?.args ?? resumeArgsForProvider(ref.provider, ref.providerSessionId),
     cwd: effectiveCwd,
     cwdSource: normalizedCwd ? "runtime" : (persisted?.cwdSource ?? "db"),
-    projectRoot: projectRootFromCwd(effectiveCwd),
-    worktree: worktreeFromCwd(effectiveCwd),
+    projectRoot: serverProjectRootFromCwd(effectiveCwd),
+    worktree: serverWorktreeFromCwd(effectiveCwd),
     createdAt: persisted?.createdAt ?? ts,
     lastSeenAt: ts,
     lastRestoredAt: persisted?.lastRestoredAt ?? null,
@@ -734,10 +743,9 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
       return { error: "worktreePath is required when target=worktree" };
     }
     const resolved = path.resolve(worktreePath);
-    const wtPrefix = path.resolve(REPO_ROOT, ".worktrees") + path.sep;
-    if (!resolved.startsWith(wtPrefix)) {
+    if (!isKnownWorktree(resolved, REPO_ROOT)) {
       reply.code(400);
-      return { error: "worktreePath must be under .worktrees/" };
+      return { error: "worktreePath is not a known worktree" };
     }
     cwd = resolved;
     cwdSource = "user";
@@ -751,7 +759,7 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
       reply.code(400);
       return { error: "branch contains invalid characters" };
     }
-    const wtPath = path.resolve(REPO_ROOT, ".worktrees", rawBranch);
+    const wtPath = resolveWorktreePath(REPO_ROOT, rawBranch, getWorktreeTemplate());
     try {
       await fs.mkdir(path.dirname(wtPath), { recursive: true });
       await new Promise<void>((resolve, reject) => {
@@ -765,6 +773,7 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
       reply.code(409);
       return { error: message };
     }
+    refreshWorktreeCacheSync(REPO_ROOT);
     cwd = wtPath;
     cwdSource = "user";
   }
@@ -808,8 +817,8 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
       args: resumeArgs,
       cwd: cwd ?? null,
       cwdSource,
-      projectRoot: projectRootFromCwd(cwd ?? null),
-      worktree: worktreeFromCwd(cwd ?? null),
+      projectRoot: serverProjectRootFromCwd(cwd ?? null),
+      worktree: serverWorktreeFromCwd(cwd ?? null),
       lastSeenAt: Math.max(session.lastSeenAt, now),
       lastRestoredAt: now,
     });
@@ -876,27 +885,19 @@ fastify.get("/api/directory-exists", async (req, reply) => {
   return { exists };
 });
 
-fastify.get("/api/worktrees", async (req) => {
-  const q = req.query as Record<string, unknown>;
-  const projectRoot = await resolveProjectRoot(q.projectRoot);
-  const wtDir = projectRoot ? path.resolve(projectRoot, ".worktrees") : WORKTREE_ROOT;
-  let entries: string[];
-  try {
-    entries = await fs.readdir(wtDir);
-  } catch {
-    return { worktrees: [] };
+fastify.get("/api/worktrees", async () => {
+  refreshWorktreeCacheSync(REPO_ROOT);
+  const cache = getWorktreeCache(REPO_ROOT);
+  const worktrees: { name: string; path: string; branch: string }[] = [];
+  for (const entry of cache) {
+    if (entry.path === REPO_ROOT) continue;
+    worktrees.push({
+      name: entry.branch || path.basename(entry.path),
+      path: entry.path,
+      branch: entry.branch,
+    });
   }
-  const worktrees: { name: string; path: string }[] = [];
-  for (const name of entries) {
-    const full = path.join(wtDir, name);
-    try {
-      const st = await fs.stat(full);
-      if (st.isDirectory()) worktrees.push({ name, path: full });
-    } catch {
-      // skip
-    }
-  }
-  return { worktrees };
+  return { worktrees, repoRoot: REPO_ROOT };
 });
 
 fastify.get("/api/default-branch", async (req) => {
@@ -932,9 +933,9 @@ fastify.get("/api/worktrees/status", async (req, reply) => {
     return { error: "path is required" };
   }
   const resolved = path.resolve(wtPath);
-  if (!isPathInside(WORKTREE_ROOT, resolved)) {
+  if (!isKnownWorktree(resolved, REPO_ROOT)) {
     reply.code(400);
-    return { error: "path must be under .worktrees/" };
+    return { error: "path is not a known worktree" };
   }
   try {
     const result = await new Promise<string>((resolve, reject) => {
@@ -971,9 +972,9 @@ fastify.delete("/api/worktrees", async (req, reply) => {
     return { error: "path is required" };
   }
   const resolved = path.resolve(wtPath);
-  if (!isPathInside(WORKTREE_ROOT, resolved)) {
+  if (!isKnownWorktree(resolved, REPO_ROOT)) {
     reply.code(400);
-    return { error: "path must be under .worktrees/" };
+    return { error: "path is not a known worktree" };
   }
 
   // Check for uncommitted changes
@@ -1018,6 +1019,7 @@ fastify.delete("/api/worktrees", async (req, reply) => {
     // ignore prune failures
   }
 
+  refreshWorktreeCacheSync(REPO_ROOT);
   return { ok: true };
 });
 
@@ -1060,7 +1062,6 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     return { error: `project directory not found: ${body.projectRoot}` };
   }
   const effectiveRepoRoot = projectRoot ?? REPO_ROOT;
-  const effectiveWtRoot = path.resolve(effectiveRepoRoot, ".worktrees");
 
   let cwd: string;
   if (worktree === "__new__") {
@@ -1083,14 +1084,9 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
       return { error: `base branch not found: ${baseBranch}` };
     }
 
-    const wtLeaf = branch.replace(/[\\/]+/g, "-");
-    const wtPath = path.resolve(effectiveWtRoot, wtLeaf);
-    if (!isPathInside(effectiveWtRoot, wtPath)) {
-      reply.code(400);
-      return { error: "resolved worktree path escapes .worktrees/" };
-    }
+    const wtPath = resolveWorktreePath(effectiveRepoRoot, branch, getWorktreeTemplate());
 
-    await fs.mkdir(effectiveWtRoot, { recursive: true });
+    await fs.mkdir(path.dirname(wtPath), { recursive: true });
 
     const branchExists = await gitRefExists(`refs/heads/${branch}`, effectiveRepoRoot);
     if (branchExists) {
@@ -1108,6 +1104,7 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
         });
       });
     }
+    refreshWorktreeCacheSync(effectiveRepoRoot);
     cwd = wtPath;
   } else {
     const resolved = path.resolve(worktree);
@@ -1174,6 +1171,22 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
 
 fastify.get("/api/launch-preferences", async () => {
   return store.getPreference("launch") ?? {};
+});
+
+fastify.get("/api/settings", async () => {
+  return store.getPreference("settings") ?? {};
+});
+
+fastify.put("/api/settings", async (req) => {
+  const body = isRecord(req.body) ? req.body : {};
+  const prev = store.getPreference<Record<string, unknown>>("settings") ?? {};
+  const merged = { ...prev, ...body };
+  // Remove null keys
+  for (const [k, v] of Object.entries(merged)) {
+    if (v === null) delete merged[k];
+  }
+  store.setPreference("settings", merged);
+  return merged;
 });
 
 fastify.post("/api/ptys/shell", async (_req, reply) => {
@@ -1350,6 +1363,9 @@ fastify.post("/api/triggers/reload", async () => {
 });
 
 async function restoreAtStartup(): Promise<void> {
+  // Initialize worktree cache early so all functions can use it.
+  refreshWorktreeCacheSync(REPO_ROOT);
+
   // Ensure the single agmux tmux session exists (creates it if missing).
   const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
   await tmuxEnsureSession(AGMUX_SESSION, shell);

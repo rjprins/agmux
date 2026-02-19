@@ -880,3 +880,97 @@ test("switching same-name tmux sessions across servers keeps PTYs distinct", asy
     await execFileAsync("tmux", ["-L", "agmux", "-f", "/dev/null", "kill-session", "-t", sessionName]).catch(() => {});
   }
 });
+
+test("settings modal opens, saves worktree template, and persists", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  const token = await readSessionToken(page);
+
+  // Open settings modal
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator(".launch-modal h3")).toContainText("Settings");
+
+  // Verify default template field is empty (placeholder shows default)
+  const templateInput = page.locator(".launch-modal input[type='text']").first();
+  await expect(templateInput).toHaveValue("");
+
+  // Set a custom template
+  await templateInput.fill("../{repo-name}-custom-{branch}");
+
+  // Save
+  await page.locator(".launch-modal-go").click();
+
+  // Modal should close
+  await expect(page.locator(".launch-modal")).toHaveCount(0, { timeout: 5_000 });
+
+  // Verify via API that template was saved
+  const res = await page.request.get(`/api/settings?token=${encodeURIComponent(token)}`);
+  const settings = await res.json();
+  expect(settings.worktreePathTemplate).toBe("../{repo-name}-custom-{branch}");
+
+  // Reset via API for test cleanup
+  await page.request.put(`/api/settings?token=${encodeURIComponent(token)}`, {
+    data: { worktreePathTemplate: null },
+  });
+});
+
+test("GET /api/worktrees returns git worktree list entries", async ({ page }) => {
+  const token = await readSessionToken(page);
+  const res = await page.request.get(`/api/worktrees?token=${encodeURIComponent(token)}`);
+  expect(res.ok()).toBe(true);
+  const data = await res.json();
+  expect(data.repoRoot).toBeTruthy();
+  expect(Array.isArray(data.worktrees)).toBe(true);
+  for (const wt of data.worktrees) {
+    expect(wt.name).toBeTruthy();
+    expect(wt.path).toBeTruthy();
+  }
+});
+
+test("launching in new worktree creates sibling directory", async ({ page }) => {
+  const token = await readSessionToken(page);
+  const testBranch = `e2e-wt-${Date.now()}`;
+
+  try {
+    // Create worktree via API (same as launch modal does)
+    const res = await page.request.post(`/api/ptys/launch?token=${encodeURIComponent(token)}`, {
+      data: {
+        agent: "shell",
+        worktree: "__new__",
+        branch: testBranch,
+        baseBranch: "main",
+      },
+    });
+    expect(res.ok()).toBe(true);
+    const { id: ptyId } = await res.json();
+
+    // Verify worktree appears in API listing
+    const wtRes = await page.request.get(`/api/worktrees?token=${encodeURIComponent(token)}`);
+    const wtData = await wtRes.json();
+    const created = wtData.worktrees.find((wt: any) => wt.branch === testBranch);
+    expect(created).toBeTruthy();
+
+    // Verify it's a sibling (not under .worktrees/)
+    expect(created.path).not.toContain("/.worktrees/");
+
+    // Cleanup: kill pty
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  } finally {
+    // Cleanup: find the worktree path from git and remove it
+    try {
+      const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"]);
+      const blocks = stdout.split(/\n\n+/);
+      for (const block of blocks) {
+        if (block.includes(`branch refs/heads/${testBranch}`)) {
+          const pathMatch = block.match(/^worktree (.+)$/m);
+          if (pathMatch) {
+            await execFileAsync("git", ["worktree", "remove", "--force", pathMatch[1]]).catch(() => {});
+          }
+          break;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    await execFileAsync("git", ["branch", "-D", testBranch]).catch(() => {});
+  }
+});

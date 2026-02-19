@@ -25,6 +25,10 @@ import {
   type RestoreSessionModalViewModel,
   type RestoreTargetChoice,
 } from "./restore-session-modal-view";
+import {
+  renderSettingsModal,
+  type SettingsModalViewModel,
+} from "./settings-modal-view";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -119,6 +123,10 @@ let agentSessions: AgentSessionSummary[] = [];
 let activePtyId: string | null = null;
 let pendingActivePtyId: string | null = null;
 let inputHistoryExpanded = false;
+
+// Client-side worktree cache, populated from GET /api/worktrees
+let knownWorktrees: Array<{ name: string; path: string; branch: string }> = [];
+let serverRepoRoot = "";
 
 const ACTIVE_PTY_KEY = "agmux:activePty";
 const AUTH_TOKEN_KEY = "agmux:authToken";
@@ -264,6 +272,24 @@ const MAX_INPUT_HISTORY = 40;
 loadHiddenAgentSessions();
 loadPinnedDirectories();
 loadArchivedDirectories();
+
+async function refreshWorktreeCache(): Promise<void> {
+  try {
+    const res = await authFetch("/api/worktrees");
+    if (!res.ok) return;
+    const data = (await res.json()) as {
+      worktrees?: Array<{ name: string; path: string; branch: string }>;
+      repoRoot?: string;
+    };
+    if (Array.isArray(data.worktrees)) knownWorktrees = data.worktrees;
+    if (typeof data.repoRoot === "string") serverRepoRoot = data.repoRoot;
+  } catch {
+    // ignore
+  }
+}
+
+// Periodically refresh worktree cache
+setInterval(() => void refreshWorktreeCache(), 30_000);
 
 // Cache of directory existence checks, refreshed on each PTY list update.
 const directoryExistsCache = new Map<string, boolean>();
@@ -1459,8 +1485,10 @@ function openCloseWorktreeModal(ptyId: string): void {
     (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || p.name;
 
   // Determine the full worktree path from the cwd
-  const wtMatch = p.cwd.match(/^(.*\/\.worktrees\/[^/]+)/);
-  const worktreePath = wtMatch ? wtMatch[1] : p.cwd;
+  const matchedWt = knownWorktrees.find(
+    (w) => p.cwd === w.path || p.cwd!.startsWith(w.path + "/"),
+  );
+  const worktreePath = matchedWt ? matchedWt.path : p.cwd;
 
   closeWorktreeModalState = {
     ptyId,
@@ -1806,17 +1834,10 @@ function closeRestoreSessionModal(): void {
 }
 
 function buildRestoreWorktreeOptions(
-  session: AgentSessionSummary,
+  _session: AgentSessionSummary,
   worktrees?: Array<{ name: string; path: string }>,
 ): Array<{ value: string; label: string }> {
   if (!Array.isArray(worktrees)) return [];
-  const prefix = session.projectRoot ? `${session.projectRoot}/.worktrees/` : "";
-  const filtered = worktrees
-    .filter((wt) => wt && typeof wt.path === "string" && typeof wt.name === "string")
-    .filter((wt) => !prefix || wt.path.startsWith(prefix))
-    .sort((a, b) => a.name.localeCompare(b.name))
-    .map((wt) => ({ value: wt.path, label: wt.name }));
-  if (filtered.length > 0) return filtered;
   return worktrees
     .filter((wt) => wt && typeof wt.path === "string" && typeof wt.name === "string")
     .sort((a, b) => a.name.localeCompare(b.name))
@@ -1912,9 +1933,10 @@ function openAgentSessionActions(agentSessionId: string): void {
   const session = agentSessions.find((x) => x.id === agentSessionId);
   if (!session) return;
   const seq = ++restoreSessionModalSeq;
-  const suggestedWorktreePath = session.worktree && session.projectRoot
-    ? `${session.projectRoot}/.worktrees/${session.worktree}`
-    : "";
+  const matchedWt = session.worktree
+    ? knownWorktrees.find((w) => (w.branch || w.name) === session.worktree)
+    : null;
+  const suggestedWorktreePath = matchedWt ? matchedWt.path : "";
   const suggestedBranch = session.worktree ?? `restore-${Date.now()}`;
   const defaultTarget: RestoreTargetChoice = suggestedWorktreePath ? "worktree" : "same_cwd";
   restoreSessionModalState = {
@@ -1954,6 +1976,13 @@ function openAgentSessionActions(agentSessionId: string): void {
 }
 
 function normalizeCwdGroupKey(cwd: string): string {
+  // If cwd matches a known worktree path, group under the main repo root
+  for (const wt of knownWorktrees) {
+    if (cwd === wt.path || cwd.startsWith(wt.path + "/")) {
+      return serverRepoRoot || cwd;
+    }
+  }
+  // Fallback: also handle legacy .worktrees/ paths for backwards compat
   const idx = cwd.indexOf("/.worktrees/");
   if (idx !== -1) return cwd.slice(0, idx);
   return cwd;
@@ -1961,6 +1990,12 @@ function normalizeCwdGroupKey(cwd: string): string {
 
 function worktreeName(cwd: string | null): string | null {
   if (!cwd) return null;
+  for (const wt of knownWorktrees) {
+    if (cwd === wt.path || cwd.startsWith(wt.path + "/")) {
+      return wt.branch || wt.name;
+    }
+  }
+  // Fallback: legacy .worktrees/ pattern
   const m = cwd.match(/\/\.worktrees\/([^/]+)/);
   return m ? m[1] : null;
 }
@@ -2655,10 +2690,103 @@ document.addEventListener("keydown", (ev) => {
   }
 });
 
+// --- Settings modal ---
+
+const DEFAULT_WORKTREE_TEMPLATE = "../{repo-name}-{branch}";
+
+const settingsModalRoot = document.createElement("div");
+document.body.appendChild(settingsModalRoot);
+
+type SettingsModalState = {
+  worktreePathTemplate: string;
+  saving: boolean;
+};
+
+let settingsModalState: SettingsModalState | null = null;
+
+function settingsPreviewPath(template: string): string {
+  const t = template || DEFAULT_WORKTREE_TEMPLATE;
+  const repoName = serverRepoRoot ? serverRepoRoot.split("/").pop() ?? "repo" : "repo";
+  return t
+    .replace(/\{repo-name\}/g, repoName)
+    .replace(/\{repo-root\}/g, serverRepoRoot || "/path/to/repo")
+    .replace(/\{branch\}/g, "feature-example");
+}
+
+function renderSettingsModalState(): void {
+  const state = settingsModalState;
+  const model: SettingsModalViewModel | null = state
+    ? {
+      worktreePathTemplate: state.worktreePathTemplate,
+      previewPath: settingsPreviewPath(state.worktreePathTemplate),
+      saving: state.saving,
+    }
+    : null;
+
+  renderSettingsModal(settingsModalRoot, model, {
+    onClose: () => {
+      settingsModalState = null;
+      renderSettingsModalState();
+    },
+    onTemplateChange: (value) => {
+      if (!settingsModalState) return;
+      settingsModalState.worktreePathTemplate = value;
+      renderSettingsModalState();
+    },
+    onReset: () => {
+      if (!settingsModalState) return;
+      settingsModalState.worktreePathTemplate = "";
+      renderSettingsModalState();
+    },
+    onSave: () => {
+      if (!settingsModalState || settingsModalState.saving) return;
+      settingsModalState.saving = true;
+      renderSettingsModalState();
+      const template = settingsModalState.worktreePathTemplate.trim() || null;
+      void authFetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ worktreePathTemplate: template }),
+      })
+        .then(async (res) => {
+          if (!res.ok) throw new Error(await readApiError(res));
+          settingsModalState = null;
+          renderSettingsModalState();
+        })
+        .catch((err) => {
+          if (!settingsModalState) return;
+          settingsModalState.saving = false;
+          renderSettingsModalState();
+          window.alert(errorMessage(err));
+        });
+    },
+  });
+}
+
+function openSettingsModal(): void {
+  settingsModalState = {
+    worktreePathTemplate: "",
+    saving: false,
+  };
+  renderSettingsModalState();
+
+  void authFetch("/api/settings")
+    .then(async (res) => {
+      if (!res.ok || !settingsModalState) return;
+      const data = (await res.json()) as { worktreePathTemplate?: string };
+      settingsModalState.worktreePathTemplate = data.worktreePathTemplate ?? "";
+      renderSettingsModalState();
+    })
+    .catch(() => {});
+}
+
+const btnSettings = $("btn-settings") as HTMLButtonElement;
+btnSettings.addEventListener("click", () => openSettingsModal());
+
 void (async () => {
   try {
     await ensureAuthToken();
-    await loadPtyInputMeta();
+    await Promise.all([loadPtyInputMeta(), refreshWorktreeCache()]);
     connectWs();
     btnNew.disabled = false;
     await refreshTmuxSessions();
