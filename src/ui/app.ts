@@ -2087,23 +2087,22 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
 
 function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePtyItem {
   const process = displaySessionTitle(session);
-  const secondaryText = displaySessionSubtitle(session);
   const intent = displaySessionIntent(session);
-  const idLine = session.cwd
-    ? `${session.provider}:${session.providerSessionId} | cwd:${session.cwd}`
-    : `${session.provider}:${session.providerSessionId}`;
-  const secondaryTitle = intent
-    ? `${intent}\n${idLine}`
-    : idLine;
   const elapsed = formatElapsedTime(session.lastSeenAt);
+  const worktree = session.worktree ?? worktreeName(session.cwd);
+
+  const tooltipParts = [capitalizeWord(session.provider)];
+  if (intent) tooltipParts.push(intent);
+  if (elapsed) tooltipParts.push(`${elapsed} ago`);
+  if (worktree) tooltipParts.push(`worktree: ${worktree}`);
 
   return {
     id: session.id,
     color: ptyColor(session.id),
     process,
-    secondaryText,
-    secondaryTitle,
-    worktree: session.worktree ?? worktreeName(session.cwd),
+    secondaryText: "",
+    secondaryTitle: tooltipParts.join("\n"),
+    worktree,
     cwd: session.cwd ?? undefined,
     elapsed: elapsed || undefined,
     exitLabel: `${session.provider} session`,
