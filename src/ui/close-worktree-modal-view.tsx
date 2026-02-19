@@ -53,11 +53,13 @@ export function renderCloseWorktreeModal(
           <strong>{model.worktreeName}</strong>.
         </p>
 
-        {isDirty ? (
-          <p className="close-wt-warning">
-            This worktree has uncommitted changes. Removing it will discard them.
-          </p>
-        ) : null}
+        <p className={`close-wt-status${isDirty ? " close-wt-status-dirty" : dirtyLoading ? " close-wt-status-loading" : " close-wt-status-clean"}`}>
+          {dirtyLoading
+            ? "Checking worktree status..."
+            : isDirty
+              ? "Worktree has uncommitted changes. Removing it will discard them."
+              : "Worktree is clean."}
+        </p>
 
         <div className="launch-modal-buttons close-wt-buttons">
           <button type="button" onClick={() => handlers.onClose()} disabled={model.closing}>

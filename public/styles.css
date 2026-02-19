@@ -1042,6 +1042,29 @@ button:disabled {
   padding: 6px 10px;
 }
 
+.close-wt-status {
+  margin: 0;
+  font-size: 12px;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.close-wt-status-loading {
+  color: var(--text-secondary);
+}
+
+.close-wt-status-clean {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.close-wt-status-dirty {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
 .close-wt-buttons {
   flex-wrap: wrap;
 }
