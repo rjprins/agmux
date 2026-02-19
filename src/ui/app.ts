@@ -344,6 +344,13 @@ function toggleSidebar(): void {
 }
 btnSidebarToggle.addEventListener("click", toggleSidebar);
 
+// Prevent sidebar clicks from stealing keyboard focus from the terminal.
+document.querySelector(".sidebar")!.addEventListener("mousedown", (ev) => {
+  const tag = (ev.target as HTMLElement).tagName;
+  if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+  ev.preventDefault();
+});
+
 // --- Theme ---
 
 const THEME_KEY = "agmux:theme";
@@ -370,6 +377,7 @@ themeSelect.addEventListener("change", () => {
   localStorage.setItem(THEME_KEY, activeThemeKey);
   applyTheme(activeTheme, terms.values());
   renderList();
+  focusActiveTerm();
 });
 
 type TermState = {
@@ -2074,6 +2082,11 @@ function renderList(): void {
   });
 }
 
+function focusActiveTerm(): void {
+  const st = activePtyId ? terms.get(activePtyId) : null;
+  if (st) st.term.focus();
+}
+
 function setActive(ptyId: string): void {
   const summary = ptys.find((p) => p.id === ptyId);
   if (!summary || summary.status !== "running") {
@@ -2090,8 +2103,7 @@ function setActive(ptyId: string): void {
   requestAnimationFrame(() => {
     fitAndResizeActive();
     reflowActiveTerm();
-    const st = terms.get(ptyId);
-    if (st) st.term.focus();
+    focusActiveTerm();
   });
   renderList();
   renderInputContextBar();
