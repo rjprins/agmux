@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "vitest";
 import {
   LogSessionDiscovery,
   discoverInactiveLogSessions,
+  extractFirstUserPrompt,
 } from "../src/logSessions.js";
 
 async function writeJsonl(filePath: string, lines: unknown[]): Promise<void> {
@@ -156,5 +157,144 @@ describe("LogSessionDiscovery cache", () => {
 
     const at1501 = discovery.list(11_501);
     expect(at1501.some((s) => s.id === "log:claude:two")).toBe(true);
+  });
+});
+
+describe("extractFirstUserPrompt", () => {
+  test("extracts claude user message (string content)", () => {
+    const entries = [
+      { type: "progress", sessionId: "s1", cwd: "/tmp" },
+      { type: "user", message: { role: "user", content: "Fix the bug in auth.js" } },
+    ];
+    // "Fix" is stripped as a common verb
+    expect(extractFirstUserPrompt(entries as any)).toBe("the bug in auth.js");
+  });
+
+  test("extracts claude user message (array content)", () => {
+    const entries = [
+      { type: "user", message: { role: "user", content: [{ type: "text", text: "Refactor the login flow" }] } },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBe("the login flow");
+  });
+
+  test("extracts codex user message", () => {
+    const entries = [
+      { type: "session_meta", payload: { id: "c1" } },
+      { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: "Add dark mode support to the app" }] } },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBe("dark mode support to the app");
+  });
+
+  test("skips environment_context and AGENTS.md preambles", () => {
+    const entries = [
+      { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>" }] } },
+      { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: "# AGENTS.md instructions for /home/user/project\n..." }] } },
+      { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: "Build a REST API for user management" }] } },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBe("a REST API for user management");
+  });
+
+  test("strips conversational prefixes and verbs", () => {
+    const entries = [
+      { type: "user", message: { role: "user", content: "Hey, can you fix the broken tests in utils?" } },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBe("the broken tests in utils?");
+  });
+
+  test("preserves review and report verbs", () => {
+    const reviewEntries = [
+      { type: "user", message: { role: "user", content: "Review the pull request for security issues" } },
+    ];
+    expect(extractFirstUserPrompt(reviewEntries as any)).toBe("Review the pull request for security issues");
+
+    const reportEntries = [
+      { type: "user", message: { role: "user", content: "Report on the test coverage for this module" } },
+    ];
+    expect(extractFirstUserPrompt(reportEntries as any)).toBe("Report on the test coverage for this module");
+  });
+
+  test("truncates long prompts at word boundary (160 chars)", () => {
+    const long = "a comprehensive authentication system with OAuth2 support including refresh tokens and session management for the entire application stack plus additional context that pushes it well over the limit";
+    const entries = [
+      { type: "user", message: { role: "user", content: long } },
+    ];
+    const result = extractFirstUserPrompt(entries as any)!;
+    expect(result.length).toBeLessThanOrEqual(161); // 160 + ellipsis
+    expect(result).toContain("…");
+  });
+
+  test("does not truncate prompts under 160 chars", () => {
+    const text = "a comprehensive authentication system with OAuth2 support including refresh tokens and session management for the entire application stack";
+    const entries = [
+      { type: "user", message: { role: "user", content: text } },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBe(text);
+  });
+
+  test("takes only first line of multi-line prompt", () => {
+    const entries = [
+      { type: "user", message: { role: "user", content: "the login page needs a redesign\nAlso update the CSS\nAnd add tests" } },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBe("the login page needs a redesign");
+  });
+
+  test("returns null when no user messages found", () => {
+    const entries = [
+      { type: "progress", sessionId: "s1" },
+      { type: "file-history-snapshot", snapshot: {} },
+    ];
+    expect(extractFirstUserPrompt(entries as any)).toBeNull();
+  });
+
+  test("skips messages shorter than 10 chars", () => {
+    const entries = [
+      { type: "user", message: { role: "user", content: "hi" } },
+      { type: "user", message: { role: "user", content: "Update the database migration scripts" } },
+    ];
+    // "Update" is stripped
+    expect(extractFirstUserPrompt(entries as any)).toBe("the database migration scripts");
+  });
+
+  test("uses prompt-based name in discoverInactiveLogSessions", async () => {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-logs-"));
+    try {
+      const claudeDir = path.join(tmpRoot, "claude");
+      await writeJsonl(path.join(claudeDir, "projects", "a", "session.jsonl"), [
+        { type: "progress", sessionId: "s1", cwd: "/tmp/my-project" },
+        { type: "user", sessionId: "s1", message: { role: "user", content: "Fix the authentication bug in login" } },
+      ]);
+
+      const sessions = discoverInactiveLogSessions({
+        claudeConfigDir: claudeDir,
+        codexHomeDir: path.join(tmpRoot, "codex"),
+        piHomeDir: path.join(tmpRoot, "pi"),
+        scanLimit: 10,
+      });
+
+      expect(sessions[0]?.name).toBe("the authentication bug in login");
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("falls back to source:leaf when no prompt found", async () => {
+    const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-logs-"));
+    try {
+      const claudeDir = path.join(tmpRoot, "claude");
+      await writeJsonl(path.join(claudeDir, "projects", "a", "session.jsonl"), [
+        { type: "progress", sessionId: "s1", cwd: "/tmp/my-project" },
+      ]);
+
+      const sessions = discoverInactiveLogSessions({
+        claudeConfigDir: claudeDir,
+        codexHomeDir: path.join(tmpRoot, "codex"),
+        piHomeDir: path.join(tmpRoot, "pi"),
+        scanLimit: 10,
+      });
+
+      expect(sessions[0]?.name).toBe("claude:my-project");
+    } finally {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+    }
   });
 });

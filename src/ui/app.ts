@@ -472,28 +472,19 @@ const THEME_KEY = "agmux:theme";
 let activeThemeKey = localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_KEY;
 let activeTheme: Theme = THEMES.get(activeThemeKey) ?? THEMES.get(DEFAULT_THEME_KEY)!;
 
-const themeSelect = $("theme-select") as HTMLSelectElement;
-for (const [key, theme] of THEMES) {
-  const opt = document.createElement("option");
-  opt.value = key;
-  opt.textContent = theme.name;
-  themeSelect.appendChild(opt);
-}
-themeSelect.value = activeThemeKey;
-
 // Apply theme to CSS vars immediately (before any terminal creation).
 applyTheme(activeTheme, []);
 
-themeSelect.addEventListener("change", () => {
-  const next = THEMES.get(themeSelect.value);
+function setTheme(key: string): void {
+  const next = THEMES.get(key);
   if (!next) return;
-  activeThemeKey = themeSelect.value;
+  activeThemeKey = key;
   activeTheme = next;
   localStorage.setItem(THEME_KEY, activeThemeKey);
   applyTheme(activeTheme, terms.values());
   renderList();
   focusActiveTerm();
-});
+}
 
 type TermState = {
   ptyId: string;
@@ -2005,7 +1996,6 @@ const collapsedAgentSessionGroups = new Set<string>();
 const collapsedAgentSessionWorktrees = new Set<string>(); // "projectKey::worktreeName"
 const AGENT_GROUPS_COLLAPSED_KEY = "agmux:agentSessionGroupsCollapsed";
 const AGENT_WORKTREES_COLLAPSED_KEY = "agmux:agentSessionWorktreesCollapsed";
-const AGENT_SECTION_EXPANDED_KEY = "agmux:agentSessionsExpanded";
 
 const AUTO_COLLAPSE_PROJECT_THRESHOLD = 4;
 const AUTO_COLLAPSE_PROJECT_SIZE = 5;
@@ -2058,7 +2048,7 @@ function saveBooleanPreference(key: string, value: boolean): void {
 
 let hasStoredAgentGroupCollapsePref = loadCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
 let hasStoredAgentWorktreeCollapsePref = loadCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
-let inactiveSessionsExpandedOverride = loadBooleanPreference(AGENT_SECTION_EXPANDED_KEY);
+let inactiveSessionsExpanded = false;
 const ARCHIVED_SECTION_EXPANDED_KEY = "agmux:archivedSectionExpanded";
 const ARCHIVED_GROUPS_COLLAPSED_KEY = "agmux:archivedGroupsCollapsed";
 const ARCHIVED_WORKTREES_COLLAPSED_KEY = "agmux:archivedWorktreesCollapsed";
@@ -2098,9 +2088,13 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
 function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePtyItem {
   const process = displaySessionTitle(session);
   const secondaryText = displaySessionSubtitle(session);
-  const secondaryTitle = session.cwd
+  const intent = displaySessionIntent(session);
+  const idLine = session.cwd
     ? `${session.provider}:${session.providerSessionId} | cwd:${session.cwd}`
     : `${session.provider}:${session.providerSessionId}`;
+  const secondaryTitle = intent
+    ? `${intent}\n${idLine}`
+    : idLine;
   const elapsed = formatElapsedTime(session.lastSeenAt);
 
   return {
@@ -2285,13 +2279,6 @@ function renderList(): void {
   });
 
   const orphanTotal = orphanGroups.reduce((acc, g) => acc + g.total, 0);
-  const largestOrphanGroup = orphanGroups.reduce((max, g) => Math.max(max, g.total), 0);
-  const inactiveAutoExpanded = !(
-    orphanTotal >= AUTO_COLLAPSE_SECTION_TOTAL ||
-    orphanGroups.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD ||
-    largestOrphanGroup >= AUTO_COLLAPSE_PROJECT_SIZE
-  );
-  const inactiveExpanded = inactiveSessionsExpandedOverride ?? inactiveAutoExpanded;
 
   // Build "Archived" section: explicitly archived directories + dirs that no longer exist on disk.
   const archivedKeys = [
@@ -2328,7 +2315,7 @@ function renderList(): void {
     inactive: orphanTotal > 0
       ? {
         label: "Inactive",
-        expanded: inactiveExpanded,
+        expanded: inactiveSessionsExpanded,
         total: orphanTotal,
         groups: orphanGroups,
       }
@@ -2379,8 +2366,7 @@ function renderList(): void {
       openAgentSessionActions(ptyId);
     },
     onToggleInactive: () => {
-      inactiveSessionsExpandedOverride = !inactiveExpanded;
-      saveBooleanPreference(AGENT_SECTION_EXPANDED_KEY, inactiveSessionsExpandedOverride);
+      inactiveSessionsExpanded = !inactiveSessionsExpanded;
       renderList();
     },
     onToggleInactiveGroup: (groupKey) => {
@@ -2721,11 +2707,14 @@ function settingsPreviewPath(template: string): string {
 
 function renderSettingsModalState(): void {
   const state = settingsModalState;
+  const themeOptions = [...THEMES].map(([key, theme]) => ({ key, name: theme.name }));
   const model: SettingsModalViewModel | null = state
     ? {
       worktreePathTemplate: state.worktreePathTemplate,
       previewPath: settingsPreviewPath(state.worktreePathTemplate),
       saving: state.saving,
+      themeKey: activeThemeKey,
+      themes: themeOptions,
     }
     : null;
 
@@ -2742,6 +2731,10 @@ function renderSettingsModalState(): void {
     onReset: () => {
       if (!settingsModalState) return;
       settingsModalState.worktreePathTemplate = "";
+      renderSettingsModalState();
+    },
+    onThemeChange: (key) => {
+      setTheme(key);
       renderSettingsModalState();
     },
     onSave: () => {

@@ -161,6 +161,88 @@ function extractProjectPath(entries: Array<Record<string, unknown>>): string | n
   return null;
 }
 
+function extractTextFromContent(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return null;
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    if (typeof b.text === "string" && b.text.trim()) return b.text;
+  }
+  return null;
+}
+
+const SKIP_PATTERNS = [
+  /^# AGENTS\.md/,
+  /<environment_context>/,
+  /<turn_aborted>/,
+  /^# INSTRUCTIONS/,
+];
+
+const CONVERSATIONAL_PREFIX = /^(?:hey[,!]?\s+|hi[,!]?\s+|can you\s+|could you\s+|please\s+)/i;
+// Strip common imperative verbs that don't add meaning to the session title.
+// Keep "review" and "report" — those describe the session's purpose.
+const LEADING_VERB = /^(?:implement|add|create|build|make|write|update|change|modify|set up|fix|refactor|remove|delete|move|rename|convert|migrate|ensure|check|run|execute|help me(?:\s+to)?|i want(?:\s+you)?\s+to|i need(?:\s+you)?\s+to|i'd like(?:\s+you)?\s+to)\s+/i;
+
+function stripConversationalPrefixes(text: string): string {
+  let result = text;
+  let prev: string;
+  do {
+    prev = result;
+    result = result.replace(CONVERSATIONAL_PREFIX, "");
+  } while (result !== prev);
+  return result;
+}
+
+function findFirstUserMessage(entries: Array<Record<string, unknown>>): string | null {
+  for (const entry of entries) {
+    let text: string | null = null;
+
+    // Claude format: type "user", message.content
+    if (entry.type === "user" && entry.message && typeof entry.message === "object") {
+      const msg = entry.message as Record<string, unknown>;
+      text = extractTextFromContent(msg.content);
+    }
+
+    // Codex/Pi format: type "response_item", payload.role "user"
+    if (
+      entry.type === "response_item" &&
+      entry.payload &&
+      typeof entry.payload === "object"
+    ) {
+      const payload = entry.payload as Record<string, unknown>;
+      if (payload.role === "user") {
+        text = extractTextFromContent(payload.content);
+      }
+    }
+
+    if (!text) continue;
+    const trimmed = text.trim();
+    if (trimmed.length < 10) continue;
+    if (SKIP_PATTERNS.some((p) => p.test(trimmed))) continue;
+
+    // Take first line only, strip conversational fluff and leading verbs, collapse whitespace
+    let line = trimmed.split("\n")[0] ?? trimmed;
+    line = stripConversationalPrefixes(line);
+    line = line.replace(LEADING_VERB, "");
+    line = line.replace(/\s+/g, " ").trim();
+    if (line.length < 10) continue;
+    return line;
+  }
+  return null;
+}
+
+function truncateAtWordBoundary(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  const cut = text.lastIndexOf(" ", maxLen);
+  return text.slice(0, cut > maxLen / 2 ? cut : maxLen) + "…";
+}
+
+export function extractFirstUserPrompt(entries: Array<Record<string, unknown>>): string | null {
+  const line = findFirstUserMessage(entries);
+  return line ? truncateAtWordBoundary(line, 160) : null;
+}
+
 function isCodexSubagent(entries: Array<Record<string, unknown>>): boolean {
   const first = entries[0];
   if (!first || first.type !== "session_meta") return false;
@@ -270,9 +352,10 @@ export function discoverInactiveLogSessions(options: DiscoveryOptions = {}): Pty
     const derivedSessionId = extractSessionId(entries) ?? path.basename(candidate.logPath, ".jsonl");
     const projectPath = extractProjectPath(entries);
     const fallbackName = derivedSessionId.slice(0, 8) || "session";
+    const promptName = extractFirstUserPrompt(entries);
     const summary: PtySummary = {
       id: buildStableId(candidate.source, derivedSessionId, candidate.logPath),
-      name: `${candidate.source}:${leafOrDefault(projectPath, fallbackName)}`,
+      name: promptName ?? `${candidate.source}:${leafOrDefault(projectPath, fallbackName)}`,
       backend: "tmux",
       command: candidate.source,
       args: resumeArgsForSource(candidate.source, derivedSessionId),

@@ -365,12 +365,16 @@ button:disabled {
 
 .pty-item.inactive {
   opacity: 0.55;
-  border-left-color: color-mix(in srgb, var(--muted) 40%, var(--surface-border));
-  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  border: none;
+  border-left: 2px solid color-mix(in srgb, var(--muted) 40%, var(--surface-border));
+  background: transparent;
+  padding: 3px 8px;
+  border-radius: 0;
 }
 
 .pty-item.inactive:hover {
   opacity: 0.7;
+  background: color-mix(in srgb, var(--surface) 50%, transparent);
 }
 
 .pty-item.highlight {
@@ -1125,28 +1129,53 @@ button:disabled {
   background: var(--surface);
 }
 
-.group-pin {
-  padding: 0 2px;
-  font-size: 10px;
+.group-menu-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+.group-menu-btn {
+  padding: 0 4px;
+  font-size: 11px;
   line-height: 1;
   border: none;
   background: transparent;
+  color: var(--muted);
   cursor: pointer;
   border-radius: 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
-}
-.pty-group-header:hover .group-pin,
-.worktree-subheader:hover .group-pin,
-.group-pin.pinned {
   opacity: 0.5;
 }
-.group-pin.pinned {
-  opacity: 0.7;
+.group-menu-btn:hover {
+  opacity: 1;
+  color: var(--text);
 }
-.group-pin:hover {
-  opacity: 1 !important;
+.group-menu-popup {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  min-width: 100px;
+  margin: 2px 0 0;
+  padding: 4px 0;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+.group-menu-popup li button {
+  display: block;
+  width: 100%;
+  padding: 4px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.group-menu-popup li button:hover {
+  background: var(--hover);
 }
 
 .pty-group-header.pinned-empty {
@@ -1177,7 +1206,7 @@ button:disabled {
 }
 
 .pty-item.inactive.compact {
-  padding: 2px 8px;
+  padding: 1px 8px;
 }
 .pty-item.inactive.compact .primary-row {
   gap: 4px;
@@ -1186,33 +1215,7 @@ button:disabled {
   min-height: auto;
 }
 
-.group-archive,
-.group-unarchive {
-  padding: 0 2px;
-  font-size: 10px;
-  line-height: 1;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-  border-radius: 4px;
-  opacity: 0;
-  transition: opacity 0.15s;
-  flex-shrink: 0;
-}
-.pty-group-header:hover .group-archive,
-.worktree-subheader:hover .group-archive,
-.pty-group-header:hover .group-unarchive,
-.worktree-subheader:hover .group-unarchive {
-  opacity: 0.5;
-}
-.group-archive:hover,
-.group-unarchive:hover {
-  opacity: 1 !important;
-}
-
-.sidebar.collapsed .group-pin,
-.sidebar.collapsed .group-archive,
-.sidebar.collapsed .group-unarchive {
+.sidebar.collapsed .group-menu-wrap {
   display: none;
 }
 .sidebar.collapsed .inline-inactive-divider {

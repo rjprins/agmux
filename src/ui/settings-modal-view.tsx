@@ -1,9 +1,16 @@
 import { render } from "preact";
 
+export type ThemeOption = {
+  key: string;
+  name: string;
+};
+
 export type SettingsModalViewModel = {
   worktreePathTemplate: string;
   previewPath: string;
   saving: boolean;
+  themeKey: string;
+  themes: ThemeOption[];
 };
 
 export type SettingsModalHandlers = {
@@ -11,6 +18,7 @@ export type SettingsModalHandlers = {
   onTemplateChange: (value: string) => void;
   onReset: () => void;
   onSave: () => void;
+  onThemeChange: (key: string) => void;
 };
 
 export function renderSettingsModal(
@@ -44,6 +52,21 @@ export function renderSettingsModal(
         }}
       >
         <h3>Settings</h3>
+
+        <label className="launch-modal-label">
+          Theme
+          <select
+            className="launch-modal-input"
+            value={model.themeKey}
+            onChange={(ev) => handlers.onThemeChange((ev.target as HTMLSelectElement).value)}
+          >
+            {model.themes.map((t) => (
+              <option key={t.key} value={t.key}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
 
         <label className="launch-modal-label">
           Worktree path template
