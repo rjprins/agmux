@@ -145,11 +145,27 @@ export async function tmuxCreateLinkedSession(
   // If caller provided a specific window target (session:window), keep that
   // active in the linked session. For plain session targets, keep tmux default.
   if (windowPart.length > 0) {
-    const selectArgs = ["select-window", "-t", `${linked}:${windowPart}`];
+    const linkedWindowTarget = `${linked}:${windowPart}`;
+    const selectArgs = ["select-window", "-t", linkedWindowTarget];
     if (server === "default") {
       await tmuxDefault(selectArgs);
     } else {
       await tmuxAgent(selectArgs);
+    }
+
+    // Pin the linked session to this window: if tmux switches the active window
+    // (e.g. because a window is destroyed or a hook fires), automatically switch
+    // back.  This prevents the xterm from silently showing a different project.
+    const hookCmd = `select-window -t ${linkedWindowTarget}`;
+    const hookArgs = ["set-hook", "-t", linked, "session-window-changed", hookCmd];
+    try {
+      if (server === "default") {
+        await tmuxDefault(hookArgs);
+      } else {
+        await tmuxAgent(hookArgs);
+      }
+    } catch {
+      // Older tmux versions may not support set-hook; ignore.
     }
   }
 
