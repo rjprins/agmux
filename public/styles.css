@@ -567,33 +567,6 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
-.source-badge {
-  font-size: 10px;
-  padding: 0 5px;
-  border-radius: 4px;
-  border: 1px solid var(--surface-border);
-  color: var(--muted);
-  flex: 0 0 auto;
-  max-width: 84px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.source-badge.src-runtime {
-  border-color: rgba(95, 209, 140, 0.35);
-  color: var(--ready);
-}
-
-.source-badge.src-user {
-  border-color: rgba(255, 184, 112, 0.35);
-  color: var(--busy);
-}
-
-.source-badge.src-db,
-.source-badge.src-log {
-  border-color: var(--surface-border);
-}
-
 .pty-close {
   border-radius: 6px;
   padding: 4px 6px;
@@ -617,6 +590,11 @@ button:disabled {
   min-width: 28px;
   padding-left: 4px;
   padding-right: 4px;
+}
+
+.pty-actions-arrow {
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .pty-close:active {
@@ -938,6 +916,63 @@ button:disabled {
 .launch-modal-go:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.restore-session-modal {
+  max-width: 540px;
+}
+
+.restore-session-meta {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--surface);
+}
+
+.restore-session-title {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.restore-session-subtitle {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.restore-session-caption {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  opacity: 0.9;
+}
+
+.restore-targets {
+  display: grid;
+  gap: 8px;
+}
+
+.restore-target {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.restore-empty-note {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 /* Worktree sub-headers */

@@ -24,7 +24,6 @@ export type InactivePtyItem = {
   process: string;
   secondaryText: string;
   secondaryTitle: string;
-  source?: "runtime" | "db" | "log" | "user";
   worktree?: string;
   cwd?: string;
   elapsed?: string;
@@ -36,6 +35,7 @@ export type InactiveGroup = {
   label: string;
   title?: string;
   collapsed: boolean;
+  total: number;
   items: InactivePtyItem[];
   worktrees: InactiveWorktreeSubgroup[];
 };
@@ -112,24 +112,21 @@ function InactiveItemRow(
             {!inWorktree && item.worktree
               ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
               : null}
-            {item.source
-              ? <span className={`source-badge src-${item.source}`} title={`CWD source: ${item.source}`}>{item.source}</span>
-              : null}
             <span title={item.secondaryTitle}>{item.secondaryText}</span>
           </div>
         </div>
         <button
           type="button"
-          className="pty-close pty-actions"
-          title="Session actions"
-          aria-label={`Session actions for ${item.process}`}
+          className="pty-close pty-actions pty-actions-arrow"
+          title="Restore options"
+          aria-label={`Restore options for ${item.process}`}
           onClick={(ev) => {
             ev.preventDefault();
             ev.stopPropagation();
             handlers.onInactiveActions(item.id);
           }}
         >
-          ...
+          {">"}
         </button>
       </div>
       <span className="inactive-dot compact" title={`Restorable: ${item.process}`} />
@@ -286,7 +283,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     >
                       <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{group.label}</span>
-                      <span className="group-count">{group.items.length}</span>
+                      <span className="group-count">{group.total}</span>
                     </li>
                     {group.collapsed
                       ? null

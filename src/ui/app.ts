@@ -19,6 +19,11 @@ import {
   renderCloseWorktreeModal,
   type CloseWorktreeModalViewModel,
 } from "./close-worktree-modal-view";
+import {
+  renderRestoreSessionModal,
+  type RestoreSessionModalViewModel,
+  type RestoreTargetChoice,
+} from "./restore-session-modal-view";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -1489,11 +1494,11 @@ type RestoreAgentTarget = {
   cwd?: string;
 };
 
-async function restoreAgentSession(agentSessionId: string, target?: RestoreAgentTarget): Promise<void> {
+async function restoreAgentSession(agentSessionId: string, target?: RestoreAgentTarget): Promise<boolean> {
   const session = agentSessions.find((x) => x.id === agentSessionId);
   if (!session) {
     addEvent(`Failed to restore agent session ${agentSessionId}: unknown session`);
-    return;
+    return false;
   }
   const reqInit: RequestInit = { method: "POST" };
   if (target && Object.keys(target).length > 0) {
@@ -1506,56 +1511,245 @@ async function restoreAgentSession(agentSessionId: string, target?: RestoreAgent
   );
   if (!res.ok) {
     addEvent(`Failed to restore agent session ${agentSessionId}: ${await readApiError(res)}`);
-    return;
+    return false;
   }
   const json = (await res.json()) as { id: string };
   addEvent(`Restored agent session ${agentSessionId}`);
   await refreshList();
   setActive(json.id);
+  return true;
+}
+
+function shortSessionId(sessionId: string): string {
+  const trimmed = sessionId.trim();
+  if (trimmed.length <= 14) return trimmed;
+  return `${trimmed.slice(0, 8)}...${trimmed.slice(-4)}`;
+}
+
+function capitalizeWord(s: string): string {
+  if (!s) return s;
+  return `${s[0].toUpperCase()}${s.slice(1)}`;
+}
+
+function lastPathSegment(pathValue: string | null): string {
+  if (!pathValue) return "";
+  return pathValue.split("/").filter(Boolean).at(-1) ?? "";
+}
+
+function displaySessionIntent(session: AgentSessionSummary): string | null {
+  const raw = compactWhitespace(session.name);
+  if (!raw) return null;
+  const projectLeaf = lastPathSegment(session.projectRoot);
+  const generic = new Set(
+    [
+      session.provider,
+      `${session.provider}:${projectLeaf}`,
+      `${session.provider}:${session.worktree ?? ""}`,
+    ].map((v) => v.toLowerCase()),
+  );
+  return generic.has(raw.toLowerCase()) ? null : raw;
+}
+
+function displaySessionCommand(session: AgentSessionSummary): string {
+  const args = session.args.filter((arg) => arg && arg !== session.providerSessionId);
+  if (args.length > 0 && (args[0] === "resume" || args[0] === "--resume")) {
+    return `resume ${shortSessionId(session.providerSessionId)}`;
+  }
+  if (session.command && args.length > 0) return truncateText(`${session.command} ${args.join(" ")}`, 56);
+  if (session.command) return truncateText(session.command, 56);
+  return `resume ${shortSessionId(session.providerSessionId)}`;
+}
+
+function displaySessionTitle(session: AgentSessionSummary): string {
+  const intent = displaySessionIntent(session);
+  if (intent) return intent;
+  return `${capitalizeWord(session.provider)} session`;
+}
+
+function displaySessionSubtitle(session: AgentSessionSummary): string {
+  const parts: string[] = [];
+  parts.push(displaySessionCommand(session));
+  if (session.worktree) {
+    parts.push(`branch:${session.worktree}`);
+  }
+  parts.push(`${session.provider}:${shortSessionId(session.providerSessionId)}`);
+  return parts.join(" · ");
+}
+
+type RestoreSessionModalState = {
+  agentSessionId: string;
+  target: RestoreTargetChoice;
+  selectedWorktreePath: string;
+  customCwdValue: string;
+  newBranchValue: string;
+  worktreeOptions: Array<{ value: string; label: string }>;
+  restoring: boolean;
+};
+
+const restoreSessionModalRoot = document.createElement("div");
+document.body.appendChild(restoreSessionModalRoot);
+let restoreSessionModalState: RestoreSessionModalState | null = null;
+let restoreSessionModalSeq = 0;
+
+function closeRestoreSessionModal(): void {
+  restoreSessionModalState = null;
+  renderRestoreSessionModal(restoreSessionModalRoot, null, {
+    onClose: () => {},
+    onTargetChange: () => {},
+    onWorktreeChange: () => {},
+    onCustomCwdChange: () => {},
+    onNewBranchChange: () => {},
+    onHide: () => {},
+    onRestore: () => {},
+  });
+}
+
+function buildRestoreWorktreeOptions(
+  session: AgentSessionSummary,
+  worktrees?: Array<{ name: string; path: string }>,
+): Array<{ value: string; label: string }> {
+  if (!Array.isArray(worktrees)) return [];
+  const prefix = session.projectRoot ? `${session.projectRoot}/.worktrees/` : "";
+  const filtered = worktrees
+    .filter((wt) => wt && typeof wt.path === "string" && typeof wt.name === "string")
+    .filter((wt) => !prefix || wt.path.startsWith(prefix))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((wt) => ({ value: wt.path, label: wt.name }));
+  if (filtered.length > 0) return filtered;
+  return worktrees
+    .filter((wt) => wt && typeof wt.path === "string" && typeof wt.name === "string")
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map((wt) => ({ value: wt.path, label: wt.name }));
+}
+
+function renderRestoreSessionModalState(): void {
+  const state = restoreSessionModalState;
+  if (!state) {
+    closeRestoreSessionModal();
+    return;
+  }
+  const session = agentSessions.find((x) => x.id === state.agentSessionId);
+  if (!session) {
+    closeRestoreSessionModal();
+    return;
+  }
+  const model: RestoreSessionModalViewModel = {
+    sessionTitle: displaySessionTitle(session),
+    sessionSubtitle: displaySessionSubtitle(session),
+    provider: session.provider,
+    providerSessionId: session.providerSessionId,
+    target: state.target,
+    sameCwdLabel: session.cwd ? `Use last known location (${session.cwd})` : "Use last known location",
+    worktreeOptions: state.worktreeOptions,
+    selectedWorktreePath: state.selectedWorktreePath,
+    customCwdValue: state.customCwdValue,
+    newBranchValue: state.newBranchValue,
+    restoring: state.restoring,
+  };
+
+  renderRestoreSessionModal(restoreSessionModalRoot, model, {
+    onClose: () => {
+      closeRestoreSessionModal();
+    },
+    onTargetChange: (target) => {
+      if (!restoreSessionModalState) return;
+      restoreSessionModalState.target = target;
+      renderRestoreSessionModalState();
+    },
+    onWorktreeChange: (pathValue) => {
+      if (!restoreSessionModalState) return;
+      restoreSessionModalState.selectedWorktreePath = pathValue;
+      renderRestoreSessionModalState();
+    },
+    onCustomCwdChange: (cwdValue) => {
+      if (!restoreSessionModalState) return;
+      restoreSessionModalState.customCwdValue = cwdValue;
+      renderRestoreSessionModalState();
+    },
+    onNewBranchChange: (branchValue) => {
+      if (!restoreSessionModalState) return;
+      restoreSessionModalState.newBranchValue = branchValue;
+      renderRestoreSessionModalState();
+    },
+    onHide: () => {
+      if (!restoreSessionModalState) return;
+      hiddenAgentSessionIds.add(restoreSessionModalState.agentSessionId);
+      saveHiddenAgentSessions();
+      closeRestoreSessionModal();
+      renderList();
+    },
+    onRestore: () => {
+      if (!restoreSessionModalState || restoreSessionModalState.restoring) return;
+      const stateNow = restoreSessionModalState;
+      let target: RestoreAgentTarget = { target: "same_cwd" };
+      if (stateNow.target === "worktree") {
+        if (!stateNow.selectedWorktreePath) return;
+        target = { target: "worktree", worktreePath: stateNow.selectedWorktreePath };
+      } else if (stateNow.target === "new_worktree") {
+        target = { target: "new_worktree", branch: stateNow.newBranchValue.trim() || `restore-${Date.now()}` };
+      } else if (stateNow.target === "custom_cwd") {
+        if (!stateNow.customCwdValue.trim()) return;
+        target = { target: "same_cwd", cwd: stateNow.customCwdValue.trim() };
+      }
+
+      stateNow.restoring = true;
+      renderRestoreSessionModalState();
+      void restoreAgentSession(stateNow.agentSessionId, target).then((ok) => {
+        if (!restoreSessionModalState || restoreSessionModalState.agentSessionId !== stateNow.agentSessionId) return;
+        if (ok) {
+          closeRestoreSessionModal();
+          return;
+        }
+        restoreSessionModalState.restoring = false;
+        renderRestoreSessionModalState();
+      });
+    },
+  });
 }
 
 function openAgentSessionActions(agentSessionId: string): void {
   const session = agentSessions.find((x) => x.id === agentSessionId);
   if (!session) return;
-  const choice = window.prompt(
-    `Session actions:\n1. Restore in same cwd\n2. Restore in existing worktree\n3. Restore in new worktree\n4. Restore in custom cwd\n5. Hide session`,
-    "1",
-  );
-  if (!choice) return;
-  const action = choice.trim();
-  if (action === "1") {
-    void restoreAgentSession(agentSessionId, { target: "same_cwd" });
-    return;
-  }
-  if (action === "2") {
-    const suggested = session.worktree && session.projectRoot
-      ? `${session.projectRoot}/.worktrees/${session.worktree}`
-      : session.cwd ?? "";
-    const worktreePath = window.prompt("Worktree path (must be under .worktrees/):", suggested);
-    if (!worktreePath || !worktreePath.trim()) return;
-    void restoreAgentSession(agentSessionId, { target: "worktree", worktreePath: worktreePath.trim() });
-    return;
-  }
-  if (action === "3") {
-    const branchDefault = `restore-${Date.now()}`;
-    const branch = window.prompt("New worktree branch name:", branchDefault);
-    if (!branch || !branch.trim()) return;
-    void restoreAgentSession(agentSessionId, { target: "new_worktree", branch: branch.trim() });
-    return;
-  }
-  if (action === "4") {
-    const cwdDefault = session.cwd ?? session.projectRoot ?? "";
-    const cwd = window.prompt("Custom cwd:", cwdDefault);
-    if (!cwd || !cwd.trim()) return;
-    void restoreAgentSession(agentSessionId, { target: "same_cwd", cwd: cwd.trim() });
-    return;
-  }
-  if (action === "5") {
-    hiddenAgentSessionIds.add(agentSessionId);
-    saveHiddenAgentSessions();
-    renderList();
-    return;
-  }
+  const seq = ++restoreSessionModalSeq;
+  const suggestedWorktreePath = session.worktree && session.projectRoot
+    ? `${session.projectRoot}/.worktrees/${session.worktree}`
+    : "";
+  const suggestedBranch = session.worktree ?? `restore-${Date.now()}`;
+  const defaultTarget: RestoreTargetChoice = suggestedWorktreePath ? "worktree" : "same_cwd";
+  restoreSessionModalState = {
+    agentSessionId,
+    target: defaultTarget,
+    selectedWorktreePath: suggestedWorktreePath,
+    customCwdValue: session.cwd ?? session.projectRoot ?? "",
+    newBranchValue: suggestedBranch,
+    worktreeOptions: [],
+    restoring: false,
+  };
+  renderRestoreSessionModalState();
+
+  void authFetch("/api/worktrees")
+    .then(async (res) => (res.ok ? res.json() : Promise.reject(new Error(await readApiError(res)))))
+    .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
+      if (!restoreSessionModalState || seq !== restoreSessionModalSeq) return;
+      const state = restoreSessionModalState;
+      state.worktreeOptions = buildRestoreWorktreeOptions(session, data.worktrees);
+      if (
+        state.worktreeOptions.length > 0 &&
+        !state.worktreeOptions.some((wt) => wt.value === state.selectedWorktreePath)
+      ) {
+        state.selectedWorktreePath = state.worktreeOptions[0].value;
+      }
+      if (state.target === "worktree" && state.worktreeOptions.length === 0) {
+        state.target = "same_cwd";
+      }
+      renderRestoreSessionModalState();
+    })
+    .catch(() => {
+      if (!restoreSessionModalState || seq !== restoreSessionModalSeq) return;
+      restoreSessionModalState.worktreeOptions = [];
+      if (restoreSessionModalState.target === "worktree") restoreSessionModalState.target = "same_cwd";
+      renderRestoreSessionModalState();
+    });
 }
 
 function normalizeCwdGroupKey(cwd: string): string {
@@ -1572,23 +1766,31 @@ function worktreeName(cwd: string | null): string | null {
 
 const collapsedGroups = new Set<string>();
 const collapsedWorktrees = new Set<string>(); // "groupKey::worktreeName"
-let inactiveSessionsExpanded = false;
 const collapsedAgentSessionGroups = new Set<string>();
 const collapsedAgentSessionWorktrees = new Set<string>(); // "projectKey::worktreeName"
 const AGENT_GROUPS_COLLAPSED_KEY = "agmux:agentSessionGroupsCollapsed";
 const AGENT_WORKTREES_COLLAPSED_KEY = "agmux:agentSessionWorktreesCollapsed";
+const AGENT_SECTION_EXPANDED_KEY = "agmux:agentSessionsExpanded";
 
-function loadCollapsedSet(key: string, target: Set<string>): void {
+const AUTO_COLLAPSE_PROJECT_THRESHOLD = 4;
+const AUTO_COLLAPSE_PROJECT_SIZE = 5;
+const AUTO_COLLAPSE_WORKTREE_THRESHOLD = 3;
+const AUTO_COLLAPSE_WORKTREE_SIZE = 4;
+const AUTO_COLLAPSE_SECTION_TOTAL = 8;
+
+function loadCollapsedSet(key: string, target: Set<string>): boolean {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return;
+    if (!raw) return false;
     const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return;
+    if (!Array.isArray(parsed)) return true;
     for (const value of parsed) {
-      if (typeof value === "string" && value.length > 0) target.add(value);
+      if (typeof value === "string") target.add(value);
     }
+    return true;
   } catch {
     // ignore
+    return false;
   }
 }
 
@@ -1600,8 +1802,28 @@ function saveCollapsedSet(key: string, source: Set<string>): void {
   }
 }
 
-loadCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
-loadCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
+function loadBooleanPreference(key: string): boolean | null {
+  try {
+    const raw = localStorage.getItem(key);
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveBooleanPreference(key: string, value: boolean): void {
+  try {
+    localStorage.setItem(key, value ? "1" : "0");
+  } catch {
+    // ignore
+  }
+}
+
+let hasStoredAgentGroupCollapsePref = loadCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
+let hasStoredAgentWorktreeCollapsePref = loadCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
+let inactiveSessionsExpandedOverride = loadBooleanPreference(AGENT_SECTION_EXPANDED_KEY);
 
 function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const title = (ptyTitles.get(p.id) ?? "").trim();
@@ -1631,10 +1853,11 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
 }
 
 function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePtyItem {
-  const name = compactWhitespace(session.name);
-  const process = name || session.provider;
-  const secondaryText = session.providerSessionId;
-  const secondaryTitle = session.cwd ? `${session.providerSessionId} — ${session.cwd}` : session.providerSessionId;
+  const process = displaySessionTitle(session);
+  const secondaryText = displaySessionSubtitle(session);
+  const secondaryTitle = session.cwd
+    ? `${session.provider}:${session.providerSessionId} | cwd:${session.cwd}`
+    : `${session.provider}:${session.providerSessionId}`;
   const elapsed = formatElapsedTime(session.lastSeenAt);
 
   return {
@@ -1643,7 +1866,6 @@ function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePt
     process,
     secondaryText,
     secondaryTitle,
-    source: session.cwdSource,
     worktree: session.worktree ?? worktreeName(session.cwd),
     cwd: session.cwd ?? undefined,
     elapsed: elapsed || undefined,
@@ -1752,16 +1974,30 @@ function renderList(): void {
       .map(([name, wt]) => ({
         name,
         path: wt.path,
-        collapsed: collapsedAgentSessionWorktrees.has(`${key}::${name}`),
+        collapsed: false,
         items: wt.items,
       }));
+    const groupTotal = allItems.length;
+    const autoCollapseGroup = !hasStoredAgentGroupCollapsePref &&
+      (inactiveGroupKeys.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD || groupTotal >= AUTO_COLLAPSE_PROJECT_SIZE);
+    const worktreeCount = worktrees.length;
+    const nextWorktrees = worktrees.map((wt) => {
+      const wtKey = `${key}::${wt.name}`;
+      const autoCollapseWorktree = !hasStoredAgentWorktreeCollapsePref &&
+        (worktreeCount >= AUTO_COLLAPSE_WORKTREE_THRESHOLD || wt.items.length >= AUTO_COLLAPSE_WORKTREE_SIZE);
+      return {
+        ...wt,
+        collapsed: collapsedAgentSessionWorktrees.has(wtKey) || autoCollapseWorktree,
+      };
+    });
     return {
       key,
       label: key ? key.split("/").filter(Boolean).at(-1) ?? key : "(unknown project)",
       title: key || undefined,
-      collapsed: collapsedAgentSessionGroups.has(key),
+      collapsed: collapsedAgentSessionGroups.has(key) || autoCollapseGroup,
+      total: groupTotal,
       items: rootItems,
-      worktrees,
+      worktrees: nextWorktrees,
     };
   });
   const inactiveRootTotal = inactiveGroups.reduce((acc, group) => acc + group.items.length, 0);
@@ -1770,6 +2006,13 @@ function renderList(): void {
     0,
   );
   const inactiveTotal = inactiveRootTotal + inactiveWorktreeTotal;
+  const largestInactiveGroup = inactiveGroups.reduce((max, group) => Math.max(max, group.total), 0);
+  const autoExpanded = !(
+    inactiveTotal >= AUTO_COLLAPSE_SECTION_TOTAL ||
+    inactiveGroups.length >= AUTO_COLLAPSE_PROJECT_THRESHOLD ||
+    largestInactiveGroup >= AUTO_COLLAPSE_PROJECT_SIZE
+  );
+  const inactiveExpanded = inactiveSessionsExpandedOverride ?? autoExpanded;
 
   const model: PtyListModel = {
     groups,
@@ -1777,7 +2020,7 @@ function renderList(): void {
     inactive: inactiveTotal > 0
       ? {
         label: "Recent agent sessions",
-        expanded: inactiveSessionsExpanded,
+        expanded: inactiveExpanded,
         total: inactiveTotal,
         groups: inactiveGroups,
       }
@@ -1802,18 +2045,20 @@ function renderList(): void {
       killPty(ptyId);
     },
     onResumeInactive: (ptyId) => {
-      void restoreAgentSession(ptyId);
+      openAgentSessionActions(ptyId);
     },
     onInactiveActions: (ptyId) => {
       openAgentSessionActions(ptyId);
     },
     onToggleInactive: () => {
-      inactiveSessionsExpanded = !inactiveSessionsExpanded;
+      inactiveSessionsExpandedOverride = !inactiveExpanded;
+      saveBooleanPreference(AGENT_SECTION_EXPANDED_KEY, inactiveSessionsExpandedOverride);
       renderList();
     },
     onToggleInactiveGroup: (groupKey) => {
       if (collapsedAgentSessionGroups.has(groupKey)) collapsedAgentSessionGroups.delete(groupKey);
       else collapsedAgentSessionGroups.add(groupKey);
+      hasStoredAgentGroupCollapsePref = true;
       saveCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
       renderList();
     },
@@ -1821,6 +2066,7 @@ function renderList(): void {
       const key = `${groupKey}::${wtName}`;
       if (collapsedAgentSessionWorktrees.has(key)) collapsedAgentSessionWorktrees.delete(key);
       else collapsedAgentSessionWorktrees.add(key);
+      hasStoredAgentWorktreeCollapsePref = true;
       saveCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
       renderList();
     },
