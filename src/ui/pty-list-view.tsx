@@ -87,6 +87,7 @@ export type PtyListHandlers = {
   onTogglePin: (groupKey: string) => void;
   onToggleInlineInactive: (groupKey: string) => void;
   onOpenLaunch: (groupKey: string) => void;
+  onOpenLaunchInWorktree: (groupKey: string, worktreePath: string) => void;
   onSelectPty: (ptyId: string) => void;
   onKillPty: (ptyId: string) => void;
   onResumeInactive: (ptyId: string) => void;
@@ -260,7 +261,17 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     >
                       <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{wt.name}</span>
-                      <span className="group-count">{wt.items.length}</span>
+                      <button
+                        type="button"
+                        className="worktree-launch"
+                        title="Launch agent in this worktree"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onOpenLaunchInWorktree(group.key, wt.path);
+                        }}
+                      >
+                        +
+                      </button>
                     </li>
                     {wt.collapsed
                       ? null
@@ -298,7 +309,17 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                             >
                               <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
                               <span>{wt.name}</span>
-                              <span className="group-count">{wt.items.length}</span>
+                              <button
+                                type="button"
+                                className="worktree-launch"
+                                title="Launch agent in this worktree"
+                                onClick={(ev) => {
+                                  ev.stopPropagation();
+                                  handlers.onOpenLaunchInWorktree(group.key, wt.path);
+                                }}
+                              >
+                                +
+                              </button>
                             </li>
                             {wt.collapsed
                               ? null
@@ -404,7 +425,17 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                               >
                                 <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
                                 <span>{wt.name}</span>
-                                <span className="group-count">{wt.items.length}</span>
+                                <button
+                                  type="button"
+                                  className="worktree-launch"
+                                  title="Launch agent in this worktree"
+                                  onClick={(ev) => {
+                                    ev.stopPropagation();
+                                    handlers.onOpenLaunchInWorktree(group.key, wt.path);
+                                  }}
+                                >
+                                  +
+                                </button>
                               </li>
                               {wt.collapsed
                                 ? null

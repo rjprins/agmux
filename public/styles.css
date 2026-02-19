@@ -1000,11 +1000,27 @@ button:disabled {
   font-size: 7px;
   width: 9px;
 }
-.worktree-subheader .group-count {
+.worktree-launch {
   margin-left: auto;
-  font-weight: 400;
-  opacity: 0.5;
-  font-size: 10px;
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.worktree-subheader:hover .worktree-launch {
+  opacity: 0.6;
+}
+.worktree-launch:hover {
+  opacity: 1 !important;
+  color: var(--text);
+  background: var(--surface);
 }
 
 .group-body {

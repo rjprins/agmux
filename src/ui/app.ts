@@ -1126,11 +1126,11 @@ function renderLaunchModalState(): void {
   });
 }
 
-function openLaunchModal(groupCwd: string): void {
+function openLaunchModal(groupCwd: string, preselectedWorktree?: string): void {
   const seq = ++launchModalSeq;
   launchModalState = {
     selectedAgent: AGENT_CHOICES[0],
-    selectedWorktree: "__new__",
+    selectedWorktree: preselectedWorktree ?? "__new__",
     branchValue: "",
     baseBranchValue: "main",
     generatedBranch: generateBranchName(),
@@ -2066,6 +2066,7 @@ function renderList(): void {
       renderList();
     },
     onOpenLaunch: (groupKey) => openLaunchModal(groupKey),
+    onOpenLaunchInWorktree: (groupKey, worktreePath) => openLaunchModal(groupKey, worktreePath),
     onSelectPty: (ptyId) => setActive(ptyId),
     onKillPty: (ptyId) => {
       killPty(ptyId);
