@@ -24,6 +24,7 @@ export type InactivePtyItem = {
   process: string;
   secondaryText: string;
   secondaryTitle: string;
+  source?: "runtime" | "db" | "log" | "user";
   worktree?: string;
   cwd?: string;
   elapsed?: string;
@@ -34,6 +35,14 @@ export type InactiveGroup = {
   key: string;
   label: string;
   title?: string;
+  collapsed: boolean;
+  items: InactivePtyItem[];
+  worktrees: InactiveWorktreeSubgroup[];
+};
+
+export type InactiveWorktreeSubgroup = {
+  name: string;
+  path: string;
   collapsed: boolean;
   items: InactivePtyItem[];
 };
@@ -74,9 +83,59 @@ export type PtyListHandlers = {
   onSelectPty: (ptyId: string) => void;
   onKillPty: (ptyId: string) => void;
   onResumeInactive: (ptyId: string) => void;
+  onInactiveActions: (ptyId: string) => void;
   onToggleInactive: () => void;
   onToggleInactiveGroup: (groupKey: string) => void;
+  onToggleInactiveWorktree: (groupKey: string, worktreeName: string) => void;
 };
+
+function InactiveItemRow(
+  { item, inWorktree, handlers }: { item: InactivePtyItem; inWorktree: boolean; handlers: PtyListHandlers },
+) {
+  return (
+    <li
+      key={item.id}
+      className="pty-item inactive"
+      data-pty-id={item.id}
+      style={ptyStyle(item.color)}
+      title="Restore session"
+      onClick={() => handlers.onResumeInactive(item.id)}
+    >
+      <div className="row">
+        <div className="mainline">
+          <div className="primary-row">
+            <span className="inactive-dot" title={`Restorable (${item.exitLabel})`} />
+            <div className="primary">{item.process}</div>
+            {item.elapsed ? <span className="time-badge inactive" title={`Inactive for ${item.elapsed}`}>{item.elapsed}</span> : null}
+          </div>
+          <div className="secondary">
+            {!inWorktree && item.worktree
+              ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
+              : null}
+            {item.source
+              ? <span className={`source-badge src-${item.source}`} title={`CWD source: ${item.source}`}>{item.source}</span>
+              : null}
+            <span title={item.secondaryTitle}>{item.secondaryText}</span>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="pty-close pty-actions"
+          title="Session actions"
+          aria-label={`Session actions for ${item.process}`}
+          onClick={(ev) => {
+            ev.preventDefault();
+            ev.stopPropagation();
+            handlers.onInactiveActions(item.id);
+          }}
+        >
+          ...
+        </button>
+      </div>
+      <span className="inactive-dot compact" title={`Restorable: ${item.process}`} />
+    </li>
+  );
+}
 
 function ptyStyle(color: string): Record<string, string> {
   return { "--pty-color": color } as Record<string, string>;
@@ -231,33 +290,31 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     </li>
                     {group.collapsed
                       ? null
-                      : group.items.map((item) => (
-                        <li
-                          key={item.id}
-                          className="pty-item inactive"
-                          data-pty-id={item.id}
-                          style={ptyStyle(item.color)}
-                          title="Restore session"
-                          onClick={() => handlers.onResumeInactive(item.id)}
-                        >
-                          <div className="row">
-                            <div className="mainline">
-                              <div className="primary-row">
-                                <span className="inactive-dot" title={`Restorable (${item.exitLabel})`} />
-                                <div className="primary">{item.process}</div>
-                                {item.elapsed ? <span className="time-badge inactive" title={`Inactive for ${item.elapsed}`}>{item.elapsed}</span> : null}
-                              </div>
-                              <div className="secondary">
-                                {item.worktree
-                                  ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
-                                  : null}
-                                <span title={item.secondaryTitle}>{item.secondaryText}</span>
-                              </div>
-                            </div>
-                          </div>
-                          <span className="inactive-dot compact" title={`Restorable: ${item.process}`} />
-                        </li>
-                      ))}
+                      : (
+                        <>
+                          {group.items.map((item) => (
+                            <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
+                          ))}
+                          {group.worktrees.map((wt) => (
+                            <Fragment key={`inactive-wt:${group.key}::${wt.name}`}>
+                              <li
+                                className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
+                                title={wt.path}
+                                onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
+                              >
+                                <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
+                                <span>{wt.name}</span>
+                                <span className="group-count">{wt.items.length}</span>
+                              </li>
+                              {wt.collapsed
+                                ? null
+                                : wt.items.map((item) => (
+                                  <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
+                                ))}
+                            </Fragment>
+                          ))}
+                        </>
+                      )}
                   </Fragment>
                 ))}
               </>

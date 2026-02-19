@@ -53,11 +53,12 @@ type AgentSessionSummary = {
   command: string;
   args: string[];
   cwd: string | null;
-  cwdSource: "log";
+  cwdSource: "runtime" | "db" | "log" | "user";
   projectRoot: string | null;
   worktree: string | null;
   createdAt: number;
   lastSeenAt: number;
+  lastRestoredAt?: number | null;
 };
 
 type TmuxSessionInfo = {
@@ -116,6 +117,32 @@ let inputHistoryExpanded = false;
 
 const ACTIVE_PTY_KEY = "agmux:activePty";
 const AUTH_TOKEN_KEY = "agmux:authToken";
+const HIDDEN_AGENT_SESSIONS_KEY = "agmux:hiddenAgentSessions";
+const hiddenAgentSessionIds = new Set<string>();
+
+function loadHiddenAgentSessions(): void {
+  try {
+    const raw = localStorage.getItem(HIDDEN_AGENT_SESSIONS_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    for (const value of parsed) {
+      if (typeof value === "string" && value.trim().length > 0) {
+        hiddenAgentSessionIds.add(value);
+      }
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function saveHiddenAgentSessions(): void {
+  try {
+    localStorage.setItem(HIDDEN_AGENT_SESSIONS_KEY, JSON.stringify([...hiddenAgentSessionIds]));
+  } catch {
+    // ignore
+  }
+}
 
 function saveActivePty(ptyId: string | null): void {
   try {
@@ -176,6 +203,8 @@ type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator
 const ptyReady = new Map<string, PtyReadyInfo>();
 const ptyStateChangedAt = new Map<string, number>();
 const MAX_INPUT_HISTORY = 40;
+
+loadHiddenAgentSessions();
 
 function formatElapsedTime(sinceMs: number): string {
   const delta = Date.now() - sinceMs;
@@ -1442,10 +1471,28 @@ function killPty(ptyId: string): void {
   openCloseWorktreeModal(ptyId);
 }
 
-async function restoreAgentSession(agentSessionId: string): Promise<void> {
-  const res = await authFetch(`/api/agent-sessions/${encodeURIComponent(agentSessionId)}/restore`, {
-    method: "POST",
-  });
+type RestoreAgentTarget = {
+  target?: "same_cwd" | "worktree" | "new_worktree";
+  worktreePath?: string;
+  branch?: string;
+  cwd?: string;
+};
+
+async function restoreAgentSession(agentSessionId: string, target?: RestoreAgentTarget): Promise<void> {
+  const session = agentSessions.find((x) => x.id === agentSessionId);
+  if (!session) {
+    addEvent(`Failed to restore agent session ${agentSessionId}: unknown session`);
+    return;
+  }
+  const reqInit: RequestInit = { method: "POST" };
+  if (target && Object.keys(target).length > 0) {
+    reqInit.headers = { "Content-Type": "application/json" };
+    reqInit.body = JSON.stringify(target);
+  }
+  const res = await authFetch(
+    `/api/agent-sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.providerSessionId)}/restore`,
+    reqInit,
+  );
   if (!res.ok) {
     addEvent(`Failed to restore agent session ${agentSessionId}: ${await readApiError(res)}`);
     return;
@@ -1454,6 +1501,50 @@ async function restoreAgentSession(agentSessionId: string): Promise<void> {
   addEvent(`Restored agent session ${agentSessionId}`);
   await refreshList();
   setActive(json.id);
+}
+
+function openAgentSessionActions(agentSessionId: string): void {
+  const session = agentSessions.find((x) => x.id === agentSessionId);
+  if (!session) return;
+  const choice = window.prompt(
+    `Session actions:\n1. Restore in same cwd\n2. Restore in existing worktree\n3. Restore in new worktree\n4. Restore in custom cwd\n5. Hide session`,
+    "1",
+  );
+  if (!choice) return;
+  const action = choice.trim();
+  if (action === "1") {
+    void restoreAgentSession(agentSessionId, { target: "same_cwd" });
+    return;
+  }
+  if (action === "2") {
+    const suggested = session.worktree && session.projectRoot
+      ? `${session.projectRoot}/.worktrees/${session.worktree}`
+      : session.cwd ?? "";
+    const worktreePath = window.prompt("Worktree path (must be under .worktrees/):", suggested);
+    if (!worktreePath || !worktreePath.trim()) return;
+    void restoreAgentSession(agentSessionId, { target: "worktree", worktreePath: worktreePath.trim() });
+    return;
+  }
+  if (action === "3") {
+    const branchDefault = `restore-${Date.now()}`;
+    const branch = window.prompt("New worktree branch name:", branchDefault);
+    if (!branch || !branch.trim()) return;
+    void restoreAgentSession(agentSessionId, { target: "new_worktree", branch: branch.trim() });
+    return;
+  }
+  if (action === "4") {
+    const cwdDefault = session.cwd ?? session.projectRoot ?? "";
+    const cwd = window.prompt("Custom cwd:", cwdDefault);
+    if (!cwd || !cwd.trim()) return;
+    void restoreAgentSession(agentSessionId, { target: "same_cwd", cwd: cwd.trim() });
+    return;
+  }
+  if (action === "5") {
+    hiddenAgentSessionIds.add(agentSessionId);
+    saveHiddenAgentSessions();
+    renderList();
+    return;
+  }
 }
 
 function normalizeCwdGroupKey(cwd: string): string {
@@ -1472,6 +1563,34 @@ const collapsedGroups = new Set<string>();
 const collapsedWorktrees = new Set<string>(); // "groupKey::worktreeName"
 let inactiveSessionsExpanded = false;
 const collapsedAgentSessionGroups = new Set<string>();
+const collapsedAgentSessionWorktrees = new Set<string>(); // "projectKey::worktreeName"
+const AGENT_GROUPS_COLLAPSED_KEY = "agmux:agentSessionGroupsCollapsed";
+const AGENT_WORKTREES_COLLAPSED_KEY = "agmux:agentSessionWorktreesCollapsed";
+
+function loadCollapsedSet(key: string, target: Set<string>): void {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return;
+    for (const value of parsed) {
+      if (typeof value === "string" && value.length > 0) target.add(value);
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function saveCollapsedSet(key: string, source: Set<string>): void {
+  try {
+    localStorage.setItem(key, JSON.stringify([...source]));
+  } catch {
+    // ignore
+  }
+}
+
+loadCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
+loadCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
 
 function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const title = (ptyTitles.get(p.id) ?? "").trim();
@@ -1513,6 +1632,7 @@ function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePt
     process,
     secondaryText,
     secondaryTitle,
+    source: session.cwdSource,
     worktree: session.worktree ?? worktreeName(session.cwd),
     cwd: session.cwd ?? undefined,
     elapsed: elapsed || undefined,
@@ -1582,7 +1702,9 @@ function renderList(): void {
     };
   });
 
-  const sortedAgentSessions = [...agentSessions].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  const sortedAgentSessions = [...agentSessions]
+    .filter((s) => !hiddenAgentSessionIds.has(s.id))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   const inactiveByProject = new Map<string, InactivePtyItem[]>();
   for (const session of sortedAgentSessions) {
     const key = session.projectRoot ?? "";
@@ -1598,14 +1720,45 @@ function renderList(): void {
     const bb = b.split("/").filter(Boolean).at(-1) ?? b;
     return ba.localeCompare(bb);
   });
-  const inactiveGroups = inactiveGroupKeys.map((key) => ({
-    key,
-    label: key ? key.split("/").filter(Boolean).at(-1) ?? key : "(unknown project)",
-    title: key || undefined,
-    collapsed: collapsedAgentSessionGroups.has(key),
-    items: inactiveByProject.get(key) ?? [],
-  }));
-  const inactiveTotal = inactiveGroups.reduce((acc, group) => acc + group.items.length, 0);
+  const inactiveGroups = inactiveGroupKeys.map((key) => {
+    const allItems = inactiveByProject.get(key) ?? [];
+    const rootItems: InactivePtyItem[] = [];
+    const wtMap = new Map<string, { items: InactivePtyItem[]; path: string }>();
+    for (const item of allItems) {
+      if (item.worktree) {
+        let wt = wtMap.get(item.worktree);
+        if (!wt) {
+          wt = { items: [], path: item.cwd ?? "" };
+          wtMap.set(item.worktree, wt);
+        }
+        wt.items.push(item);
+      } else {
+        rootItems.push(item);
+      }
+    }
+    const worktrees = [...wtMap.entries()]
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, wt]) => ({
+        name,
+        path: wt.path,
+        collapsed: collapsedAgentSessionWorktrees.has(`${key}::${name}`),
+        items: wt.items,
+      }));
+    return {
+      key,
+      label: key ? key.split("/").filter(Boolean).at(-1) ?? key : "(unknown project)",
+      title: key || undefined,
+      collapsed: collapsedAgentSessionGroups.has(key),
+      items: rootItems,
+      worktrees,
+    };
+  });
+  const inactiveRootTotal = inactiveGroups.reduce((acc, group) => acc + group.items.length, 0);
+  const inactiveWorktreeTotal = inactiveGroups.reduce(
+    (acc, group) => acc + group.worktrees.reduce((inner, wt) => inner + wt.items.length, 0),
+    0,
+  );
+  const inactiveTotal = inactiveRootTotal + inactiveWorktreeTotal;
 
   const model: PtyListModel = {
     groups,
@@ -1640,6 +1793,9 @@ function renderList(): void {
     onResumeInactive: (ptyId) => {
       void restoreAgentSession(ptyId);
     },
+    onInactiveActions: (ptyId) => {
+      openAgentSessionActions(ptyId);
+    },
     onToggleInactive: () => {
       inactiveSessionsExpanded = !inactiveSessionsExpanded;
       renderList();
@@ -1647,6 +1803,14 @@ function renderList(): void {
     onToggleInactiveGroup: (groupKey) => {
       if (collapsedAgentSessionGroups.has(groupKey)) collapsedAgentSessionGroups.delete(groupKey);
       else collapsedAgentSessionGroups.add(groupKey);
+      saveCollapsedSet(AGENT_GROUPS_COLLAPSED_KEY, collapsedAgentSessionGroups);
+      renderList();
+    },
+    onToggleInactiveWorktree: (groupKey, wtName) => {
+      const key = `${groupKey}::${wtName}`;
+      if (collapsedAgentSessionWorktrees.has(key)) collapsedAgentSessionWorktrees.delete(key);
+      else collapsedAgentSessionWorktrees.add(key);
+      saveCollapsedSet(AGENT_WORKTREES_COLLAPSED_KEY, collapsedAgentSessionWorktrees);
       renderList();
     },
   });

@@ -21,6 +21,21 @@ export type InputMeta = {
   history: InputHistoryEntry[];
 };
 
+export type AgentSessionCwdSource = "runtime" | "db" | "log" | "user";
+
+export type AgentSessionRecord = {
+  provider: string;
+  providerSessionId: string;
+  name: string;
+  command: string;
+  args: string[];
+  cwd: string | null;
+  cwdSource: AgentSessionCwdSource;
+  createdAt: number;
+  lastSeenAt: number;
+  lastRestoredAt: number | null;
+};
+
 export class SqliteStore {
   private db: any;
 
@@ -72,6 +87,23 @@ export class SqliteStore {
         value_json text not null,
         updated_at integer not null
       );
+
+      create table if not exists agent_sessions (
+        provider text not null,
+        provider_session_id text not null,
+        name text not null,
+        command text not null,
+        args_json text not null,
+        cwd text,
+        cwd_source text not null default 'log',
+        created_at integer not null,
+        last_seen_at integer not null,
+        last_restored_at integer,
+        primary key (provider, provider_session_id)
+      );
+
+      create index if not exists idx_agent_sessions_last_seen
+        on agent_sessions(last_seen_at desc);
     `);
 
     // Backwards-compatible column adds for existing DBs.
@@ -85,6 +117,15 @@ export class SqliteStore {
     }
     if (!have.has("tmux_server")) {
       this.db.exec(`alter table sessions add column tmux_server text;`);
+    }
+
+    const agentCols = this.db.prepare(`pragma table_info(agent_sessions);`).all() as Array<{ name: string }>;
+    const haveAgent = new Set(agentCols.map((c) => c.name));
+    if (!haveAgent.has("cwd_source")) {
+      this.db.exec(`alter table agent_sessions add column cwd_source text not null default 'log';`);
+    }
+    if (!haveAgent.has("last_restored_at")) {
+      this.db.exec(`alter table agent_sessions add column last_restored_at integer;`);
     }
   }
 
@@ -260,6 +301,108 @@ export class SqliteStore {
       value_json: JSON.stringify(value),
       updated_at: Date.now(),
     });
+  }
+
+  getAgentSession(provider: string, providerSessionId: string): AgentSessionRecord | null {
+    const row = this.db.prepare(`
+      select provider, provider_session_id, name, command, args_json, cwd, cwd_source, created_at, last_seen_at, last_restored_at
+      from agent_sessions
+      where provider = ? and provider_session_id = ?;
+    `).get(provider, providerSessionId) as
+      | {
+          provider: string;
+          provider_session_id: string;
+          name: string;
+          command: string;
+          args_json: string;
+          cwd: string | null;
+          cwd_source: string | null;
+          created_at: number;
+          last_seen_at: number;
+          last_restored_at: number | null;
+        }
+      | undefined;
+    if (!row) return null;
+    return {
+      provider: row.provider,
+      providerSessionId: row.provider_session_id,
+      name: row.name,
+      command: row.command,
+      args: this.parseArgsJson(row.args_json),
+      cwd: row.cwd,
+      cwdSource: this.parseAgentCwdSource(row.cwd_source),
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      lastRestoredAt: row.last_restored_at ?? null,
+    };
+  }
+
+  listAgentSessions(limit = 500): AgentSessionRecord[] {
+    const rows = this.db.prepare(`
+      select provider, provider_session_id, name, command, args_json, cwd, cwd_source, created_at, last_seen_at, last_restored_at
+      from agent_sessions
+      order by last_seen_at desc
+      limit ?;
+    `).all(limit) as Array<{
+      provider: string;
+      provider_session_id: string;
+      name: string;
+      command: string;
+      args_json: string;
+      cwd: string | null;
+      cwd_source: string | null;
+      created_at: number;
+      last_seen_at: number;
+      last_restored_at: number | null;
+    }>;
+
+    return rows.map((row) => ({
+      provider: row.provider,
+      providerSessionId: row.provider_session_id,
+      name: row.name,
+      command: row.command,
+      args: this.parseArgsJson(row.args_json),
+      cwd: row.cwd,
+      cwdSource: this.parseAgentCwdSource(row.cwd_source),
+      createdAt: row.created_at,
+      lastSeenAt: row.last_seen_at,
+      lastRestoredAt: row.last_restored_at ?? null,
+    }));
+  }
+
+  upsertAgentSession(record: AgentSessionRecord): void {
+    this.db.prepare(`
+      insert into agent_sessions (
+        provider, provider_session_id, name, command, args_json, cwd, cwd_source, created_at, last_seen_at, last_restored_at
+      ) values (
+        @provider, @provider_session_id, @name, @command, @args_json, @cwd, @cwd_source, @created_at, @last_seen_at, @last_restored_at
+      )
+      on conflict(provider, provider_session_id) do update set
+        name=excluded.name,
+        command=excluded.command,
+        args_json=excluded.args_json,
+        cwd=coalesce(excluded.cwd, agent_sessions.cwd),
+        cwd_source=case when excluded.cwd is not null then excluded.cwd_source else agent_sessions.cwd_source end,
+        created_at=min(agent_sessions.created_at, excluded.created_at),
+        last_seen_at=max(agent_sessions.last_seen_at, excluded.last_seen_at),
+        last_restored_at=coalesce(excluded.last_restored_at, agent_sessions.last_restored_at);
+    `).run({
+      provider: record.provider,
+      provider_session_id: record.providerSessionId,
+      name: record.name,
+      command: record.command,
+      args_json: JSON.stringify(record.args),
+      cwd: record.cwd,
+      cwd_source: record.cwdSource,
+      created_at: record.createdAt,
+      last_seen_at: record.lastSeenAt,
+      last_restored_at: record.lastRestoredAt,
+    });
+  }
+
+  private parseAgentCwdSource(value: string | null): AgentSessionCwdSource {
+    if (value === "runtime" || value === "db" || value === "log" || value === "user") return value;
+    return "db";
   }
 
   private parseArgsJson(raw: string): string[] {
