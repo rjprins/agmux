@@ -1794,6 +1794,7 @@ function worktreeName(cwd: string | null): string | null {
 
 const collapsedGroups = new Set<string>();
 const collapsedWorktrees = new Set<string>(); // "groupKey::worktreeName"
+const inlineInactiveExpanded = new Set<string>(); // directory keys where inline recent is expanded
 const collapsedAgentSessionGroups = new Set<string>();
 const collapsedAgentSessionWorktrees = new Set<string>(); // "projectKey::worktreeName"
 const AGENT_GROUPS_COLLAPSED_KEY = "agmux:agentSessionGroupsCollapsed";
@@ -2024,6 +2025,7 @@ function renderList(): void {
       inactiveSessions: inactiveSub.rootItems,
       inactiveWorktrees: inactiveSub.worktrees,
       inactiveTotal: dirInactiveItems.length,
+      inlineInactiveExpanded: inlineInactiveExpanded.has(key),
     };
   });
 
@@ -2087,6 +2089,11 @@ function renderList(): void {
       if (pinnedDirectories.has(groupKey)) pinnedDirectories.delete(groupKey);
       else pinnedDirectories.add(groupKey);
       savePinnedDirectories();
+      renderList();
+    },
+    onToggleInlineInactive: (groupKey) => {
+      if (inlineInactiveExpanded.has(groupKey)) inlineInactiveExpanded.delete(groupKey);
+      else inlineInactiveExpanded.add(groupKey);
       renderList();
     },
     onOpenLaunch: (groupKey) => openLaunchModal(groupKey),

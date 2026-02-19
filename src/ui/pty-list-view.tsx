@@ -65,6 +65,7 @@ export type PtyGroup = {
   inactiveSessions: InactivePtyItem[];
   inactiveWorktrees: InactiveWorktreeSubgroup[];
   inactiveTotal: number;
+  inlineInactiveExpanded: boolean;
 };
 
 export type InactiveSection = {
@@ -84,6 +85,7 @@ export type PtyListHandlers = {
   onToggleGroup: (groupKey: string) => void;
   onToggleWorktree: (groupKey: string, worktreeName: string) => void;
   onTogglePin: (groupKey: string) => void;
+  onToggleInlineInactive: (groupKey: string) => void;
   onOpenLaunch: (groupKey: string) => void;
   onSelectPty: (ptyId: string) => void;
   onKillPty: (ptyId: string) => void;
@@ -97,27 +99,26 @@ export type PtyListHandlers = {
 function InactiveItemRow(
   { item, inWorktree, handlers }: { item: InactivePtyItem; inWorktree: boolean; handlers: PtyListHandlers },
 ) {
+  const tooltipParts = [item.secondaryText, item.secondaryTitle].filter(Boolean);
+  const tooltip = tooltipParts.join("\n");
   return (
     <li
       key={item.id}
-      className="pty-item inactive"
+      className="pty-item inactive compact"
       data-pty-id={item.id}
       style={ptyStyle(item.color)}
-      title="Restore session"
+      title={tooltip}
       onClick={() => handlers.onResumeInactive(item.id)}
     >
       <div className="row">
         <div className="mainline">
           <div className="primary-row">
             <span className="inactive-dot" title={`Restorable (${item.exitLabel})`} />
-            <div className="primary">{item.process}</div>
-            {item.elapsed ? <span className="time-badge inactive" title={`Inactive for ${item.elapsed}`}>{item.elapsed}</span> : null}
-          </div>
-          <div className="secondary">
             {!inWorktree && item.worktree
               ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
               : null}
-            <span title={item.secondaryTitle}>{item.secondaryText}</span>
+            <div className="primary">{item.process}</div>
+            {item.elapsed ? <span className="time-badge inactive" title={`Inactive for ${item.elapsed}`}>{item.elapsed}</span> : null}
           </div>
         </div>
         <button
@@ -275,28 +276,39 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
 
                 {group.inactiveTotal > 0 ? (
                   <>
-                    {hasRunning(group) ? <li className="inline-inactive-divider"><span>Recent</span></li> : null}
-                    {group.inactiveSessions.map((item) => (
-                      <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
-                    ))}
-                    {group.inactiveWorktrees.map((wt) => (
-                      <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
-                        <li
-                          className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
-                          title={wt.path}
-                          onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
-                        >
-                          <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
-                          <span>{wt.name}</span>
-                          <span className="group-count">{wt.items.length}</span>
-                        </li>
-                        {wt.collapsed
-                          ? null
-                          : wt.items.map((item) => (
-                            <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
-                          ))}
-                      </Fragment>
-                    ))}
+                    <li
+                      className={`inline-inactive-divider${group.inlineInactiveExpanded ? "" : " collapsed"}`}
+                      onClick={() => handlers.onToggleInlineInactive(group.key)}
+                    >
+                      <span className="group-chevron">{group.inlineInactiveExpanded ? "\u25bc" : "\u25b6"}</span>
+                      <span>Recent</span>
+                      <span className="group-count">{group.inactiveTotal}</span>
+                    </li>
+                    {group.inlineInactiveExpanded ? (
+                      <>
+                        {group.inactiveSessions.map((item) => (
+                          <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
+                        ))}
+                        {group.inactiveWorktrees.map((wt) => (
+                          <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
+                            <li
+                              className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
+                              title={wt.path}
+                              onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
+                            >
+                              <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
+                              <span>{wt.name}</span>
+                              <span className="group-count">{wt.items.length}</span>
+                            </li>
+                            {wt.collapsed
+                              ? null
+                              : wt.items.map((item) => (
+                                <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
+                              ))}
+                          </Fragment>
+                        ))}
+                      </>
+                    ) : null}
                   </>
                 ) : null}
               </>
@@ -340,7 +352,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       </button>
                       <button
                         type="button"
-                        className="group-launch inactive-group-launch"
+                        className="group-launch"
                         title="Launch agent"
                         onClick={(ev) => {
                           ev.stopPropagation();
@@ -349,7 +361,6 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       >
                         +
                       </button>
-                      <span className="group-count">{group.total}</span>
                     </li>
                     {group.collapsed
                       ? null

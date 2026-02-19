@@ -1108,20 +1108,34 @@ button:disabled {
 .inline-inactive-divider {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   padding: 4px 8px 2px;
   font-size: 10px;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
   user-select: none;
+  cursor: pointer;
 }
-.inline-inactive-divider::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: var(--line);
-  opacity: 0.5;
+.inline-inactive-divider:hover {
+  color: var(--text);
+}
+.inline-inactive-divider .group-chevron {
+  font-size: 7px;
+  width: 8px;
+}
+.inline-inactive-divider .group-count {
+  font-size: 9px;
+}
+
+.pty-item.inactive.compact {
+  padding: 2px 8px;
+}
+.pty-item.inactive.compact .primary-row {
+  gap: 4px;
+}
+.pty-item.inactive.compact .mainline {
+  min-height: auto;
 }
 
 .sidebar.collapsed .group-pin {
