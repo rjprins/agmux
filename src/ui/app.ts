@@ -349,9 +349,7 @@ function archiveDirectory(groupKey: string): void {
 
 function unarchiveDirectory(groupKey: string): void {
   archivedDirectories.delete(groupKey);
-  pinnedDirectories.add(groupKey);
   saveArchivedDirectories();
-  savePinnedDirectories();
   renderList();
 }
 
@@ -2178,6 +2176,14 @@ function renderList(): void {
     const items = inactiveByProject.get(key) ?? [];
     items.push(item);
     inactiveByProject.set(key, items);
+  }
+
+  // Auto-unarchive directories that have running sessions
+  for (const k of runningByDir.keys()) {
+    if (archivedDirectories.has(k)) {
+      archivedDirectories.delete(k);
+      saveArchivedDirectories();
+    }
   }
 
   // Collect all visible directory keys: pinned dirs + dirs with running PTYs (exclude archived).

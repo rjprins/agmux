@@ -1186,7 +1186,33 @@ button:disabled {
   min-height: auto;
 }
 
-.sidebar.collapsed .group-pin {
+.group-archive,
+.group-unarchive {
+  padding: 0 2px;
+  font-size: 10px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 4px;
+  opacity: 0;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.pty-group-header:hover .group-archive,
+.worktree-subheader:hover .group-archive,
+.pty-group-header:hover .group-unarchive,
+.worktree-subheader:hover .group-unarchive {
+  opacity: 0.5;
+}
+.group-archive:hover,
+.group-unarchive:hover {
+  opacity: 1 !important;
+}
+
+.sidebar.collapsed .group-pin,
+.sidebar.collapsed .group-archive,
+.sidebar.collapsed .group-unarchive {
   display: none;
 }
 .sidebar.collapsed .inline-inactive-divider {

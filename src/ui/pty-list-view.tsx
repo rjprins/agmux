@@ -239,17 +239,6 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
               </button>
               <button
                 type="button"
-                className="group-archive"
-                title="Archive project"
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  handlers.onArchive(group.key);
-                }}
-              >
-                {"\u2298"}
-              </button>
-              <button
-                type="button"
                 className="group-launch"
                 title="Launch agent"
                 onClick={(ev) => {
@@ -509,13 +498,24 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                       <button
                         type="button"
                         className="group-unarchive"
-                        title="Unarchive (re-pin) project"
+                        title="Unarchive project"
                         onClick={(ev) => {
                           ev.stopPropagation();
                           handlers.onUnarchive(group.key);
                         }}
                       >
                         {"\u21A9"}
+                      </button>
+                      <button
+                        type="button"
+                        className="group-launch"
+                        title="Launch agent (unarchives project)"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onOpenLaunch(group.key);
+                        }}
+                      >
+                        +
                       </button>
                     </li>
                     {group.collapsed
