@@ -2071,7 +2071,7 @@ function renderList(): void {
     showHeaders: allVisibleKeys.length >= 1,
     inactive: orphanTotal > 0
       ? {
-        label: "Recent sessions",
+        label: "Inactive sessions",
         expanded: inactiveExpanded,
         total: orphanTotal,
         groups: orphanGroups,

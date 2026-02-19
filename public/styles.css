@@ -1007,6 +1007,12 @@ button:disabled {
   font-size: 10px;
 }
 
+.group-body {
+  padding-left: 8px;
+  display: grid;
+  gap: 4px;
+}
+
 .worktree-subgroup {
   padding-left: 14px;
   display: grid;
@@ -1051,6 +1057,9 @@ button:disabled {
 }
 
 /* Collapsed sidebar: hide worktree subheaders */
+.sidebar.collapsed .group-body {
+  padding-left: 0;
+}
 .sidebar.collapsed .worktree-subheader {
   display: none;
 }

@@ -227,7 +227,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                   handlers.onTogglePin(group.key);
                 }}
               >
-                {group.pinned ? "\u{1F4CC}" : "\u{1F4CC}"}
+                {"\u25C8"}
               </button>
               <button
                 type="button"
@@ -246,7 +246,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
           {group.collapsed
             ? null
             : (
-              <>
+              <div className={model.showHeaders ? "group-body" : undefined}>
                 {group.items.map((item) => (
                   <PtyItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
                 ))}
@@ -274,14 +274,14 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                   </Fragment>
                 ))}
 
-                {group.inactiveTotal > 0 ? (
+                {group.inactiveTotal > 0 && hasRunning(group) ? (
                   <>
                     <li
                       className={`inline-inactive-divider${group.inlineInactiveExpanded ? "" : " collapsed"}`}
                       onClick={() => handlers.onToggleInlineInactive(group.key)}
                     >
                       <span className="group-chevron">{group.inlineInactiveExpanded ? "\u25bc" : "\u25b6"}</span>
-                      <span>Recent</span>
+                      <span>Inactive</span>
                       <span className="group-count">{group.inactiveTotal}</span>
                     </li>
                     {group.inlineInactiveExpanded ? (
@@ -311,7 +311,33 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     ) : null}
                   </>
                 ) : null}
-              </>
+
+                {group.inactiveTotal > 0 && !hasRunning(group) ? (
+                  <>
+                    {group.inactiveSessions.map((item) => (
+                      <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
+                    ))}
+                    {group.inactiveWorktrees.map((wt) => (
+                      <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
+                        <li
+                          className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
+                          title={wt.path}
+                          onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
+                        >
+                          <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
+                          <span>{wt.name}</span>
+                          <span className="group-count">{wt.items.length}</span>
+                        </li>
+                        {wt.collapsed
+                          ? null
+                          : wt.items.map((item) => (
+                            <InactiveItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
+                          ))}
+                      </Fragment>
+                    ))}
+                  </>
+                ) : null}
+              </div>
             )}
         </Fragment>
       ))}
@@ -348,7 +374,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                           handlers.onTogglePin(group.key);
                         }}
                       >
-                        {"\u{1F4CC}"}
+                        {"\u25C8"}
                       </button>
                       <button
                         type="button"
@@ -365,7 +391,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     {group.collapsed
                       ? null
                       : (
-                        <>
+                        <div className="group-body">
                           {group.items.map((item) => (
                             <InactiveItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
                           ))}
@@ -387,7 +413,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                                 ))}
                             </Fragment>
                           ))}
-                        </>
+                        </div>
                       )}
                   </Fragment>
                 ))}
