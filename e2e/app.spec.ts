@@ -3,14 +3,10 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const E2E_TOKEN = process.env.E2E_AGMUX_TOKEN ?? "e2e-token";
 
-async function readSessionToken(page: Page): Promise<string> {
-  const res = await page.request.get("/api/session");
-  const json = (await res.json()) as { token?: unknown };
-  if (typeof json.token !== "string" || json.token.length === 0) {
-    throw new Error("missing session token");
-  }
-  return json.token;
+async function readSessionToken(_page: Page): Promise<string> {
+  return E2E_TOKEN;
 }
 
 async function killPty(page: Page, token: string, ptyId: string): Promise<void> {
@@ -67,6 +63,9 @@ async function commandAvailable(command: string, args: string[]): Promise<boolea
 
 test.beforeEach(async ({ page }) => {
   const token = await readSessionToken(page);
+  await page.addInitScript((t: string) => {
+    sessionStorage.setItem("agmux:authToken", t);
+  }, token);
   await killAllRunningPtys(page, token);
 });
 
@@ -794,6 +793,31 @@ test("switching between multiple PTYs keeps each terminal's content distinct", a
     for (const p of ptys) {
       await killPty(page, token, p.id);
     }
+  }
+});
+
+test("OSC window title appears in sidebar secondary text", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.getByRole("button", { name: "New PTY" }).click();
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  if (!ptyId) throw new Error("missing PTY id");
+
+  try {
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+
+    // Send an OSC 0 (set window title) escape sequence.
+    const title = "__e2e_window_title__";
+    await page.keyboard.type(`printf '\\033]0;${title}\\007'`);
+    await page.keyboard.press("Enter");
+
+    // The title should appear in the sidebar item's secondary text (or title-label).
+    const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+    await expect(item).toContainText(title, { timeout: 10_000 });
+  } finally {
+    const token = await readSessionToken(page);
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
   }
 });
 

@@ -23,6 +23,7 @@ export type LaunchModalViewModel = {
   selectedWorktree: string;
   branchValue: string;
   branchPlaceholder: string;
+  baseBranchValue: string;
   launching: boolean;
 };
 
@@ -32,6 +33,7 @@ export type LaunchModalHandlers = {
   onOptionChange: (flag: string, value: string | boolean) => void;
   onWorktreeChange: (worktree: string) => void;
   onBranchChange: (branch: string) => void;
+  onBaseBranchChange: (baseBranch: string) => void;
   onLaunch: () => void;
 };
 
@@ -131,6 +133,17 @@ export function renderLaunchModal(
             value={model.branchValue}
             placeholder={model.branchPlaceholder}
             onInput={(ev) => handlers.onBranchChange((ev.currentTarget as HTMLInputElement).value)}
+          />
+        </label>
+
+        <label className={`launch-modal-label launch-modal-branch${showBranchInput ? "" : " hidden"}`}>
+          Base branch
+          <input
+            type="text"
+            className="launch-modal-input"
+            value={model.baseBranchValue}
+            placeholder="main"
+            onInput={(ev) => handlers.onBaseBranchChange((ev.currentTarget as HTMLInputElement).value)}
           />
         </label>
 

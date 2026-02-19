@@ -99,6 +99,7 @@ let pendingActivePtyId: string | null = null;
 let inputHistoryExpanded = false;
 
 const ACTIVE_PTY_KEY = "agmux:activePty";
+const AUTH_TOKEN_KEY = "agmux:authToken";
 
 function saveActivePty(ptyId: string | null): void {
   try {
@@ -504,16 +505,44 @@ function connectWs(): void {
   });
 }
 
-async function fetchSessionToken(): Promise<void> {
-  const res = await fetch("/api/session", { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error(`session request failed (${res.status})`);
+function setAuthToken(token: string): void {
+  authToken = token;
+  try {
+    sessionStorage.setItem(AUTH_TOKEN_KEY, token);
+  } catch {
+    // ignore storage failures
   }
-  const json = (await res.json()) as { token?: unknown };
-  if (typeof json.token !== "string" || json.token.length === 0) {
-    throw new Error("invalid session token response");
+}
+
+function clearTokenFromLocation(): void {
+  const url = new URL(location.href);
+  if (!url.searchParams.has("token")) return;
+  url.searchParams.delete("token");
+  const next = `${url.pathname}${url.search}${url.hash}`;
+  history.replaceState(null, "", next);
+}
+
+async function ensureAuthToken(): Promise<void> {
+  const qs = new URLSearchParams(location.search);
+  const tokenFromUrl = qs.get("token")?.trim() ?? "";
+  if (tokenFromUrl) {
+    setAuthToken(tokenFromUrl);
+    clearTokenFromLocation();
+    return;
   }
-  authToken = json.token;
+
+  const tokenFromSession = sessionStorage.getItem(AUTH_TOKEN_KEY)?.trim() ?? "";
+  if (tokenFromSession) {
+    authToken = tokenFromSession;
+    return;
+  }
+
+  const entered = window.prompt("Enter AGMUX token");
+  const token = entered?.trim() ?? "";
+  if (!token) {
+    throw new Error("AGMUX token is required");
+  }
+  setAuthToken(token);
 }
 
 function errorMessage(err: unknown): string {
@@ -846,6 +875,7 @@ type LaunchModalState = {
   selectedAgent: string;
   selectedWorktree: string;
   branchValue: string;
+  baseBranchValue: string;
   generatedBranch: string;
   launching: boolean;
   savedFlags: Record<string, Record<string, string | boolean>>;
@@ -862,6 +892,7 @@ const NOOP_LAUNCH_HANDLERS = {
   onOptionChange: () => {},
   onWorktreeChange: () => {},
   onBranchChange: () => {},
+  onBaseBranchChange: () => {},
   onLaunch: () => {},
 };
 
@@ -920,6 +951,7 @@ function renderLaunchModalState(): void {
       selectedWorktree: state.selectedWorktree,
       branchValue: state.branchValue,
       branchPlaceholder: state.generatedBranch,
+      baseBranchValue: state.baseBranchValue,
       launching: state.launching,
     }
     : null;
@@ -948,6 +980,11 @@ function renderLaunchModalState(): void {
       launchModalState.branchValue = branch;
       renderLaunchModalState();
     },
+    onBaseBranchChange: (baseBranch) => {
+      if (!launchModalState) return;
+      launchModalState.baseBranchValue = baseBranch;
+      renderLaunchModalState();
+    },
     onLaunch: () => {
       if (!launchModalState || launchModalState.launching) return;
       const stateNow = launchModalState;
@@ -958,6 +995,9 @@ function renderLaunchModalState(): void {
       const branch = stateNow.selectedWorktree === "__new__"
         ? (stateNow.branchValue.trim() || stateNow.generatedBranch)
         : undefined;
+      const baseBranch = stateNow.selectedWorktree === "__new__"
+        ? (stateNow.baseBranchValue.trim() || "main")
+        : undefined;
       const flags = stateNow.savedFlags[stateNow.selectedAgent] ?? {};
 
       void authFetch("/api/ptys/launch", {
@@ -967,6 +1007,7 @@ function renderLaunchModalState(): void {
           agent: stateNow.selectedAgent,
           worktree: stateNow.selectedWorktree,
           branch,
+          baseBranch,
           flags,
         }),
       })
@@ -996,6 +1037,7 @@ function openLaunchModal(groupCwd: string): void {
     selectedAgent: AGENT_CHOICES[0],
     selectedWorktree: "__new__",
     branchValue: "",
+    baseBranchValue: "main",
     generatedBranch: generateBranchName(),
     launching: false,
     savedFlags: {},
@@ -1021,8 +1063,8 @@ function openLaunchModal(groupCwd: string): void {
     })
     .catch(() => {});
 
-  void fetch("/api/worktrees")
-    .then((r) => r.json())
+  void authFetch("/api/worktrees")
+    .then(async (r) => (r.ok ? r.json() : Promise.reject(new Error(await readApiError(r)))))
     .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
       if (seq !== launchModalSeq || !launchModalState) return;
       launchModalState.worktreeOptions = buildWorktreeOptions(groupCwd, data.worktrees);
@@ -1410,7 +1452,7 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
   const changedAt = ptyStateChangedAt.get(p.id);
   const elapsed = changedAt ? formatElapsedTime(changedAt) : "";
-  const secondaryText = inputPreview ? `> ${inputPreview}` : title && title !== process ? title : p.name;
+  const secondaryText = title && title !== process ? title : inputPreview ? `> ${inputPreview}` : p.name;
 
   return {
     id: p.id,
@@ -1843,7 +1885,7 @@ document.addEventListener("keydown", (ev) => {
 
 void (async () => {
   try {
-    await fetchSessionToken();
+    await ensureAuthToken();
     await loadPtyInputMeta();
     connectWs();
     btnNew.disabled = false;

@@ -5,6 +5,7 @@ const requestedPort = Number(process.env.E2E_APP_PORT ?? String(DEFAULT_E2E_APP_
 const appPort = Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : DEFAULT_E2E_APP_PORT;
 const appUrl = `http://127.0.0.1:${appPort}`;
 const dbPath = process.env.E2E_DB_PATH ?? `/tmp/agmux-e2e-${appPort}.db`;
+const e2eToken = process.env.E2E_AGMUX_TOKEN ?? "e2e-token";
 
 export default defineConfig({
   testDir: "e2e",
@@ -21,7 +22,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `AGMUX_SHELL=bash AGMUX_SHELL_BACKEND=pty AGMUX_NO_OPEN=1 DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
+    command: `AGMUX_TOKEN=${e2eToken} AGMUX_SHELL=bash AGMUX_SHELL_BACKEND=pty AGMUX_NO_OPEN=1 DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
     url: appUrl,
     reuseExistingServer: false,
     timeout: 60_000,

@@ -83,6 +83,8 @@ const WS_ALLOWED_ORIGINS = new Set(
       .filter((v) => v.length > 0),
   ].map((v) => v.toLowerCase()),
 );
+const WORKTREE_ROOT = path.resolve(REPO_ROOT, ".worktrees");
+const DEFAULT_BASE_BRANCH = "main";
 
 const fastify = Fastify({ logger: true, disableRequestLogging: true });
 
@@ -156,14 +158,52 @@ function isTokenValid(headerToken: string | null, urlToken: string | null): bool
 }
 
 function requestNeedsToken(method: string, rawUrl: string | undefined): boolean {
-  const upper = method.toUpperCase();
-  if (upper === "GET" || upper === "HEAD" || upper === "OPTIONS") return false;
+  if (method.toUpperCase() === "OPTIONS") return false;
   return (rawUrl ?? "").startsWith("/api/");
 }
 
 function isWsOriginAllowed(origin: string | undefined): boolean {
   if (!origin || origin.length === 0) return true;
   return WS_ALLOWED_ORIGINS.has(origin.toLowerCase());
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const rel = path.relative(root, candidate);
+  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+}
+
+async function pathExistsAndIsDirectory(target: string): Promise<boolean> {
+  try {
+    const st = await fs.stat(target);
+    return st.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isBranchFormatLikelySafe(branch: string): boolean {
+  if (!/^[A-Za-z0-9._/-]{1,120}$/.test(branch)) return false;
+  if (branch.startsWith("/") || branch.startsWith("-")) return false;
+  if (branch.endsWith("/") || branch.endsWith(".")) return false;
+  if (branch.includes("..") || branch.includes("//") || branch.includes("@{")) return false;
+  if (branch.endsWith(".lock")) return false;
+  return true;
+}
+
+async function gitBranchNameValid(branch: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    execFile("git", ["check-ref-format", "--branch", branch], { cwd: REPO_ROOT }, (err) => {
+      resolve(!err);
+    });
+  });
+}
+
+async function gitRefExists(ref: string): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    execFile("git", ["rev-parse", "--verify", "--quiet", ref], { cwd: REPO_ROOT }, (err) => {
+      resolve(!err);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -430,11 +470,6 @@ fastify.addHook("onRequest", async (req, reply) => {
   return { error: "missing or invalid auth token" };
 });
 
-fastify.get("/api/session", async (_req, reply) => {
-  reply.header("Cache-Control", "no-store");
-  return { token: AUTH_TOKEN };
-});
-
 fastify.get("/api/ptys", async () => {
   return { ptys: await listPtys() };
 });
@@ -530,7 +565,7 @@ fastify.post("/api/ptys", async (req, reply) => {
 
 // Create an interactive login shell with zero UI configuration.
 fastify.get("/api/worktrees", async () => {
-  const wtDir = path.resolve(REPO_ROOT, ".worktrees");
+  const wtDir = WORKTREE_ROOT;
   let entries: string[];
   try {
     entries = await fs.readdir(wtDir);
@@ -558,8 +593,7 @@ fastify.get("/api/worktrees/status", async (req, reply) => {
     return { error: "path is required" };
   }
   const resolved = path.resolve(wtPath);
-  const wtPrefix = path.resolve(REPO_ROOT, ".worktrees") + path.sep;
-  if (!resolved.startsWith(wtPrefix)) {
+  if (!isPathInside(WORKTREE_ROOT, resolved)) {
     reply.code(400);
     return { error: "path must be under .worktrees/" };
   }
@@ -598,8 +632,7 @@ fastify.delete("/api/worktrees", async (req, reply) => {
     return { error: "path is required" };
   }
   const resolved = path.resolve(wtPath);
-  const wtPrefix = path.resolve(REPO_ROOT, ".worktrees") + path.sep;
-  if (!resolved.startsWith(wtPrefix)) {
+  if (!isPathInside(WORKTREE_ROOT, resolved)) {
     reply.code(400);
     return { error: "path must be under .worktrees/" };
   }
@@ -687,16 +720,57 @@ fastify.post("/api/ptys/launch", async (req, reply) => {
     const branch = typeof body.branch === "string" && body.branch.trim()
       ? body.branch.trim()
       : `wt-${Date.now()}`;
-    const wtPath = path.resolve(REPO_ROOT, ".worktrees", branch);
-    await new Promise<void>((resolve, reject) => {
-      execFile("git", ["worktree", "add", wtPath, "-b", branch], { cwd: REPO_ROOT }, (err) => {
-        if (err) reject(err);
-        else resolve();
+    const baseBranch = typeof body.baseBranch === "string" && body.baseBranch.trim().length > 0
+      ? body.baseBranch.trim()
+      : DEFAULT_BASE_BRANCH;
+    if (!isBranchFormatLikelySafe(branch) || !(await gitBranchNameValid(branch))) {
+      reply.code(400);
+      return { error: "invalid branch name" };
+    }
+    if (!isBranchFormatLikelySafe(baseBranch)) {
+      reply.code(400);
+      return { error: "invalid base branch" };
+    }
+    if (!(await gitRefExists(`${baseBranch}^{commit}`))) {
+      reply.code(400);
+      return { error: `base branch not found: ${baseBranch}` };
+    }
+
+    const wtLeaf = branch.replace(/[\\/]+/g, "-");
+    const wtPath = path.resolve(WORKTREE_ROOT, wtLeaf);
+    if (!isPathInside(WORKTREE_ROOT, wtPath)) {
+      reply.code(400);
+      return { error: "resolved worktree path escapes .worktrees/" };
+    }
+
+    const branchExists = await gitRefExists(`refs/heads/${branch}`);
+    if (branchExists) {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "add", wtPath, branch], { cwd: REPO_ROOT }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
       });
-    });
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "add", "-b", branch, wtPath, baseBranch], { cwd: REPO_ROOT }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
     cwd = wtPath;
   } else {
-    cwd = worktree;
+    const resolved = path.resolve(worktree);
+    if (!isPathInside(REPO_ROOT, resolved)) {
+      reply.code(400);
+      return { error: "worktree path must be under repository root" };
+    }
+    if (!(await pathExistsAndIsDirectory(resolved))) {
+      reply.code(400);
+      return { error: "worktree path does not exist or is not a directory" };
+    }
+    cwd = resolved;
   }
 
   // Create shell using tmux (reuse /api/ptys/shell logic)
