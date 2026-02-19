@@ -17,7 +17,6 @@ import type {
 import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
-import { DEFAULT_INACTIVE_MAX_AGE_HOURS, mergePtyLists } from "./sessionList.js";
 import { LogSessionDiscovery } from "./logSessions.js";
 import {
   tmuxApplySessionUiOptions,
@@ -63,9 +62,6 @@ const AUTH_TOKEN = process.env.AGMUX_TOKEN ?? randomBytes(32).toString("hex");
 const ALLOW_NON_LOOPBACK_BIND = process.env.AGMUX_ALLOW_NON_LOOPBACK === "1";
 const READINESS_TRACE_MAX = Math.max(100, Number(process.env.AGMUX_READINESS_TRACE_MAX ?? "2000") || 2000);
 const READINESS_TRACE_LOG = process.env.AGMUX_READINESS_TRACE_LOG === "1";
-const INACTIVE_MAX_AGE_HOURS = Number(
-  process.env.AGMUX_INACTIVE_MAX_AGE_HOURS ?? String(DEFAULT_INACTIVE_MAX_AGE_HOURS),
-);
 const LOG_SESSION_DISCOVERY_ENABLED = process.env.AGMUX_LOG_SESSION_DISCOVERY !== "0";
 const LOG_SESSION_SCAN_MAX = Math.max(1, Number(process.env.AGMUX_LOG_SESSION_SCAN_MAX ?? "500") || 500);
 const LOG_SESSION_CACHE_MS = Math.max(
@@ -216,6 +212,80 @@ let reconciling = false;
 /** Track linked tmux sessions per PTY so we can clean them up on exit. */
 const linkedSessionsByPty = new Map<string, { name: string; server: TmuxServer }>();
 
+type AgentProvider = "claude" | "codex" | "pi";
+type AgentSessionSummary = {
+  id: string;
+  provider: AgentProvider;
+  providerSessionId: string;
+  name: string;
+  command: string;
+  args: string[];
+  cwd: string | null;
+  cwdSource: "log";
+  projectRoot: string | null;
+  worktree: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+};
+
+function worktreeFromCwd(cwd: string | null): string | null {
+  if (!cwd) return null;
+  const m = cwd.match(/\/\.worktrees\/([^/]+)/);
+  return m ? m[1] : null;
+}
+
+function projectRootFromCwd(cwd: string | null): string | null {
+  if (!cwd) return null;
+  const idx = cwd.indexOf("/.worktrees/");
+  if (idx !== -1) return cwd.slice(0, idx);
+  return cwd;
+}
+
+function parseProviderFromId(id: string, fallback: string): AgentProvider | null {
+  const m = /^log:(claude|codex|pi):/.exec(id);
+  if (m) return m[1] as AgentProvider;
+  if (fallback === "claude" || fallback === "codex" || fallback === "pi") return fallback;
+  return null;
+}
+
+function parseProviderSessionId(summary: PtySummary): string | null {
+  const parsed = summary.id.match(/^log:(?:claude|codex|pi):(.+)$/);
+  if (parsed && parsed[1]?.trim()) return parsed[1].trim();
+  const lastArg = summary.args.length > 0 ? summary.args[summary.args.length - 1] : "";
+  const normalized = typeof lastArg === "string" ? lastArg.trim() : "";
+  return normalized.length > 0 ? normalized : null;
+}
+
+function toAgentSessionSummary(summary: PtySummary): AgentSessionSummary | null {
+  const provider = parseProviderFromId(summary.id, summary.command);
+  if (!provider) return null;
+  const providerSessionId = parseProviderSessionId(summary);
+  if (!providerSessionId) return null;
+  const cwd = summary.cwd ?? null;
+  return {
+    id: summary.id,
+    provider,
+    providerSessionId,
+    name: summary.name,
+    command: summary.command,
+    args: summary.args,
+    cwd,
+    cwdSource: "log",
+    projectRoot: projectRootFromCwd(cwd),
+    worktree: worktreeFromCwd(cwd),
+    createdAt: summary.createdAt,
+    lastSeenAt: summary.lastSeenAt ?? summary.createdAt,
+  };
+}
+
+function listAgentSessions(): AgentSessionSummary[] {
+  return logSessionDiscovery
+    .list()
+    .map(toAgentSessionSummary)
+    .filter((x): x is AgentSessionSummary => x != null)
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+}
+
 async function reconcileTmuxAttachments(): Promise<void> {
   if (reconciling) return;
   reconciling = true;
@@ -310,18 +380,18 @@ const readinessEngine = new ReadinessEngine({
 });
 
 async function listPtys(): Promise<PtySummary[]> {
-  const live = await readinessEngine.withActiveProcesses(ptys.list());
-  const discovered = logSessionDiscovery.list();
-  return mergePtyLists(live, discovered, {
-    inactiveMaxAgeHours: INACTIVE_MAX_AGE_HOURS,
-  });
+  return readinessEngine.withActiveProcesses(ptys.list());
 }
 
 function findKnownSessionSummary(id: string): PtySummary | null {
   const live = ptys.getSummary(id);
   if (live) return live;
-  const discovered = logSessionDiscovery.list().find((s) => s.id === id);
-  return discovered ?? null;
+  return null;
+}
+
+function findAgentSessionSummary(id: string): AgentSessionSummary | null {
+  const found = listAgentSessions().find((s) => s.id === id);
+  return found ?? null;
 }
 
 async function resumeSession(summary: PtySummary): Promise<PtySummary | null> {
@@ -472,6 +542,48 @@ fastify.addHook("onRequest", async (req, reply) => {
 
 fastify.get("/api/ptys", async () => {
   return { ptys: await listPtys() };
+});
+
+fastify.get("/api/agent-sessions", async () => {
+  return { sessions: listAgentSessions() };
+});
+
+fastify.post("/api/agent-sessions/:id/restore", async (req, reply) => {
+  const id = (req.params as any).id as string;
+  const session = findAgentSessionSummary(id);
+  if (!session) {
+    reply.code(404);
+    return { error: "unknown agent session" };
+  }
+
+  const body = isRecord(req.body) ? req.body : {};
+  if (body.cwd != null && typeof body.cwd !== "string") {
+    reply.code(400);
+    return { error: "cwd must be a string" };
+  }
+  const cwd = typeof body.cwd === "string" && body.cwd.trim().length > 0 ? body.cwd.trim() : session.cwd ?? undefined;
+
+  try {
+    const summary = ptys.spawn({
+      name: session.name,
+      command: session.command,
+      args: session.args,
+      cwd,
+      cols: 120,
+      rows: 30,
+    });
+    store.upsertSession(summary);
+    fastify.log.info(
+      { ptyId: summary.id, provider: session.provider, providerSessionId: session.providerSessionId, cwd: cwd ?? null },
+      "agent session restored",
+    );
+    await broadcastPtyList();
+    return { id: summary.id };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    reply.code(500);
+    return { error: message };
+  }
 });
 
 fastify.get("/api/readiness/trace", async (req) => {

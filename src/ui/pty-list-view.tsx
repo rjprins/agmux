@@ -30,6 +30,14 @@ export type InactivePtyItem = {
   exitLabel: string;
 };
 
+export type InactiveGroup = {
+  key: string;
+  label: string;
+  title?: string;
+  collapsed: boolean;
+  items: InactivePtyItem[];
+};
+
 export type WorktreeSubgroup = {
   name: string;
   path: string;
@@ -47,10 +55,10 @@ export type PtyGroup = {
 };
 
 export type InactiveSection = {
+  label: string;
   expanded: boolean;
   total: number;
-  shown: InactivePtyItem[];
-  remaining: number;
+  groups: InactiveGroup[];
 };
 
 export type PtyListModel = {
@@ -67,7 +75,7 @@ export type PtyListHandlers = {
   onKillPty: (ptyId: string) => void;
   onResumeInactive: (ptyId: string) => void;
   onToggleInactive: () => void;
-  onShowMoreInactive: () => void;
+  onToggleInactiveGroup: (groupKey: string) => void;
 };
 
 function ptyStyle(color: string): Record<string, string> {
@@ -203,48 +211,55 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
             onClick={() => handlers.onToggleInactive()}
           >
             <span className="group-chevron">{model.inactive.expanded ? "\u25bc" : "\u25b6"}</span>
-            <span>Inactive sessions</span>
+            <span>{model.inactive.label}</span>
             <span className="group-count">{model.inactive.total}</span>
           </li>
 
           {model.inactive.expanded
             ? (
               <>
-                {model.inactive.shown.map((item) => (
-                  <li
-                    key={item.id}
-                    className="pty-item inactive"
-                    data-pty-id={item.id}
-                    style={ptyStyle(item.color)}
-                    title="Resume session"
-                    onClick={() => handlers.onResumeInactive(item.id)}
-                  >
-                    <div className="row">
-                      <div className="mainline">
-                        <div className="primary-row">
-                          <span className="inactive-dot" title={`Inactive (${item.exitLabel})`} />
-                          <div className="primary">{item.process}</div>
-                          {item.elapsed ? <span className="time-badge inactive" title={`Inactive for ${item.elapsed}`}>{item.elapsed}</span> : null}
-                        </div>
-                        <div className="secondary">
-                          {item.worktree
-                            ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
-                            : null}
-                          <span title={item.secondaryTitle}>{item.secondaryText}</span>
-                        </div>
-                      </div>
-                    </div>
-                    <span className="inactive-dot compact" title={`Inactive: ${item.process}`} />
-                  </li>
+                {model.inactive.groups.map((group) => (
+                  <Fragment key={`inactive-group:${group.key}`}>
+                    <li
+                      className={`worktree-subheader${group.collapsed ? " collapsed" : ""}`}
+                      title={group.title}
+                      onClick={() => handlers.onToggleInactiveGroup(group.key)}
+                    >
+                      <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
+                      <span>{group.label}</span>
+                      <span className="group-count">{group.items.length}</span>
+                    </li>
+                    {group.collapsed
+                      ? null
+                      : group.items.map((item) => (
+                        <li
+                          key={item.id}
+                          className="pty-item inactive"
+                          data-pty-id={item.id}
+                          style={ptyStyle(item.color)}
+                          title="Restore session"
+                          onClick={() => handlers.onResumeInactive(item.id)}
+                        >
+                          <div className="row">
+                            <div className="mainline">
+                              <div className="primary-row">
+                                <span className="inactive-dot" title={`Restorable (${item.exitLabel})`} />
+                                <div className="primary">{item.process}</div>
+                                {item.elapsed ? <span className="time-badge inactive" title={`Inactive for ${item.elapsed}`}>{item.elapsed}</span> : null}
+                              </div>
+                              <div className="secondary">
+                                {item.worktree
+                                  ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
+                                  : null}
+                                <span title={item.secondaryTitle}>{item.secondaryText}</span>
+                              </div>
+                            </div>
+                          </div>
+                          <span className="inactive-dot compact" title={`Restorable: ${item.process}`} />
+                        </li>
+                      ))}
+                  </Fragment>
                 ))}
-
-                {model.inactive.remaining > 0 ? (
-                  <li>
-                    <button type="button" className="inactive-show-more" onClick={() => handlers.onShowMoreInactive()}>
-                      Show more ({model.inactive.remaining} remaining)
-                    </button>
-                  </li>
-                ) : null}
               </>
             )
             : null}

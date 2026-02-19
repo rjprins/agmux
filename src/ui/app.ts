@@ -45,6 +45,21 @@ type PtySummary = {
   exitSignal?: string | null;
 };
 
+type AgentSessionSummary = {
+  id: string;
+  provider: "claude" | "codex" | "pi";
+  providerSessionId: string;
+  name: string;
+  command: string;
+  args: string[];
+  cwd: string | null;
+  cwdSource: "log";
+  projectRoot: string | null;
+  worktree: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+};
+
 type TmuxSessionInfo = {
   name: string;
   server: "agmux" | "default";
@@ -94,6 +109,7 @@ const inputHistoryLabelEl = $("input-history-label");
 const inputHistoryListEl = $("input-history-list");
 
 let ptys: PtySummary[] = [];
+let agentSessions: AgentSessionSummary[] = [];
 let activePtyId: string | null = null;
 let pendingActivePtyId: string | null = null;
 let inputHistoryExpanded = false;
@@ -771,15 +787,32 @@ function addEvent(text: string): void {
 
 async function refreshList(): Promise<void> {
   try {
-    const res = await authFetch("/api/ptys", { cache: "no-store" });
-    if (!res.ok) {
-      throw new Error(await readApiError(res));
+    const [ptysRes, sessionsRes] = await Promise.all([
+      authFetch("/api/ptys", { cache: "no-store" }),
+      authFetch("/api/agent-sessions", { cache: "no-store" }),
+    ]);
+
+    if (!ptysRes.ok) {
+      throw new Error(await readApiError(ptysRes));
     }
-    const json = (await res.json()) as { ptys?: unknown };
-    if (!Array.isArray(json.ptys)) {
+    const ptysJson = (await ptysRes.json()) as { ptys?: unknown };
+    if (!Array.isArray(ptysJson.ptys)) {
       throw new Error("invalid PTY list response");
     }
-    ptys = json.ptys as PtySummary[];
+    ptys = ptysJson.ptys as PtySummary[];
+
+    if (sessionsRes.ok) {
+      const sessionsJson = (await sessionsRes.json()) as { sessions?: unknown };
+      if (Array.isArray(sessionsJson.sessions)) {
+        agentSessions = sessionsJson.sessions as AgentSessionSummary[];
+      } else {
+        agentSessions = [];
+      }
+    } else {
+      agentSessions = [];
+      addEvent(`Failed to refresh agent sessions: ${await readApiError(sessionsRes)}`);
+    }
+
     updateTerminalVisibility();
     renderList();
   } catch (err) {
@@ -1409,14 +1442,16 @@ function killPty(ptyId: string): void {
   openCloseWorktreeModal(ptyId);
 }
 
-async function resumePty(ptyId: string): Promise<void> {
-  const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/resume`, { method: "POST" });
+async function restoreAgentSession(agentSessionId: string): Promise<void> {
+  const res = await authFetch(`/api/agent-sessions/${encodeURIComponent(agentSessionId)}/restore`, {
+    method: "POST",
+  });
   if (!res.ok) {
-    addEvent(`Failed to resume session ${ptyId}: ${await readApiError(res)}`);
+    addEvent(`Failed to restore agent session ${agentSessionId}: ${await readApiError(res)}`);
     return;
   }
-  const json = (await res.json()) as { id: string; reused?: boolean };
-  addEvent(json.reused ? `Session ${json.id} already running` : `Resumed session ${json.id}`);
+  const json = (await res.json()) as { id: string };
+  addEvent(`Restored agent session ${agentSessionId}`);
   await refreshList();
   setActive(json.id);
 }
@@ -1435,13 +1470,8 @@ function worktreeName(cwd: string | null): string | null {
 
 const collapsedGroups = new Set<string>();
 const collapsedWorktrees = new Set<string>(); // "groupKey::worktreeName"
-const INACTIVE_PAGE_SIZE = 20;
 let inactiveSessionsExpanded = false;
-let inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
-
-function sessionSortTs(p: PtySummary): number {
-  return p.lastSeenAt ?? p.createdAt;
-}
+const collapsedAgentSessionGroups = new Set<string>();
 
 function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const title = (ptyTitles.get(p.id) ?? "").trim();
@@ -1470,30 +1500,23 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   };
 }
 
-function buildInactivePtyItem(p: PtySummary): InactivePtyItem {
-  const processHint = compactWhitespace(ptyInputProcessHints.get(p.id) ?? "");
-  const title = compactWhitespace(ptyTitles.get(p.id) ?? "");
-  const process = processHint || title || p.name;
-  const inputPreview = ptyLastInput.get(p.id) ?? "";
-  const changedAt = sessionSortTs(p);
-  const elapsed = formatElapsedTime(changedAt);
-  const exitLabel = p.exitSignal
-    ? `signal ${p.exitSignal}`
-    : p.exitCode != null
-      ? `exit ${p.exitCode}`
-      : "ended";
-  const secondaryText = inputPreview || exitLabel;
+function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePtyItem {
+  const name = compactWhitespace(session.name);
+  const process = name || session.provider;
+  const secondaryText = session.providerSessionId;
+  const secondaryTitle = session.cwd ? `${session.providerSessionId} — ${session.cwd}` : session.providerSessionId;
+  const elapsed = formatElapsedTime(session.lastSeenAt);
 
   return {
-    id: p.id,
-    color: ptyColor(p.id),
+    id: session.id,
+    color: ptyColor(session.id),
     process,
     secondaryText,
-    secondaryTitle: secondaryText,
-    worktree: worktreeName(p.cwd),
-    cwd: p.cwd ?? undefined,
+    secondaryTitle,
+    worktree: session.worktree ?? worktreeName(session.cwd),
+    cwd: session.cwd ?? undefined,
     elapsed: elapsed || undefined,
-    exitLabel,
+    exitLabel: `${session.provider} session`,
   };
 }
 
@@ -1559,21 +1582,40 @@ function renderList(): void {
     };
   });
 
-  const inactivePtys = ptys
-    .filter((p) => p.status !== "running")
-    .sort((a, b) => sessionSortTs(b) - sessionSortTs(a));
-  const inactiveItems = inactivePtys.map(buildInactivePtyItem);
-  const shownInactive = inactiveSessionsExpanded ? inactiveItems.slice(0, inactiveSessionsLimit) : [];
+  const sortedAgentSessions = [...agentSessions].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  const inactiveByProject = new Map<string, InactivePtyItem[]>();
+  for (const session of sortedAgentSessions) {
+    const key = session.projectRoot ?? "";
+    const item = buildInactiveAgentSessionItem(session);
+    const items = inactiveByProject.get(key) ?? [];
+    items.push(item);
+    inactiveByProject.set(key, items);
+  }
+  const inactiveGroupKeys = [...inactiveByProject.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    const ba = a.split("/").filter(Boolean).at(-1) ?? a;
+    const bb = b.split("/").filter(Boolean).at(-1) ?? b;
+    return ba.localeCompare(bb);
+  });
+  const inactiveGroups = inactiveGroupKeys.map((key) => ({
+    key,
+    label: key ? key.split("/").filter(Boolean).at(-1) ?? key : "(unknown project)",
+    title: key || undefined,
+    collapsed: collapsedAgentSessionGroups.has(key),
+    items: inactiveByProject.get(key) ?? [],
+  }));
+  const inactiveTotal = inactiveGroups.reduce((acc, group) => acc + group.items.length, 0);
 
   const model: PtyListModel = {
     groups,
     showHeaders: sortedKeys.length >= 1,
-    inactive: inactiveItems.length > 0
+    inactive: inactiveTotal > 0
       ? {
+        label: "Recent agent sessions",
         expanded: inactiveSessionsExpanded,
-        total: inactiveItems.length,
-        shown: shownInactive,
-        remaining: Math.max(0, inactiveItems.length - shownInactive.length),
+        total: inactiveTotal,
+        groups: inactiveGroups,
       }
       : null,
   };
@@ -1596,17 +1638,15 @@ function renderList(): void {
       killPty(ptyId);
     },
     onResumeInactive: (ptyId) => {
-      void resumePty(ptyId);
+      void restoreAgentSession(ptyId);
     },
     onToggleInactive: () => {
       inactiveSessionsExpanded = !inactiveSessionsExpanded;
-      if (!inactiveSessionsExpanded) {
-        inactiveSessionsLimit = INACTIVE_PAGE_SIZE;
-      }
       renderList();
     },
-    onShowMoreInactive: () => {
-      inactiveSessionsLimit += INACTIVE_PAGE_SIZE;
+    onToggleInactiveGroup: (groupKey) => {
+      if (collapsedAgentSessionGroups.has(groupKey)) collapsedAgentSessionGroups.delete(groupKey);
+      else collapsedAgentSessionGroups.add(groupKey);
       renderList();
     },
   });
