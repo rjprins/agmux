@@ -1090,6 +1090,7 @@ button:disabled {
   flex-shrink: 0;
 }
 .pty-group-header:hover .group-pin,
+.worktree-subheader:hover .group-pin,
 .group-pin.pinned {
   opacity: 0.5;
 }

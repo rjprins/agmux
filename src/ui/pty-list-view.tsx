@@ -327,6 +327,28 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     >
                       <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{group.label}</span>
+                      <button
+                        type="button"
+                        className="group-pin"
+                        title="Pin directory"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onTogglePin(group.key);
+                        }}
+                      >
+                        {"\u{1F4CC}"}
+                      </button>
+                      <button
+                        type="button"
+                        className="group-launch inactive-group-launch"
+                        title="Launch agent"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onOpenLaunch(group.key);
+                        }}
+                      >
+                        +
+                      </button>
                       <span className="group-count">{group.total}</span>
                     </li>
                     {group.collapsed
