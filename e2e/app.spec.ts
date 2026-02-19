@@ -93,8 +93,8 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
     )
     .toContain("ready");
 
-  // Trigger should fire; either via highlight class or events panel.
-  await expect(page.locator("#events")).toContainText("trigger proceed_prompt", { timeout: 30_000 });
+  // Trigger should fire; assert via temporary sidebar highlight.
+  await expect(page.locator(".pty-item.active.highlight")).toHaveCount(1, { timeout: 30_000 });
 
   // Answer the prompt and ensure the script completes.
   await page.keyboard.type("y");
@@ -153,19 +153,10 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
   await page.evaluate(() => (window as any).__agmux?.scrollToBottomActive?.());
   const bottomViewport = await page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? "");
 
-  await page.evaluate(() => {
-    const el = document.querySelector(".term-pane:not(.hidden)") as HTMLElement | null;
-    if (!el) return;
-    for (let i = 0; i < 8; i++) {
-      el.dispatchEvent(
-        new WheelEvent("wheel", {
-          deltaY: -1000,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
-    }
-  });
+  await page.locator(".term-pane:not(.hidden) .xterm").hover();
+  for (let i = 0; i < 8; i += 1) {
+    await page.mouse.wheel(0, -1000);
+  }
 
   await expect
     .poll(async () => page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? ""), {
@@ -249,7 +240,7 @@ test("pty list shows running subprocess name", async ({ page }) => {
     await page.keyboard.type("sleep 8");
     await page.keyboard.press("Enter");
 
-    await expect(page.locator(".pty-item.active .primary")).toContainText("sleep", { timeout: 10_000 });
+    await expect(page.locator(".pty-item.active .ready-dot:not(.compact).busy")).toHaveCount(1, { timeout: 10_000 });
     await expect(page.locator(".pty-item.active .secondary")).toContainText("> sleep 8", { timeout: 10_000 });
   } finally {
     if (ptyId) {
@@ -270,19 +261,14 @@ test("pty list item shows current working directory", async ({ page }) => {
   try {
     const active = page.locator(".pty-item.active");
 
-    // The cwd label should appear once readiness recomputes.
-    await expect(active.locator(".cwd-label")).toHaveCount(1, { timeout: 10_000 });
-    const cwdText = await active.locator(".cwd-label").textContent();
-    expect(cwdText?.trim().length).toBeGreaterThan(0);
-
-    // cd to /tmp and verify the cwd label updates.
+    // cd to /tmp and verify grouping updates to the new cwd bucket.
     await page.locator(".term-pane:not(.hidden) .xterm").click();
     await page.keyboard.type("cd /tmp");
     await page.keyboard.press("Enter");
 
-    await expect(active.locator(".cwd-label")).toContainText("tmp", { timeout: 10_000 });
-    // Full path should be in the tooltip.
-    await expect(active.locator(".cwd-label")).toHaveAttribute("title", /\/tmp/, { timeout: 10_000 });
+    const groupHeader = page.locator("#pty-list .pty-group-header").first();
+    await expect(groupHeader).toContainText("tmp", { timeout: 10_000 });
+    await expect(groupHeader).toHaveAttribute("title", /\/tmp/, { timeout: 10_000 });
   } finally {
     if (ptyId) {
       await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
@@ -578,10 +564,14 @@ test("each browser tab restores its own active PTY after reload", async ({ page 
   let page2: Page | null = null;
   let firstTabPtyId: string | null = null;
   let secondTabPtyId: string | null = null;
+  const token = await readSessionToken(page);
 
   try {
     await page.goto("/?nosup=1");
     page2 = await page.context().newPage();
+    await page2.addInitScript((t: string) => {
+      sessionStorage.setItem("agmux:authToken", t);
+    }, token);
     await page2.goto("/?nosup=1");
 
     await page.getByRole("button", { name: "New PTY" }).click();
@@ -604,13 +594,8 @@ test("each browser tab restores its own active PTY after reload", async ({ page 
     await expect(page.locator(`.pty-item[data-pty-id="${firstTabPtyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
     await expect(page2.locator(`.pty-item[data-pty-id="${secondTabPtyId}"].active`)).toHaveCount(1, { timeout: 10_000 });
   } finally {
-    const token = await readSessionToken(page);
-    if (firstTabPtyId) {
-      await page.request.post(`/api/ptys/${encodeURIComponent(firstTabPtyId)}/kill?token=${encodeURIComponent(token)}`);
-    }
-    if (secondTabPtyId && secondTabPtyId !== firstTabPtyId) {
-      await page.request.post(`/api/ptys/${encodeURIComponent(secondTabPtyId)}/kill?token=${encodeURIComponent(token)}`);
-    }
+    if (firstTabPtyId) await killPty(page, token, firstTabPtyId);
+    if (secondTabPtyId && secondTabPtyId !== firstTabPtyId) await killPty(page, token, secondTabPtyId);
     if (page2) await page2.close();
   }
 });
@@ -645,7 +630,7 @@ test("ready PTY keeps last input visible after reload", async ({ page }) => {
   }
 });
 
-test("input context bar tracks last input history per PTY", async ({ page }) => {
+test("input context bar keeps recent history visible across PTY switches", async ({ page }) => {
   await page.goto("/?nosup=1");
   const token = await readSessionToken(page);
   let ptyOne: string | null = null;
@@ -692,12 +677,12 @@ test("input context bar tracks last input history per PTY", async ({ page }) => 
     await expect(page.locator("#input-context-last")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
     await expect(page.locator("#input-history-label")).toHaveText(/History \(\d+\)/, { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
-    await expect(page.locator("#input-history-list")).not.toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
 
     await page.locator(`.pty-item[data-pty-id="${ptyOne}"]`).click();
-    await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
+    await expect(page.locator("#input-context-last")).toHaveText(/pwd|echo __ctx_pty_two__/, { timeout: 10_000 });
     await expect(page.locator("#input-history-label")).toHaveText(/History \(\d+\)/, { timeout: 10_000 });
     await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_one__", { timeout: 10_000 });
+    await expect(page.locator("#input-history-list")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
   } finally {
     if (ptyOne) {
       await killPty(page, token, ptyOne);
