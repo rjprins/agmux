@@ -6,6 +6,8 @@ import {
   LogSessionDiscovery,
   discoverInactiveLogSessions,
   extractFirstUserPrompt,
+  findLogFileForSession,
+  readConversationMessages,
 } from "../src/logSessions.js";
 
 async function writeJsonl(filePath: string, lines: unknown[]): Promise<void> {
@@ -296,5 +298,147 @@ describe("extractFirstUserPrompt", () => {
     } finally {
       await fs.rm(tmpRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe("findLogFileForSession", () => {
+  let tmpRoot: string | null = null;
+
+  afterEach(async () => {
+    if (tmpRoot) {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      tmpRoot = null;
+    }
+  });
+
+  test("finds a claude session log file by provider session id", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-find-"));
+    const claudeDir = path.join(tmpRoot, "claude");
+    const logFile = path.join(claudeDir, "projects", "a", "session.jsonl");
+    await writeJsonl(logFile, [
+      { sessionId: "find-me-123", cwd: "/tmp/project" },
+      { type: "user", message: { role: "user", content: "Hello world" } },
+    ]);
+
+    const result = findLogFileForSession("claude", "find-me-123", {
+      claudeConfigDir: claudeDir,
+      codexHomeDir: path.join(tmpRoot, "codex"),
+      piHomeDir: path.join(tmpRoot, "pi"),
+    });
+
+    expect(result).toBe(logFile);
+  });
+
+  test("returns null when session id not found", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-find-"));
+    const claudeDir = path.join(tmpRoot, "claude");
+    await writeJsonl(path.join(claudeDir, "projects", "a", "other.jsonl"), [
+      { sessionId: "other-id", cwd: "/tmp/project" },
+    ]);
+
+    const result = findLogFileForSession("claude", "nonexistent-id", {
+      claudeConfigDir: claudeDir,
+      codexHomeDir: path.join(tmpRoot, "codex"),
+      piHomeDir: path.join(tmpRoot, "pi"),
+    });
+
+    expect(result).toBeNull();
+  });
+});
+
+describe("readConversationMessages", () => {
+  let tmpRoot: string | null = null;
+
+  afterEach(async () => {
+    if (tmpRoot) {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      tmpRoot = null;
+    }
+  });
+
+  test("extracts user and assistant messages from claude format", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-conv-"));
+    const logFile = path.join(tmpRoot, "session.jsonl");
+    await writeJsonl(logFile, [
+      { type: "progress", sessionId: "s1", cwd: "/tmp" },
+      { type: "user", message: { role: "user", content: "Fix the bug in auth.js" } },
+      { type: "assistant", message: { role: "assistant", content: "I'll look at auth.js and fix the bug." } },
+      { type: "user", message: { role: "user", content: "Great, now add tests" } },
+      { type: "assistant", message: { role: "assistant", content: "Adding tests for auth.js now." } },
+    ]);
+
+    const messages = readConversationMessages(logFile);
+    expect(messages).toHaveLength(4);
+    expect(messages[0]).toEqual({ role: "user", text: "Fix the bug in auth.js" });
+    expect(messages[1]).toEqual({ role: "assistant", text: "I'll look at auth.js and fix the bug." });
+    expect(messages[2]).toEqual({ role: "user", text: "Great, now add tests" });
+    expect(messages[3]).toEqual({ role: "assistant", text: "Adding tests for auth.js now." });
+  });
+
+  test("extracts messages from codex format", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-conv-"));
+    const logFile = path.join(tmpRoot, "codex-session.jsonl");
+    await writeJsonl(logFile, [
+      { type: "session_meta", payload: { id: "c1", source: "cli" } },
+      { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: "Add dark mode" }] } },
+      { type: "response_item", payload: { role: "assistant", content: [{ type: "text", text: "I'll implement dark mode." }] } },
+    ]);
+
+    const messages = readConversationMessages(logFile);
+    expect(messages).toHaveLength(2);
+    expect(messages[0]).toEqual({ role: "user", text: "Add dark mode" });
+    expect(messages[1]).toEqual({ role: "assistant", text: "I'll implement dark mode." });
+  });
+
+  test("skips non-message entries", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-conv-"));
+    const logFile = path.join(tmpRoot, "session.jsonl");
+    await writeJsonl(logFile, [
+      { type: "file-history-snapshot", snapshot: {} },
+      { type: "summary", summary: "Some summary" },
+      { type: "progress", sessionId: "s1" },
+      { type: "user", message: { role: "user", content: "Hello world example" } },
+      { type: "tool_use", name: "bash", input: { command: "ls" } },
+      { type: "tool_result", output: "file1\nfile2" },
+      { type: "assistant", message: { role: "assistant", content: "Done!" } },
+    ]);
+
+    const messages = readConversationMessages(logFile);
+    expect(messages).toHaveLength(2);
+    expect(messages[0].role).toBe("user");
+    expect(messages[1].role).toBe("assistant");
+  });
+
+  test("truncates long messages", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-conv-"));
+    const logFile = path.join(tmpRoot, "session.jsonl");
+    const longText = "a".repeat(3000);
+    await writeJsonl(logFile, [
+      { type: "user", message: { role: "user", content: longText } },
+    ]);
+
+    const messages = readConversationMessages(logFile);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text.length).toBe(2003); // 2000 + "..."
+    expect(messages[0].text.endsWith("...")).toBe(true);
+  });
+
+  test("skips user messages matching skip patterns", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-conv-"));
+    const logFile = path.join(tmpRoot, "session.jsonl");
+    await writeJsonl(logFile, [
+      { type: "user", message: { role: "user", content: "# AGENTS.md instructions for this project" } },
+      { type: "user", message: { role: "user", content: "<environment_context>\n<cwd>/tmp</cwd>\n</environment_context>" } },
+      { type: "user", message: { role: "user", content: "Fix the actual bug in auth.js" } },
+    ]);
+
+    const messages = readConversationMessages(logFile);
+    expect(messages).toHaveLength(1);
+    expect(messages[0].text).toBe("Fix the actual bug in auth.js");
+  });
+
+  test("returns empty array for nonexistent file", () => {
+    const messages = readConversationMessages("/tmp/nonexistent-file.jsonl");
+    expect(messages).toEqual([]);
   });
 });

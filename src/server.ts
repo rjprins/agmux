@@ -17,7 +17,7 @@ import type {
 import { WsHub } from "./ws/hub.js";
 import { TriggerEngine } from "./triggers/engine.js";
 import { TriggerLoader } from "./triggers/loader.js";
-import { LogSessionDiscovery } from "./logSessions.js";
+import { LogSessionDiscovery, findLogFileForSession, readConversationMessages } from "./logSessions.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxCreateLinkedSession,
@@ -833,6 +833,25 @@ fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, rep
     reply.code(500);
     return { error: message };
   }
+});
+
+fastify.get("/api/agent-sessions/:provider/:sessionId/conversation", async (req, reply) => {
+  const params = req.params as Record<string, unknown>;
+  const provider = normalizeAgentProvider(typeof params.provider === "string" ? params.provider : "");
+  const providerSessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
+  if (!provider || !providerSessionId) {
+    reply.code(400);
+    return { error: "provider and sessionId are required" };
+  }
+
+  const logPath = findLogFileForSession(provider, providerSessionId);
+  if (!logPath) {
+    reply.code(404);
+    return { error: "log file not found for session" };
+  }
+
+  const messages = readConversationMessages(logPath);
+  return { messages };
 });
 
 fastify.get("/api/readiness/trace", async (req) => {

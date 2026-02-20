@@ -1,5 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -973,4 +976,245 @@ test("launching in new worktree creates sibling directory", async ({ page }) => 
     }
     await execFileAsync("git", ["branch", "-D", testBranch]).catch(() => {});
   }
+});
+
+test("session preview modal opens on inactive session click and shows conversation", async ({ page }) => {
+  const token = await readSessionToken(page);
+
+  // Mock the agent-sessions API to return a fake inactive session,
+  // and the conversation endpoint to return test messages.
+  const fakeProvider = "claude";
+  const fakeSessionId = "e2e-preview-test-session";
+  const fakeAgentSession = {
+    id: `agent:${fakeProvider}:${fakeSessionId}`,
+    provider: fakeProvider,
+    providerSessionId: fakeSessionId,
+    name: "Preview test session",
+    command: fakeProvider,
+    args: ["--resume", fakeSessionId],
+    cwd: "/tmp/test-project",
+    cwdSource: "log",
+    projectRoot: "/tmp/test-project",
+    worktree: null,
+    createdAt: Date.now() - 86400_000,
+    lastSeenAt: Date.now() - 3600_000,
+    lastRestoredAt: null,
+  };
+
+  const fakeMessages = [
+    { role: "user", text: "Fix the authentication bug" },
+    { role: "assistant", text: "I'll look at the auth module and fix the bug." },
+    { role: "user", text: "Also add tests please" },
+    { role: "assistant", text: "Adding unit tests for the auth module now." },
+  ];
+
+  // Intercept the conversation endpoint for our fake session
+  await page.route(
+    `**/api/agent-sessions/${fakeProvider}/${fakeSessionId}/conversation`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ messages: fakeMessages }),
+      });
+    },
+  );
+
+  // Intercept the agent-sessions list — replace with ONLY our fake session to avoid
+  // auto-collapse/archive behavior from real sessions on this machine.
+  await page.route((url) => url.pathname === "/api/agent-sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: [fakeAgentSession] }),
+    });
+  });
+
+  await page.goto("/?nosup=1");
+
+  // Expand the "Inactive" section header (starts collapsed)
+  const inactiveHeader = page.locator(".pty-group-header").filter({ hasText: "Inactive" });
+  await expect(inactiveHeader).toBeVisible({ timeout: 15_000 });
+  await inactiveHeader.click();
+
+  // Expand the project subgroup if collapsed
+  const projectGroup = page.locator(".worktree-subheader").filter({ hasText: "test-project" });
+  await expect(projectGroup).toBeVisible({ timeout: 5_000 }).catch(() => {});
+  if (await projectGroup.isVisible()) {
+    const isCollapsed = await projectGroup.evaluate((el) => el.classList.contains("collapsed"));
+    if (isCollapsed) await projectGroup.click();
+  }
+
+  // Wait for inactive sessions to appear and find our fake session
+  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Preview test session" });
+  await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
+
+  // Click the inactive session to open preview modal (not the > arrow)
+  await inactiveItem.click();
+
+  // Preview modal should appear
+  const previewModal = page.locator(".session-preview-modal");
+  await expect(previewModal).toBeVisible({ timeout: 5_000 });
+
+  // Should show the session title
+  await expect(previewModal.locator("h3")).toContainText("Preview test session");
+
+  // Should show conversation messages
+  await expect(previewModal.locator(".session-preview-msg")).toHaveCount(4, { timeout: 5_000 });
+  await expect(previewModal.locator(".session-preview-msg.user").first()).toContainText("Fix the authentication bug");
+  await expect(previewModal.locator(".session-preview-msg.assistant").first()).toContainText("I'll look at the auth module");
+
+  // Close with Escape
+  await previewModal.press("Escape");
+  await expect(previewModal).not.toBeVisible({ timeout: 3_000 });
+
+  // Re-open and test Restore button
+  await inactiveItem.click();
+  await expect(previewModal).toBeVisible({ timeout: 5_000 });
+
+  // Click Restore button — should close preview and open restore modal
+  await previewModal.getByRole("button", { name: "Restore" }).click();
+  await expect(previewModal).not.toBeVisible({ timeout: 3_000 });
+
+  // Restore session modal should now be visible
+  const restoreModal = page.locator(".restore-session-modal");
+  await expect(restoreModal).toBeVisible({ timeout: 5_000 });
+
+  // Close restore modal
+  await restoreModal.press("Escape");
+  await expect(restoreModal).not.toBeVisible({ timeout: 3_000 });
+});
+
+test("arrow button on inactive session opens restore modal directly (not preview)", async ({ page }) => {
+  const token = await readSessionToken(page);
+
+  const fakeProvider = "claude";
+  const fakeSessionId = "e2e-arrow-test-session";
+  const fakeAgentSession = {
+    id: `agent:${fakeProvider}:${fakeSessionId}`,
+    provider: fakeProvider,
+    providerSessionId: fakeSessionId,
+    name: "Arrow test session",
+    command: fakeProvider,
+    args: ["--resume", fakeSessionId],
+    cwd: "/tmp/test-project",
+    cwdSource: "log",
+    projectRoot: "/tmp/test-project",
+    worktree: null,
+    createdAt: Date.now() - 86400_000,
+    lastSeenAt: Date.now() - 3600_000,
+    lastRestoredAt: null,
+  };
+
+  await page.route((url) => url.pathname === "/api/agent-sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: [fakeAgentSession] }),
+    });
+  });
+
+  await page.goto("/?nosup=1");
+
+  // Expand the "Inactive" section header (starts collapsed)
+  const inactiveHeader = page.locator(".pty-group-header").filter({ hasText: "Inactive" });
+  await expect(inactiveHeader).toBeVisible({ timeout: 15_000 });
+  await inactiveHeader.click();
+
+  // Expand the project subgroup if collapsed
+  const projectGroup = page.locator(".worktree-subheader").filter({ hasText: "test-project" });
+  await expect(projectGroup).toBeVisible({ timeout: 5_000 }).catch(() => {});
+  if (await projectGroup.isVisible()) {
+    const isCollapsed = await projectGroup.evaluate((el) => el.classList.contains("collapsed"));
+    if (isCollapsed) await projectGroup.click();
+  }
+
+  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Arrow test session" });
+  await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
+
+  // Click the > arrow button specifically
+  await inactiveItem.locator(".pty-actions-arrow").click();
+
+  // Should open restore modal directly (not preview modal)
+  const restoreModal = page.locator(".restore-session-modal");
+  await expect(restoreModal).toBeVisible({ timeout: 5_000 });
+
+  // Preview modal should NOT be visible
+  const previewModal = page.locator(".session-preview-modal");
+  await expect(previewModal).not.toBeVisible();
+
+  // Close
+  await restoreModal.press("Escape");
+});
+
+test("session preview modal shows loading state and handles empty conversation", async ({ page }) => {
+  const token = await readSessionToken(page);
+
+  const fakeProvider = "claude";
+  const fakeSessionId = "e2e-empty-conv-session";
+  const fakeAgentSession = {
+    id: `agent:${fakeProvider}:${fakeSessionId}`,
+    provider: fakeProvider,
+    providerSessionId: fakeSessionId,
+    name: "Empty conversation session",
+    command: fakeProvider,
+    args: ["--resume", fakeSessionId],
+    cwd: "/tmp/test-project",
+    cwdSource: "log",
+    projectRoot: "/tmp/test-project",
+    worktree: null,
+    createdAt: Date.now() - 86400_000,
+    lastSeenAt: Date.now() - 3600_000,
+    lastRestoredAt: null,
+  };
+
+  await page.route((url) => url.pathname === "/api/agent-sessions", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ sessions: [fakeAgentSession] }),
+    });
+  });
+
+  // Return 404 for conversation (log file not found)
+  await page.route(
+    `**/api/agent-sessions/${fakeProvider}/${fakeSessionId}/conversation`,
+    async (route) => {
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "log file not found for session" }),
+      });
+    },
+  );
+
+  await page.goto("/?nosup=1");
+
+  // Expand the "Inactive" section header (starts collapsed)
+  const inactiveHeader = page.locator(".pty-group-header").filter({ hasText: "Inactive" });
+  await expect(inactiveHeader).toBeVisible({ timeout: 15_000 });
+  await inactiveHeader.click();
+
+  // Expand the project subgroup if collapsed
+  const projectGroup = page.locator(".worktree-subheader").filter({ hasText: "test-project" });
+  await expect(projectGroup).toBeVisible({ timeout: 5_000 }).catch(() => {});
+  if (await projectGroup.isVisible()) {
+    const isCollapsed = await projectGroup.evaluate((el) => el.classList.contains("collapsed"));
+    if (isCollapsed) await projectGroup.click();
+  }
+
+  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Empty conversation session" });
+  await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
+
+  await inactiveItem.click();
+
+  const previewModal = page.locator(".session-preview-modal");
+  await expect(previewModal).toBeVisible({ timeout: 5_000 });
+
+  // Should show "No messages found" since the API returned 404
+  await expect(previewModal.locator(".session-preview-loading")).toContainText("No messages found", { timeout: 5_000 });
+
+  // Close with overlay click
+  await page.locator(".launch-modal-overlay").click({ position: { x: 5, y: 5 } });
+  await expect(previewModal).not.toBeVisible({ timeout: 3_000 });
 });

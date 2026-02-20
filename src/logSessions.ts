@@ -406,3 +406,131 @@ export class LogSessionDiscovery {
     return this.cached.map((session) => ({ ...session, args: [...session.args] }));
   }
 }
+
+// ---------------------------------------------------------------------------
+// Log file finder: locate the JSONL file for a given provider session ID.
+// ---------------------------------------------------------------------------
+
+const logFileCache = new Map<string, string | null>();
+
+export function findLogFileForSession(
+  provider: LogSource,
+  providerSessionId: string,
+  options: DiscoveryOptions = {},
+): string | null {
+  const cacheKey = `${provider}:${providerSessionId}`;
+  if (logFileCache.has(cacheKey)) return logFileCache.get(cacheKey)!;
+
+  const roots = getSearchRoots(options).filter((r) => r.source === provider);
+  for (const root of roots) {
+    for (const logPath of scanDirForJsonl(root.dir, root.maxDepth)) {
+      const entries = parseLogHeadEntries(logPath);
+      if (entries.length === 0) continue;
+      const sessionId = extractSessionId(entries);
+      if (sessionId === providerSessionId) {
+        logFileCache.set(cacheKey, logPath);
+        return logPath;
+      }
+    }
+  }
+
+  // Fallback: scan all sources (in case the provider hint doesn't match the directory structure)
+  for (const root of getSearchRoots(options)) {
+    if (root.source === provider) continue; // already scanned
+    for (const logPath of scanDirForJsonl(root.dir, root.maxDepth)) {
+      const entries = parseLogHeadEntries(logPath);
+      if (entries.length === 0) continue;
+      const sessionId = extractSessionId(entries);
+      if (sessionId === providerSessionId) {
+        logFileCache.set(cacheKey, logPath);
+        return logPath;
+      }
+    }
+  }
+
+  logFileCache.set(cacheKey, null);
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Conversation reader: extract user/assistant messages from a JSONL log file.
+// ---------------------------------------------------------------------------
+
+export type ConversationMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+const MSG_TEXT_LIMIT = 2000;
+const SKIP_ENTRY_TYPES = new Set([
+  "file-history-snapshot",
+  "summary",
+  "progress",
+  "session",
+  "session_meta",
+  "system",
+  "result",
+  "tool_use",
+  "tool_result",
+]);
+
+export function readConversationMessages(logPath: string): ConversationMessage[] {
+  let content: string;
+  try {
+    content = fs.readFileSync(logPath, "utf8");
+  } catch {
+    return [];
+  }
+
+  const messages: ConversationMessage[] = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const entry = safeParseJson(trimmed);
+    if (!entry) continue;
+    if (typeof entry.type === "string" && SKIP_ENTRY_TYPES.has(entry.type)) continue;
+
+    let role: "user" | "assistant" | null = null;
+    let text: string | null = null;
+
+    // Claude format: type "user" with message.content
+    if (entry.type === "user" && entry.message && typeof entry.message === "object") {
+      role = "user";
+      const msg = entry.message as Record<string, unknown>;
+      text = extractTextFromContent(msg.content);
+    }
+
+    // Claude format: type "assistant" with message.content
+    if (entry.type === "assistant" && entry.message && typeof entry.message === "object") {
+      role = "assistant";
+      const msg = entry.message as Record<string, unknown>;
+      text = extractTextFromContent(msg.content);
+    }
+
+    // Codex/Pi format: type "response_item" with payload.role
+    if (entry.type === "response_item" && entry.payload && typeof entry.payload === "object") {
+      const payload = entry.payload as Record<string, unknown>;
+      if (payload.role === "user") {
+        role = "user";
+        text = extractTextFromContent(payload.content);
+      } else if (payload.role === "assistant") {
+        role = "assistant";
+        text = extractTextFromContent(payload.content);
+      }
+    }
+
+    if (!role || !text) continue;
+    const trimmedText = text.trim();
+    if (!trimmedText) continue;
+    if (role === "user" && SKIP_PATTERNS.some((p) => p.test(trimmedText))) continue;
+
+    const truncated =
+      trimmedText.length > MSG_TEXT_LIMIT
+        ? trimmedText.slice(0, MSG_TEXT_LIMIT) + "..."
+        : trimmedText;
+
+    messages.push({ role, text: truncated });
+  }
+
+  return messages;
+}

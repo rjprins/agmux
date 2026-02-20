@@ -29,6 +29,11 @@ import {
   renderSettingsModal,
   type SettingsModalViewModel,
 } from "./settings-modal-view";
+import {
+  renderSessionPreviewModal,
+  type SessionPreviewModalViewModel,
+  type SessionPreviewMessage,
+} from "./session-preview-modal-view";
 
 type PtyReadinessState = "ready" | "busy" | "unknown";
 type PtyReadinessIndicator = "ready" | "busy";
@@ -1794,6 +1799,91 @@ function displaySessionSubtitle(session: AgentSessionSummary): string {
   return parts.join(" · ");
 }
 
+// ---------------------------------------------------------------------------
+// Session Preview Modal
+// ---------------------------------------------------------------------------
+
+type SessionPreviewModalState = {
+  agentSessionId: string;
+  provider: string;
+  providerSessionId: string;
+  title: string;
+  messages: SessionPreviewMessage[];
+  loading: boolean;
+};
+
+const sessionPreviewModalRoot = document.createElement("div");
+document.body.appendChild(sessionPreviewModalRoot);
+let sessionPreviewModalState: SessionPreviewModalState | null = null;
+let sessionPreviewModalSeq = 0;
+
+function closeSessionPreviewModal(): void {
+  sessionPreviewModalState = null;
+  renderSessionPreviewModal(sessionPreviewModalRoot, null, {
+    onClose: () => {},
+    onRestore: () => {},
+  });
+}
+
+function renderSessionPreviewModalState(): void {
+  const state = sessionPreviewModalState;
+  if (!state) {
+    closeSessionPreviewModal();
+    return;
+  }
+  const model: SessionPreviewModalViewModel = {
+    sessionTitle: state.title,
+    provider: state.provider,
+    providerSessionId: state.providerSessionId,
+    messages: state.messages,
+    loading: state.loading,
+  };
+  renderSessionPreviewModal(sessionPreviewModalRoot, model, {
+    onClose: () => closeSessionPreviewModal(),
+    onRestore: () => {
+      const agentSessionId = state.agentSessionId;
+      closeSessionPreviewModal();
+      openAgentSessionActions(agentSessionId);
+    },
+  });
+}
+
+function openSessionPreviewModal(agentSessionId: string): void {
+  const session = agentSessions.find((x) => x.id === agentSessionId);
+  if (!session) return;
+  const seq = ++sessionPreviewModalSeq;
+  sessionPreviewModalState = {
+    agentSessionId,
+    provider: session.provider,
+    providerSessionId: session.providerSessionId,
+    title: displaySessionTitle(session),
+    messages: [],
+    loading: true,
+  };
+  renderSessionPreviewModalState();
+
+  void authFetch(
+    `/api/agent-sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.providerSessionId)}/conversation`,
+  )
+    .then(async (res) => (res.ok ? res.json() : Promise.reject(new Error(await readApiError(res)))))
+    .then((data: { messages?: SessionPreviewMessage[] }) => {
+      if (!sessionPreviewModalState || seq !== sessionPreviewModalSeq) return;
+      sessionPreviewModalState.messages = Array.isArray(data.messages) ? data.messages : [];
+      sessionPreviewModalState.loading = false;
+      renderSessionPreviewModalState();
+    })
+    .catch(() => {
+      if (!sessionPreviewModalState || seq !== sessionPreviewModalSeq) return;
+      sessionPreviewModalState.messages = [];
+      sessionPreviewModalState.loading = false;
+      renderSessionPreviewModalState();
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Restore Session Modal
+// ---------------------------------------------------------------------------
+
 type RestoreSessionModalState = {
   agentSessionId: string;
   target: RestoreTargetChoice;
@@ -2337,7 +2427,7 @@ function renderList(): void {
       killPty(ptyId);
     },
     onResumeInactive: (ptyId) => {
-      openAgentSessionActions(ptyId);
+      openSessionPreviewModal(ptyId);
     },
     onInactiveActions: (ptyId) => {
       openAgentSessionActions(ptyId);
