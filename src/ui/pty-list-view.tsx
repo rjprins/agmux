@@ -198,7 +198,7 @@ function ptyStyle(color: string): Record<string, string> {
 }
 
 function PtyItemRow(
-  { item, inWorktree, handlers }: { item: RunningPtyItem; inWorktree: boolean; handlers: PtyListHandlers },
+  { item, handlers }: { item: RunningPtyItem; handlers: PtyListHandlers },
 ) {
   return (
     <li
@@ -231,12 +231,11 @@ function PtyItemRow(
             <div className="primary">{item.process}</div>
             {item.title ? <span className="title-label" title={item.title}>{item.title}</span> : null}
           </div>
-          <div className="secondary">
-            {!inWorktree && item.worktree
-              ? <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
-              : null}
-            <span>{item.secondaryText}</span>
-          </div>
+          {item.worktree ? (
+            <div className="secondary">
+              <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
+            </div>
+          ) : null}
         </div>
         <button
           type="button"
@@ -339,7 +338,7 @@ function rerenderPtyList(): void {
 
 export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyListHandlers): void {
   lastRenderArgs = { root, model, handlers };
-  const hasRunning = (group: PtyGroup) => group.items.length > 0 || group.worktrees.length > 0;
+  const hasRunning = (group: PtyGroup) => group.items.length > 0;
   render(
     <>
       {model.groups.map((group) => (
@@ -374,40 +373,7 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
             : (
               <div className={model.showHeaders ? "group-body" : undefined}>
                 {group.items.map((item) => (
-                  <PtyItemRow key={item.id} item={item} inWorktree={false} handlers={handlers} />
-                ))}
-
-                {group.worktrees.map((wt) => (
-                  <Fragment key={`wt:${wt.name}`}>
-                    <li
-                      className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
-                      title={wt.path}
-                      onClick={() => handlers.onToggleWorktree(group.key, wt.name)}
-                    >
-                      <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
-                      <span>{wt.name}</span>
-                      <button
-                        type="button"
-                        className="worktree-launch"
-                        title="Launch agent in this worktree"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onOpenLaunchInWorktree(group.key, wt.path);
-                        }}
-                      >
-                        +
-                      </button>
-                    </li>
-                    {wt.collapsed
-                      ? null
-                      : (
-                        <div className="worktree-subgroup">
-                          {wt.items.map((item) => (
-                            <PtyItemRow key={item.id} item={item} inWorktree={true} handlers={handlers} />
-                          ))}
-                        </div>
-                      )}
-                  </Fragment>
+                  <PtyItemRow key={item.id} item={item} handlers={handlers} />
                 ))}
 
                 {group.inactiveTotal > 0 && hasRunning(group) ? (

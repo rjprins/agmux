@@ -2202,30 +2202,8 @@ function renderList(): void {
     const basename = key ? key.split("/").filter(Boolean).at(-1) ?? key : "Other";
     const runningItems = runningByDir.get(key) ?? [];
 
-    // Sub-group running items by worktree
-    const rootItems: RunningPtyItem[] = [];
-    const wtMap = new Map<string, { items: RunningPtyItem[]; path: string }>();
-    for (const item of runningItems) {
-      if (item.worktree) {
-        let wt = wtMap.get(item.worktree);
-        if (!wt) {
-          wt = { items: [], path: item.cwd ?? "" };
-          wtMap.set(item.worktree, wt);
-        }
-        wt.items.push(item);
-      } else {
-        rootItems.push(item);
-      }
-    }
-
-    const worktrees: WorktreeSubgroup[] = [...wtMap.entries()]
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([name, wt]) => ({
-        name,
-        path: wt.path,
-        collapsed: collapsedWorktrees.has(`${key}::${name}`),
-        items: wt.items,
-      }));
+    // All running items shown flat (worktree displayed as pill on each item)
+    const rootItems = runningItems;
 
     // Inline inactive sessions for this directory
     const dirInactiveItems = inactiveByProject.get(key) ?? [];
@@ -2237,7 +2215,7 @@ function renderList(): void {
       title: key || undefined,
       pinned: pinnedDirectories.has(key),
       collapsed: collapsedGroups.has(key),
-      worktrees,
+      worktrees: [],
       items: rootItems,
       inactiveSessions: inactiveSub.rootItems,
       inactiveWorktrees: inactiveSub.worktrees,
