@@ -1161,11 +1161,7 @@ button:disabled {
   background: var(--surface);
 }
 
-.group-menu-wrap {
-  position: relative;
-  flex-shrink: 0;
-}
-.group-menu-btn {
+.group-action-btn {
   padding: 0 4px;
   font-size: 11px;
   line-height: 1;
@@ -1174,40 +1170,16 @@ button:disabled {
   color: var(--muted);
   cursor: pointer;
   border-radius: 4px;
+  opacity: 0;
+  flex-shrink: 0;
+}
+.pty-group-header:hover .group-action-btn,
+.worktree-subheader:hover .group-action-btn {
   opacity: 0.5;
 }
-.group-menu-btn:hover {
-  opacity: 1;
+.group-action-btn:hover {
+  opacity: 1 !important;
   color: var(--text);
-}
-.group-menu-popup {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 100;
-  min-width: 100px;
-  margin: 2px 0 0;
-  padding: 4px 0;
-  list-style: none;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
-}
-.group-menu-popup li button {
-  display: block;
-  width: 100%;
-  padding: 4px 12px;
-  border: none;
-  background: transparent;
-  color: var(--text);
-  font-size: 12px;
-  text-align: left;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.group-menu-popup li button:hover {
-  background: var(--hover);
 }
 
 .pty-group-header.pinned-empty {
@@ -1261,7 +1233,7 @@ button:disabled {
   padding-left: 14px;
 }
 
-.sidebar.collapsed .group-menu-wrap {
+.sidebar.collapsed .group-action-btn {
   display: none;
 }
 .sidebar.collapsed .inline-inactive-divider {

@@ -256,88 +256,8 @@ function PtyItemRow(
   );
 }
 
-type MenuAction = { label: string; onClick: () => void };
-
-// Track which menu is open by group key. Lives outside Preact so it
-// survives re-renders and we feed it back into the VDOM each cycle.
-let openMenuKey: string | null = null;
-let closeMenuListener: ((ev: MouseEvent) => void) | null = null;
-
-function setOpenMenu(key: string | null, rerender: () => void): void {
-  openMenuKey = key;
-  // Clean up previous outside-click listener
-  if (closeMenuListener) {
-    document.removeEventListener("mousedown", closeMenuListener);
-    closeMenuListener = null;
-  }
-  if (key !== null) {
-    // Defer so the current click doesn't immediately close
-    requestAnimationFrame(() => {
-      closeMenuListener = () => {
-        openMenuKey = null;
-        if (closeMenuListener) {
-          document.removeEventListener("mousedown", closeMenuListener);
-          closeMenuListener = null;
-        }
-        rerender();
-      };
-      document.addEventListener("mousedown", closeMenuListener);
-    });
-  }
-  rerender();
-}
-
-function GroupMenu(
-  { menuKey, open, actions, rerender }: {
-    menuKey: string;
-    open: boolean;
-    actions: MenuAction[];
-    rerender: () => void;
-  },
-) {
-  return (
-    <div className="group-menu-wrap" onMouseDown={(ev) => { if (open) ev.stopPropagation(); }}>
-      <button
-        type="button"
-        className="group-menu-btn"
-        title="Actions"
-        onClick={(ev) => {
-          ev.stopPropagation();
-          setOpenMenu(open ? null : menuKey, rerender);
-        }}
-      >
-        {"\u2630"}
-      </button>
-      {open ? (
-        <ul className="group-menu-popup">
-          {actions.map((a) => (
-            <li key={a.label}>
-              <button
-                type="button"
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  setOpenMenu(null, rerender);
-                  a.onClick();
-                }}
-              >
-                {a.label}
-              </button>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
-  );
-}
-
-// Cache last render args so menu open/close can re-render without the caller
-let lastRenderArgs: { root: Element; model: PtyListModel; handlers: PtyListHandlers } | null = null;
-function rerenderPtyList(): void {
-  if (lastRenderArgs) renderPtyList(lastRenderArgs.root, lastRenderArgs.model, lastRenderArgs.handlers);
-}
 
 export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyListHandlers): void {
-  lastRenderArgs = { root, model, handlers };
   const hasRunning = (group: PtyGroup) => group.items.length > 0;
   render(
     <>
@@ -351,9 +271,17 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
             >
               <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
               <span>{group.label}</span>
-              <GroupMenu menuKey={`g:${group.key}`} open={openMenuKey === `g:${group.key}`} rerender={rerenderPtyList} actions={[
-                { label: group.pinned ? "Unpin" : "Pin", onClick: () => handlers.onTogglePin(group.key) },
-              ]} />
+              <button
+                type="button"
+                className="group-action-btn"
+                title={group.pinned ? "Unpin" : "Pin"}
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  handlers.onTogglePin(group.key);
+                }}
+              >
+                {group.pinned ? "\u2605" : "\u2606"}
+              </button>
               <button
                 type="button"
                 className="group-launch"
@@ -469,10 +397,28 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     >
                       <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{group.label}</span>
-                      <GroupMenu menuKey={`ig:${group.key}`} open={openMenuKey === `ig:${group.key}`} rerender={rerenderPtyList} actions={[
-                        { label: "Pin", onClick: () => handlers.onTogglePin(group.key) },
-                        { label: "Archive", onClick: () => handlers.onArchive(group.key) },
-                      ]} />
+                      <button
+                        type="button"
+                        className="group-action-btn"
+                        title="Pin"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onTogglePin(group.key);
+                        }}
+                      >
+                        {"\u2606"}
+                      </button>
+                      <button
+                        type="button"
+                        className="group-action-btn"
+                        title="Archive"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onArchive(group.key);
+                        }}
+                      >
+                        {"\u2193"}
+                      </button>
                       <button
                         type="button"
                         className="group-launch"
@@ -549,9 +495,17 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                     >
                       <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{group.label}</span>
-                      <GroupMenu menuKey={`ag:${group.key}`} open={openMenuKey === `ag:${group.key}`} rerender={rerenderPtyList} actions={[
-                        { label: "Unarchive", onClick: () => handlers.onUnarchive(group.key) },
-                      ]} />
+                      <button
+                        type="button"
+                        className="group-action-btn"
+                        title="Unarchive"
+                        onClick={(ev) => {
+                          ev.stopPropagation();
+                          handlers.onUnarchive(group.key);
+                        }}
+                      >
+                        {"\u2191"}
+                      </button>
                       <button
                         type="button"
                         className="group-launch"

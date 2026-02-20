@@ -2214,7 +2214,7 @@ function renderList(): void {
       label: basename,
       title: key || undefined,
       pinned: pinnedDirectories.has(key),
-      collapsed: rootItems.length === 0 || collapsedGroups.has(key),
+      collapsed: collapsedGroups.has(key),
       worktrees: [],
       items: rootItems,
       inactiveSessions: inactiveSub.rootItems,
