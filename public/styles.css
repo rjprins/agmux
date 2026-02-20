@@ -56,11 +56,28 @@ body {
   border-right: 1px solid var(--line);
   background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
   padding: 12px;
+  padding-right: 0;
   overflow-y: auto;
   overflow-x: hidden;
   display: flex;
   flex-direction: column;
   transition: padding 0.2s ease;
+}
+.sidebar > * {
+  padding-right: 8px;
+}
+.sidebar::-webkit-scrollbar {
+  width: 6px;
+}
+.sidebar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted) 30%, transparent);
+  border-radius: 3px;
+}
+.sidebar::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--muted) 50%, transparent);
 }
 .sidebar.collapsed {
   padding: 8px;
@@ -366,10 +383,25 @@ button:disabled {
 .pty-item.inactive {
   opacity: 0.55;
   border: none;
-  border-left: 2px solid color-mix(in srgb, var(--muted) 40%, var(--surface-border));
+  border-left: none;
   background: transparent;
-  padding: 3px 8px;
+  padding: 3px 0 3px 8px;
   border-radius: 0;
+}
+.pty-item.inactive .primary {
+  font-size: 11px;
+  font-weight: normal;
+}
+.pty-item.inactive .row {
+  gap: 2px;
+}
+.pty-item.inactive .pty-close {
+  padding: 2px 4px;
+  min-width: 20px;
+  font-size: 10px;
+}
+.pty-item.inactive .time-badge {
+  font-size: 9px;
 }
 
 .pty-item.inactive:hover {

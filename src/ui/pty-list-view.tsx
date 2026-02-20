@@ -186,7 +186,7 @@ function TruncatedInactiveList(
             handlers.onShowMore(contextKey);
           }}
         >
-          <span className="show-more-label">\u2026 {remaining} more</span>
+          <span className="show-more-label">… {remaining} more</span>
         </li>
       ) : null}
     </>
