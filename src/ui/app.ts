@@ -2,6 +2,15 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { THEMES, DEFAULT_THEME_KEY, applyTheme, type Theme } from "./themes";
+import type {
+  AgentSessionSummary,
+  PtyReadinessIndicator,
+  PtyReadinessState,
+  PtySummary,
+  ServerToClientMessage,
+  TmuxSessionCheck,
+  TmuxSessionInfo,
+} from "../shared/protocol.js";
 import {
   renderPtyList,
   type InactivePtyItem,
@@ -35,82 +44,7 @@ import {
   type SessionPreviewMessage,
 } from "./session-preview-modal-view";
 
-type PtyReadinessState = "ready" | "busy" | "unknown";
-type PtyReadinessIndicator = "ready" | "busy";
-
-type PtySummary = {
-  id: string;
-  name: string;
-  tmuxSession?: string | null;
-  tmuxServer?: "agmux" | "default" | null;
-  activeProcess?: string | null;
-  ready?: boolean;
-  readyState?: PtyReadinessState;
-  readyIndicator?: PtyReadinessIndicator;
-  readyReason?: string | null;
-  readyStateChangedAt?: number | null;
-  command: string;
-  args: string[];
-  cwd: string | null;
-  createdAt: number;
-  lastSeenAt?: number;
-  status: "running" | "exited";
-  exitCode?: number | null;
-  exitSignal?: string | null;
-};
-
-type AgentSessionSummary = {
-  id: string;
-  provider: "claude" | "codex" | "pi";
-  providerSessionId: string;
-  name: string;
-  command: string;
-  args: string[];
-  cwd: string | null;
-  cwdSource: "runtime" | "db" | "log" | "user";
-  projectRoot: string | null;
-  worktree: string | null;
-  createdAt: number;
-  lastSeenAt: number;
-  lastRestoredAt?: number | null;
-};
-
-type TmuxSessionInfo = {
-  name: string;
-  server: "agmux" | "default";
-  createdAt: number | null;
-  windows: number | null;
-};
-
-type TmuxSessionCheck = {
-  name: string;
-  server: "agmux" | "default";
-  warnings: string[];
-  observed: {
-    mouse: string | null;
-    alternateScreen: string | null;
-    historyLimit: number | null;
-    terminalOverrides: string | null;
-  };
-};
-
-type ServerMsg =
-  | { type: "pty_list"; ptys: PtySummary[] }
-  | { type: "pty_output"; ptyId: string; data: string }
-  | { type: "pty_exit"; ptyId: string; code: number | null; signal: string | null }
-  | {
-      type: "pty_ready";
-      ptyId: string;
-      state: PtyReadinessState;
-      indicator: PtyReadinessIndicator;
-      reason: string;
-      ts: number;
-      cwd?: string | null;
-      activeProcess?: string | null;
-    }
-  | { type: "trigger_fired"; ptyId: string; trigger: string; match: string; line: string; ts: number }
-  | { type: "pty_highlight"; ptyId: string; reason: string; ttlMs: number }
-  | { type: "trigger_error"; ptyId: string; trigger: string; ts: number; message: string };
+type ServerMsg = ServerToClientMessage;
 
 const $ = (id: string) => document.getElementById(id)!;
 
@@ -135,6 +69,7 @@ let serverRepoRoot = "";
 
 const ACTIVE_PTY_KEY = "agmux:activePty";
 const AUTH_TOKEN_KEY = "agmux:authToken";
+const INPUT_HISTORY_STORAGE_KEY = "agmux:inputHistory";
 const HIDDEN_AGENT_SESSIONS_KEY = "agmux:hiddenAgentSessions";
 const PINNED_DIRECTORIES_KEY = "agmux:pinnedDirectories";
 const ARCHIVED_DIRECTORIES_KEY = "agmux:archivedDirectories";
@@ -264,6 +199,12 @@ type HistoryEntry = {
   bufferLine: number;
 };
 
+type InputHistoryRecord = {
+  lastInput?: string;
+  processHint?: string;
+  history?: HistoryEntry[];
+};
+
 const ptyTitles = new Map<string, string>();
 const ptyLastInput = new Map<string, string>();
 const ptyInputHistory = new Map<string, HistoryEntry[]>();
@@ -273,6 +214,66 @@ type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator
 const ptyReady = new Map<string, PtyReadyInfo>();
 const ptyStateChangedAt = new Map<string, number>();
 const MAX_INPUT_HISTORY = 40;
+
+function loadInputHistoryFromStorage(): Record<string, InputHistoryRecord> | null {
+  try {
+    const raw = sessionStorage.getItem(INPUT_HISTORY_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    return parsed as Record<string, InputHistoryRecord>;
+  } catch {
+    return null;
+  }
+}
+
+function saveInputHistoryToStorage(): void {
+  try {
+    const data: Record<string, InputHistoryRecord> = {};
+    for (const [ptyId, lastInput] of ptyLastInput) {
+      if (lastInput) data[ptyId] = { lastInput };
+    }
+    for (const [ptyId, processHint] of ptyInputProcessHints) {
+      if (!processHint) continue;
+      const existing = data[ptyId] ?? {};
+      existing.processHint = processHint;
+      data[ptyId] = existing;
+    }
+    for (const [ptyId, history] of ptyInputHistory) {
+      if (!history.length) continue;
+      const existing = data[ptyId] ?? {};
+      existing.history = history;
+      data[ptyId] = existing;
+    }
+    if (Object.keys(data).length === 0) {
+      sessionStorage.removeItem(INPUT_HISTORY_STORAGE_KEY);
+      return;
+    }
+    sessionStorage.setItem(INPUT_HISTORY_STORAGE_KEY, JSON.stringify(data));
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function applyInputMeta(data: Record<string, InputHistoryRecord>, overwrite: boolean): void {
+  for (const [ptyId, meta] of Object.entries(data)) {
+    if (!ptyId || !meta || typeof meta !== "object") continue;
+    if (typeof meta.lastInput === "string" && meta.lastInput.trim()) {
+      if (overwrite || !ptyLastInput.has(ptyId)) ptyLastInput.set(ptyId, meta.lastInput);
+    }
+    if (typeof meta.processHint === "string" && meta.processHint.trim()) {
+      if (overwrite || !ptyInputProcessHints.has(ptyId)) ptyInputProcessHints.set(ptyId, meta.processHint);
+    }
+    if (Array.isArray(meta.history)) {
+      const entries: HistoryEntry[] = meta.history
+        .filter((x) => x && typeof x.text === "string" && x.text.trim().length > 0)
+        .map((x) => ({ text: x.text, bufferLine: typeof x.bufferLine === "number" ? x.bufferLine : 0 }));
+      if (entries.length > 0 && (overwrite || !ptyInputHistory.has(ptyId))) {
+        ptyInputHistory.set(ptyId, entries.slice(-MAX_INPUT_HISTORY));
+      }
+    }
+  }
+}
 
 loadHiddenAgentSessions();
 loadPinnedDirectories();
@@ -384,6 +385,7 @@ const HISTORY_SAVE_DEBOUNCE_MS = 500;
 
 function savePtyInputMeta(changedPtyId?: string): void {
   if (changedPtyId) pendingHistorySaves.add(changedPtyId);
+  saveInputHistoryToStorage();
   if (historySaveTimer) return;
   historySaveTimer = setTimeout(() => {
     historySaveTimer = null;
@@ -405,23 +407,15 @@ function savePtyInputMeta(changedPtyId?: string): void {
 }
 
 async function loadPtyInputMeta(): Promise<void> {
+  const cached = loadInputHistoryFromStorage();
+  if (cached) applyInputMeta(cached, false);
+
   const res = await authFetch("/api/input-history");
   if (!res.ok) return;
   const json = (await res.json()) as { history?: Record<string, unknown> };
   const data = json.history;
   if (!data || typeof data !== "object") return;
-  for (const [ptyId, meta] of Object.entries(data)) {
-    if (!ptyId || !meta || typeof meta !== "object") continue;
-    const rec = meta as { lastInput?: unknown; processHint?: unknown; history?: unknown };
-    if (typeof rec.lastInput === "string" && rec.lastInput.trim()) ptyLastInput.set(ptyId, rec.lastInput);
-    if (typeof rec.processHint === "string" && rec.processHint.trim()) ptyInputProcessHints.set(ptyId, rec.processHint);
-    if (Array.isArray(rec.history)) {
-      const entries: HistoryEntry[] = rec.history
-        .filter((x: any) => x && typeof x.text === "string" && x.text.trim().length > 0)
-        .map((x: any) => ({ text: x.text, bufferLine: typeof x.bufferLine === "number" ? x.bufferLine : 0 }));
-      if (entries.length > 0) ptyInputHistory.set(ptyId, entries.slice(-MAX_INPUT_HISTORY));
-    }
-  }
+  applyInputMeta(data as Record<string, InputHistoryRecord>, false);
 }
 
 function prunePtyInputMeta(ptyIds: Set<string>): void {
@@ -437,6 +431,7 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
     if (ptyIds.has(ptyId)) continue;
     ptyInputHistory.delete(ptyId);
   }
+  saveInputHistoryToStorage();
 }
 
 // Input history is loaded from the server after auth; see boot sequence below.
@@ -1622,6 +1617,22 @@ function inferProcessFromInput(line: string): string | null {
   return null;
 }
 
+function maybeUpdateClientCwdFromCommand(ptyId: string, command: string): void {
+  const trimmed = command.trim();
+  if (!trimmed) return;
+  const m = /^cd\s+(.+)$/.exec(trimmed);
+  if (!m) return;
+  let target = (m[1] ?? "").trim();
+  if (!target) return;
+  if ((target.startsWith("\"") && target.endsWith("\"")) || (target.startsWith("'") && target.endsWith("'"))) {
+    target = target.slice(1, -1).trim();
+  }
+  if (!target.startsWith("/")) return;
+  const p = ptys.find((x) => x.id === ptyId);
+  if (!p) return;
+  p.cwd = target;
+}
+
 function trackUserInput(ptyId: string, data: string): void {
   const cleaned = data
     .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
@@ -1639,6 +1650,7 @@ function trackUserInput(ptyId: string, data: string): void {
         const bufferLine = buf ? buf.baseY + buf.cursorY : 0;
         ptyLastInput.set(ptyId, truncateText(normalized));
         appendPtyInputHistory(ptyId, normalized, bufferLine);
+        maybeUpdateClientCwdFromCommand(ptyId, normalized);
         const proc = inferProcessFromInput(normalized);
         if (proc) ptyInputProcessHints.set(ptyId, proc);
         changed = true;
@@ -2286,7 +2298,15 @@ function renderList(): void {
   // Build unified directory groups: pinned first, then non-pinned, both alphabetical.
   const pinnedKeys = [...visibleDirKeys].filter((k) => pinnedDirectories.has(k)).sort(sortByBasename);
   const nonPinnedKeys = [...visibleDirKeys].filter((k) => !pinnedDirectories.has(k)).sort(sortByBasename);
-  const allVisibleKeys = [...pinnedKeys, ...nonPinnedKeys];
+  let allVisibleKeys = [...pinnedKeys, ...nonPinnedKeys];
+
+  if (activePtyId) {
+    const active = ptys.find((p) => p.id === activePtyId);
+    const activeKey = active?.cwd ? normalizeCwdGroupKey(active.cwd) : null;
+    if (activeKey && allVisibleKeys.includes(activeKey)) {
+      allVisibleKeys = [activeKey, ...allVisibleKeys.filter((k) => k !== activeKey)];
+    }
+  }
 
   const groups: PtyGroup[] = allVisibleKeys.map((key) => {
     const basename = key ? key.split("/").filter(Boolean).at(-1) ?? key : "Other";
@@ -2763,9 +2783,11 @@ document.body.appendChild(settingsModalRoot);
 type SettingsModalState = {
   worktreePathTemplate: string;
   saving: boolean;
+  dirty: boolean;
 };
 
 let settingsModalState: SettingsModalState | null = null;
+let settingsModalSeq = 0;
 
 function settingsPreviewPath(template: string): string {
   const t = template || DEFAULT_WORKTREE_TEMPLATE;
@@ -2797,11 +2819,13 @@ function renderSettingsModalState(): void {
     onTemplateChange: (value) => {
       if (!settingsModalState) return;
       settingsModalState.worktreePathTemplate = value;
+      settingsModalState.dirty = true;
       renderSettingsModalState();
     },
     onReset: () => {
       if (!settingsModalState) return;
       settingsModalState.worktreePathTemplate = "";
+      settingsModalState.dirty = true;
       renderSettingsModalState();
     },
     onThemeChange: (key) => {
@@ -2834,15 +2858,17 @@ function renderSettingsModalState(): void {
 }
 
 function openSettingsModal(): void {
+  const seq = ++settingsModalSeq;
   settingsModalState = {
     worktreePathTemplate: "",
     saving: false,
+    dirty: false,
   };
   renderSettingsModalState();
 
   void authFetch("/api/settings")
     .then(async (res) => {
-      if (!res.ok || !settingsModalState) return;
+      if (!res.ok || !settingsModalState || seq !== settingsModalSeq || settingsModalState.dirty) return;
       const data = (await res.json()) as { worktreePathTemplate?: string };
       settingsModalState.worktreePathTemplate = data.worktreePathTemplate ?? "";
       renderSettingsModalState();
@@ -2885,8 +2911,8 @@ void (async () => {
   }
 })();
 
-// Refresh sidebar every 5 seconds to keep time badges current.
-setInterval(() => renderList(), 5000);
+// Refresh sidebar every 5 seconds to keep time badges and cwd state current.
+setInterval(() => void refreshList(), 5000);
 
 // Minimal debug hooks for e2e tests and local inspection.
 function dumpBuffer(st: TermState, maxLines = 120): string {

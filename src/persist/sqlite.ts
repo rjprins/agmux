@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import type { PtySummary } from "../types.js";
+import type { AgentSessionCwdSource, PtySummary } from "../types.js";
 
 export type PersistedEvent = {
   sessionId: string;
@@ -20,8 +20,6 @@ export type InputMeta = {
   processHint?: string;
   history: InputHistoryEntry[];
 };
-
-export type AgentSessionCwdSource = "runtime" | "db" | "log" | "user";
 
 export type AgentSessionRecord = {
   provider: string;

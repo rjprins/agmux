@@ -1,0 +1,261 @@
+import { execFile } from "node:child_process";
+import fs from "node:fs/promises";
+import path from "node:path";
+import type { SqliteStore } from "../persist/sqlite.js";
+import {
+  DEFAULT_WORKTREE_TEMPLATE,
+  getWorktreeCache,
+  isKnownWorktree,
+  refreshWorktreeCacheSync,
+  resolveWorktreePath,
+} from "../worktree.js";
+import { pathExistsAndIsDirectory } from "./utils.js";
+
+type WorktreeServiceDeps = {
+  repoRoot: string;
+  store: SqliteStore;
+  defaultBaseBranch: string;
+};
+
+export type WorktreeStatus = {
+  dirty: boolean;
+  branch: string;
+};
+
+export type WorktreeSummary = {
+  name: string;
+  path: string;
+  branch: string;
+};
+
+export function createWorktreeService(deps: WorktreeServiceDeps) {
+  const { repoRoot, store, defaultBaseBranch } = deps;
+
+  function getWorktreeTemplate(): string {
+    const settings = store.getPreference<{ worktreePathTemplate?: string }>("settings");
+    return settings?.worktreePathTemplate || DEFAULT_WORKTREE_TEMPLATE;
+  }
+
+  async function resolveProjectRoot(raw: unknown): Promise<string | null> {
+    if (typeof raw !== "string" || !raw.trim()) return null;
+    const resolved = path.resolve(raw.trim());
+    if (!(await pathExistsAndIsDirectory(resolved))) return null;
+    try {
+      await fs.stat(path.join(resolved, ".git"));
+      return resolved;
+    } catch {
+      return null;
+    }
+  }
+
+  async function gitBranchNameValid(branch: string, cwd: string = repoRoot): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      execFile("git", ["check-ref-format", "--branch", branch], { cwd }, (err) => {
+        resolve(!err);
+      });
+    });
+  }
+
+  async function gitRefExists(ref: string, cwd: string = repoRoot): Promise<boolean> {
+    return await new Promise<boolean>((resolve) => {
+      execFile("git", ["rev-parse", "--verify", "--quiet", ref], { cwd }, (err) => {
+        resolve(!err);
+      });
+    });
+  }
+
+  function isBranchFormatLikelySafe(branch: string): boolean {
+    if (!/^[A-Za-z0-9._/-]{1,120}$/.test(branch)) return false;
+    if (branch.startsWith("/") || branch.startsWith("-")) return false;
+    if (branch.endsWith("/") || branch.endsWith(".")) return false;
+    if (branch.includes("..") || branch.includes("//") || branch.includes("@{")) return false;
+    if (branch.endsWith(".lock")) return false;
+    return true;
+  }
+
+  function listWorktrees(): { worktrees: WorktreeSummary[]; repoRoot: string } {
+    refreshWorktreeCacheSync(repoRoot);
+    const cache = getWorktreeCache(repoRoot);
+    const worktrees: WorktreeSummary[] = [];
+    for (const entry of cache) {
+      if (entry.path === repoRoot) continue;
+      worktrees.push({
+        name: entry.branch || path.basename(entry.path),
+        path: entry.path,
+        branch: entry.branch,
+      });
+    }
+    return { worktrees, repoRoot };
+  }
+
+  async function worktreeStatus(wtPath: string): Promise<WorktreeStatus> {
+    const resolved = path.resolve(wtPath);
+    if (!isKnownWorktree(resolved, repoRoot)) {
+      throw new Error("path is not a known worktree");
+    }
+    const statusText = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["status", "--porcelain"], { cwd: resolved }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
+    const dirty = statusText.trim().length > 0;
+    let branch = "";
+    try {
+      branch = await new Promise<string>((resolve, reject) => {
+        execFile("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: resolved }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout.trim());
+        });
+      });
+    } catch {
+      // ignore
+    }
+    return { dirty, branch };
+  }
+
+  async function defaultBranch(projectRoot: string | null): Promise<string> {
+    const cwd = projectRoot ?? repoRoot;
+    try {
+      const ref = await new Promise<string>((resolve, reject) => {
+        execFile("git", ["symbolic-ref", "refs/remotes/origin/HEAD"], { cwd }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout.trim());
+        });
+      });
+      const branch = ref.replace(/^refs\/remotes\/origin\//, "");
+      if (branch) return branch;
+    } catch {
+      // fall through
+    }
+    for (const candidate of ["main", "master"]) {
+      if (await gitRefExists(candidate, cwd)) return candidate;
+    }
+    return "main";
+  }
+
+  async function createWorktreeFromHead(branch: string, templateRoot?: string): Promise<string> {
+    if (!isBranchFormatLikelySafe(branch) || !(await gitBranchNameValid(branch, repoRoot))) {
+      throw new Error("invalid branch name");
+    }
+    const wtPath = resolveWorktreePath(repoRoot, branch, templateRoot ?? getWorktreeTemplate());
+    await fs.mkdir(path.dirname(wtPath), { recursive: true });
+    await new Promise<void>((resolve, reject) => {
+      execFile("git", ["worktree", "add", wtPath, "-b", branch], { cwd: repoRoot }, (err) => {
+        if (err) reject(err);
+        else resolve();
+      });
+    });
+    refreshWorktreeCacheSync(repoRoot);
+    return wtPath;
+  }
+
+  async function createWorktreeFromBase(options: {
+    projectRoot?: string | null;
+    branch: string;
+    baseBranch?: string;
+  }): Promise<string> {
+    const effectiveRepoRoot = options.projectRoot ?? repoRoot;
+    const branch = options.branch.trim();
+    const baseBranch = (options.baseBranch ?? defaultBaseBranch).trim();
+    if (!isBranchFormatLikelySafe(branch) || !(await gitBranchNameValid(branch, effectiveRepoRoot))) {
+      throw new Error("invalid branch name");
+    }
+    if (!isBranchFormatLikelySafe(baseBranch)) {
+      throw new Error("invalid base branch");
+    }
+    if (!(await gitRefExists(`${baseBranch}^{commit}`, effectiveRepoRoot))) {
+      throw new Error(`base branch not found: ${baseBranch}`);
+    }
+    const wtPath = resolveWorktreePath(effectiveRepoRoot, branch, getWorktreeTemplate());
+    await fs.mkdir(path.dirname(wtPath), { recursive: true });
+    const branchExists = await gitRefExists(`refs/heads/${branch}`, effectiveRepoRoot);
+    if (branchExists) {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "add", wtPath, branch], { cwd: effectiveRepoRoot }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "add", "-b", branch, wtPath, baseBranch], { cwd: effectiveRepoRoot }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+    refreshWorktreeCacheSync(effectiveRepoRoot);
+    return wtPath;
+  }
+
+  async function removeWorktree(wtPath: string): Promise<void> {
+    const resolved = path.resolve(wtPath);
+    if (!isKnownWorktree(resolved, repoRoot)) {
+      throw new Error("path is not a known worktree");
+    }
+    const statusText = await new Promise<string>((resolve, reject) => {
+      execFile("git", ["status", "--porcelain"], { cwd: resolved }, (err, stdout) => {
+        if (err) reject(err);
+        else resolve(stdout);
+      });
+    });
+    if (statusText.trim().length > 0) {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "remove", "--force", resolved], { cwd: repoRoot }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } else {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "remove", resolved], { cwd: repoRoot }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+    try {
+      await new Promise<void>((resolve, reject) => {
+        execFile("git", ["worktree", "prune"], { cwd: repoRoot }, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    } catch {
+      // ignore prune failures
+    }
+    refreshWorktreeCacheSync(repoRoot);
+  }
+
+  async function directoryExists(rawPath: string): Promise<boolean> {
+    const resolved = path.resolve(rawPath);
+    return await pathExistsAndIsDirectory(resolved);
+  }
+
+  function isKnownWorktreePath(rawPath: string): boolean {
+    const resolved = path.resolve(rawPath);
+    return isKnownWorktree(resolved, repoRoot);
+  }
+
+  function refreshCache(): void {
+    refreshWorktreeCacheSync(repoRoot);
+  }
+
+  return {
+    listWorktrees,
+    worktreeStatus,
+    defaultBranch,
+    resolveProjectRoot,
+    createWorktreeFromBase,
+    createWorktreeFromHead,
+    removeWorktree,
+    directoryExists,
+    isKnownWorktreePath,
+    refreshCache,
+    getWorktreeTemplate,
+    isBranchFormatLikelySafe,
+    gitBranchNameValid,
+    gitRefExists,
+  };
+}

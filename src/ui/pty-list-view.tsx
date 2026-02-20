@@ -231,9 +231,14 @@ function PtyItemRow(
             <div className="primary">{item.process}</div>
             {item.title ? <span className="title-label" title={item.title}>{item.title}</span> : null}
           </div>
-          {item.worktree ? (
+          {(item.worktree || item.secondaryText) ? (
             <div className="secondary">
-              <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
+              {item.worktree ? (
+                <span className="worktree-badge" title={item.cwd ?? ""}>{item.worktree}</span>
+              ) : null}
+              {item.secondaryText ? (
+                <span className="secondary-text">{item.secondaryText}</span>
+              ) : null}
             </div>
           ) : null}
         </div>

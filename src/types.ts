@@ -1,59 +1,15 @@
-export type PtyId = string;
-
-export type PtyStatus = "running" | "exited";
-export type PtyReadinessState = "ready" | "busy" | "unknown";
-export type PtyReadinessIndicator = "ready" | "busy";
-export type TmuxServer = "agmux" | "default";
-
-export type PtySummary = {
-  id: PtyId;
-  name: string;
-  backend: "tmux";
-  tmuxSession?: string | null;
-  tmuxServer?: TmuxServer | null;
-  activeProcess?: string | null;
-  ready?: boolean;
-  readyState?: PtyReadinessState;
-  readyIndicator?: PtyReadinessIndicator;
-  readyReason?: string | null;
-  readyStateChangedAt?: number | null;
-  command: string;
-  args: string[];
-  cwd: string | null;
-  createdAt: number;
-  lastSeenAt?: number;
-  status: PtyStatus;
-  exitCode?: number | null;
-  exitSignal?: string | null;
-};
-
-export type ClientToServerMessage =
-  | { type: "subscribe"; ptyId: PtyId }
-  | { type: "input"; ptyId: PtyId; data: string }
-  | { type: "resize"; ptyId: PtyId; cols: number; rows: number }
-  | { type: "tmux_control"; ptyId: PtyId; direction: "up" | "down"; lines: number };
-
-export type ServerToClientMessage =
-  | { type: "pty_list"; ptys: PtySummary[] }
-  | { type: "pty_output"; ptyId: PtyId; data: string }
-  | { type: "pty_exit"; ptyId: PtyId; code: number | null; signal: string | null }
-  | {
-      type: "pty_ready";
-      ptyId: PtyId;
-      state: PtyReadinessState;
-      indicator: PtyReadinessIndicator;
-      reason: string;
-      ts: number;
-      cwd?: string | null;
-      activeProcess?: string | null;
-    }
-  | {
-      type: "trigger_fired";
-      ptyId: PtyId;
-      trigger: string;
-      match: string;
-      line: string;
-      ts: number;
-    }
-  | { type: "pty_highlight"; ptyId: PtyId; reason: string; ttlMs: number }
-  | { type: "trigger_error"; ptyId: PtyId; trigger: string; ts: number; message: string };
+export type {
+  AgentProvider,
+  AgentSessionCwdSource,
+  AgentSessionSummary,
+  ClientToServerMessage,
+  PtyId,
+  PtyReadinessIndicator,
+  PtyReadinessState,
+  PtyStatus,
+  PtySummary,
+  ServerToClientMessage,
+  TmuxServer,
+  TmuxSessionCheck,
+  TmuxSessionInfo,
+} from "./shared/protocol.js";

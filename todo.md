@@ -4,6 +4,7 @@ Core reliability and usability
 
 * Fix garbled PTYs after refresh
 * Add proper scrollback support
+* Add config to toggle alternate screen stripping (default on/off TBD)
 * Add scroll to bottom button and auto-scroll toggle
 * Show PTY window title dynamically
 * Tighten UI spacing, alignment, and visual hierarchy

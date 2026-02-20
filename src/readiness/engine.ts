@@ -8,6 +8,8 @@ const READINESS_WORKING_GRACE_MS = Math.max(
   Number(process.env.AGMUX_WORKING_GRACE_MS ?? "4000") || 4000,
 );
 const READINESS_RECOMPUTE_DEBOUNCE_MS = 120;
+const READINESS_POST_COMMAND_CHECK_MS = 800;
+const READINESS_SHELL_QUIET_MS = 250;
 const OUTPUT_BUFFER_LIMIT = 16_000;
 
 export type PtyReadyEvent = {
@@ -36,6 +38,8 @@ type PtyReadyStateInternal = {
   outputBuffer: string;
   lastCwd: string | null;
   activeProcess: string | null;
+  lastOutputAt: number;
+  lastCommandAt: number | null;
 };
 
 type ReadinessEvaluation = {
@@ -50,20 +54,26 @@ type ReadinessEvaluation = {
 export class ReadinessEngine {
   private readonly readinessByPty = new Map<string, PtyReadyStateInternal>();
   private readonly inputLineByPty = new Map<string, string>();
+  private readonly postCommandTimers = new Map<string, NodeJS.Timeout>();
 
   constructor(private readonly deps: ReadinessDeps) {}
 
   markOutput(ptyId: string, chunk: string): void {
     const st = this.ensureReadiness(ptyId);
     st.outputBuffer = mergeOutputBuffer(st.outputBuffer, chunk);
+    if (chunk) st.lastOutputAt = Date.now();
     this.scheduleReadinessRecompute(ptyId, READINESS_RECOMPUTE_DEBOUNCE_MS);
   }
 
   markInput(ptyId: string, data: string): void {
     const submittedCommand = this.updateInputLineBuffer(ptyId, data);
     if (submittedCommand) {
+      const st = this.ensureReadiness(ptyId);
+      st.lastCommandAt = Date.now();
+      this.maybeUpdateCwdFromCommand(ptyId, submittedCommand);
       this.setPtyReadiness(ptyId, "busy", "input:command");
       this.scheduleReadinessRecompute(ptyId, READINESS_RECOMPUTE_DEBOUNCE_MS);
+      this.schedulePostCommandCheck(ptyId);
       return;
     }
     this.scheduleReadinessRecompute(ptyId, READINESS_RECOMPUTE_DEBOUNCE_MS);
@@ -72,6 +82,7 @@ export class ReadinessEngine {
   markExited(ptyId: string): void {
     const st = this.ensureReadiness(ptyId);
     this.clearReadinessTimer(st);
+    this.clearPostCommandTimer(ptyId);
     this.inputLineByPty.delete(ptyId);
     st.paneCache = undefined;
     st.outputBuffer = "";
@@ -97,7 +108,7 @@ export class ReadinessEngine {
 
         const evaluation = await this.evaluateReadiness(p.id, p);
         st.activeProcess = evaluation.activeProcess;
-        this.setPtyReadiness(p.id, evaluation.state, evaluation.reason, false, evaluation.indicator);
+        this.setPtyReadiness(p.id, evaluation.state, evaluation.reason, false, evaluation.indicator, evaluation.cwd);
         if (evaluation.nextCheckInMs != null) this.scheduleReadinessRecompute(p.id, evaluation.nextCheckInMs);
 
         return {
@@ -118,6 +129,7 @@ export class ReadinessEngine {
     const st = this.ensureReadiness(ptyId);
     let activeProcess: string | null = summary.activeProcess ?? null;
     let cwd: string | null = summary.cwd ?? null;
+    const now = Date.now();
 
     if (!summary.tmuxSession) {
       return {
@@ -145,11 +157,18 @@ export class ReadinessEngine {
       tmuxPaneDimensions(summary.tmuxSession, summary.tmuxServer),
     ]);
     if (paneContent == null) {
+      const lastOutputAt = st.lastOutputAt ?? 0;
+      const lastCommandAt = st.lastCommandAt ?? 0;
+      const quietForMs = lastOutputAt > 0 ? now - lastOutputAt : Number.POSITIVE_INFINITY;
+      const sinceCommandMs = lastCommandAt > 0 ? now - lastCommandAt : Number.POSITIVE_INFINITY;
+      const isQuiet = activeProcess == null &&
+        quietForMs >= READINESS_SHELL_QUIET_MS &&
+        sinceCommandMs >= READINESS_POST_COMMAND_CHECK_MS;
       return {
-        state: "unknown",
-        indicator: st.indicator,
+        state: isQuiet ? "ready" : "busy",
+        indicator: isQuiet ? "ready" : "busy",
         reason: "tmux:capture-unavailable",
-        nextCheckInMs: null,
+        nextCheckInMs: isQuiet ? null : 250,
         activeProcess,
         cwd,
       };
@@ -162,11 +181,36 @@ export class ReadinessEngine {
         width: paneSize?.width ?? 120,
         height: paneSize?.height ?? 30,
       },
-      now: Date.now(),
+      now,
       workingGracePeriodMs: READINESS_WORKING_GRACE_MS,
     });
     st.paneCache = inferred.nextCache;
-    return this.mapInferred(inferred.status, inferred.nextCheckInMs, activeProcess, cwd, st.indicator);
+    let evaluation = this.mapInferred(inferred.status, inferred.nextCheckInMs, activeProcess, cwd, st.indicator);
+
+    if (activeProcess == null && evaluation.state === "busy") {
+      const lastCommandAt = st.lastCommandAt ?? 0;
+      const lastOutputAt = st.lastOutputAt ?? 0;
+      const quietForMs = lastOutputAt > 0 ? now - lastOutputAt : Number.POSITIVE_INFINITY;
+      const sinceCommandMs = lastCommandAt > 0 ? now - lastCommandAt : Number.POSITIVE_INFINITY;
+      if (quietForMs >= READINESS_SHELL_QUIET_MS && sinceCommandMs >= READINESS_POST_COMMAND_CHECK_MS) {
+        evaluation = {
+          state: "ready",
+          indicator: "ready",
+          reason: "input:quiet",
+          nextCheckInMs: null,
+          activeProcess,
+          cwd,
+        };
+      }
+    }
+
+    return evaluation;
+  }
+
+  markCwd(ptyId: string, cwd: string): void {
+    this.deps.ptys.updateCwd(ptyId, cwd);
+    const st = this.ensureReadiness(ptyId);
+    this.setPtyReadiness(ptyId, st.state, st.reason, true, st.indicator, cwd);
   }
 
   private mapInferred(
@@ -219,6 +263,8 @@ export class ReadinessEngine {
       outputBuffer: "",
       lastCwd: null,
       activeProcess: null,
+      lastOutputAt: 0,
+      lastCommandAt: null,
     };
     this.readinessByPty.set(ptyId, st);
     return st;
@@ -230,12 +276,17 @@ export class ReadinessEngine {
     st.timer = null;
   }
 
-  private updateInputLineBuffer(ptyId: string, data: string): boolean {
+  private updateInputLineBuffer(ptyId: string, data: string): string | null {
+    const cleaned = data
+      .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
+      .replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, "")
+      .replace(/\x1b./g, "");
     let line = this.inputLineByPty.get(ptyId) ?? "";
-    let submitted = false;
-    for (const ch of data) {
+    let submitted: string | null = null;
+    for (const ch of cleaned) {
       if (ch === "\r" || ch === "\n") {
-        if (line.trim().length > 0) submitted = true;
+        const trimmed = line.trim();
+        if (trimmed.length > 0) submitted = trimmed;
         line = "";
         continue;
       }
@@ -255,16 +306,31 @@ export class ReadinessEngine {
     return submitted;
   }
 
+  private maybeUpdateCwdFromCommand(ptyId: string, command: string): void {
+    const trimmed = command.trim();
+    if (!trimmed) return;
+    const m = /^cd\s+(.+)$/.exec(trimmed);
+    if (!m) return;
+    let target = (m[1] ?? "").trim();
+    if (!target) return;
+    if ((target.startsWith("\"") && target.endsWith("\"")) || (target.startsWith("'") && target.endsWith("'"))) {
+      target = target.slice(1, -1).trim();
+    }
+    if (!target.startsWith("/")) return;
+    this.deps.ptys.updateCwd(ptyId, target);
+  }
+
   private setPtyReadiness(
     ptyId: string,
     state: PtyReadinessState,
     reason: string,
     emitEvent = true,
     indicatorOverride?: PtyReadinessIndicator,
+    cwdOverride?: string | null,
   ): void {
     const st = this.ensureReadiness(ptyId);
     const indicator = state === "ready" ? "ready" : state === "busy" ? "busy" : (indicatorOverride ?? st.indicator);
-    const cwd = this.deps.ptys.getSummary(ptyId)?.cwd ?? null;
+    const cwd = cwdOverride ?? this.deps.ptys.getSummary(ptyId)?.cwd ?? null;
     const cwdChanged = cwd !== st.lastCwd;
     if (st.state === state && st.reason === reason && st.indicator === indicator && !cwdChanged) return;
     st.state = state;
@@ -294,6 +360,22 @@ export class ReadinessEngine {
     }, Math.max(20, delayMs));
   }
 
+  private schedulePostCommandCheck(ptyId: string): void {
+    this.clearPostCommandTimer(ptyId);
+    const timer = setTimeout(() => {
+      this.postCommandTimers.delete(ptyId);
+      void this.recomputeReadiness(ptyId);
+    }, READINESS_POST_COMMAND_CHECK_MS);
+    this.postCommandTimers.set(ptyId, timer);
+  }
+
+  private clearPostCommandTimer(ptyId: string): void {
+    const timer = this.postCommandTimers.get(ptyId);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.postCommandTimers.delete(ptyId);
+  }
+
   private async recomputeReadiness(ptyId: string): Promise<void> {
     const summary = this.deps.ptys.getSummary(ptyId);
     if (!summary || summary.status !== "running") {
@@ -304,7 +386,7 @@ export class ReadinessEngine {
     const evaluation = await this.evaluateReadiness(ptyId, summary);
     const st = this.ensureReadiness(ptyId);
     st.activeProcess = evaluation.activeProcess;
-    this.setPtyReadiness(ptyId, evaluation.state, evaluation.reason, true, evaluation.indicator);
+    this.setPtyReadiness(ptyId, evaluation.state, evaluation.reason, true, evaluation.indicator, evaluation.cwd);
     if (evaluation.nextCheckInMs != null) this.scheduleReadinessRecompute(ptyId, evaluation.nextCheckInMs);
   }
 

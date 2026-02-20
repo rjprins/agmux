@@ -1,32 +1,16 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { TmuxServer, TmuxSessionCheck, TmuxSessionInfo } from "./shared/protocol.js";
 
 const execFileAsync = promisify(execFile);
 
 // Keep agmux sessions isolated from any user tmux server.
 // - `-L <socket>`: use a dedicated server socket name
 // - `-f /dev/null`: do not load user config; we set options explicitly
-const TMUX_SOCKET = "agmux";
-const TMUX_BASE_ARGS = ["-L", TMUX_SOCKET, "-f", "/dev/null"] as const;
+const TMUX_SOCKET = process.env.AGMUX_TMUX_SOCKET ?? "agmux";
+const TMUX_BASE_ARGS = ["-L", TMUX_SOCKET, "-f", "/dev/null"];
 
-export type TmuxServer = "agmux" | "default";
-export type TmuxSessionInfo = {
-  name: string;
-  server: TmuxServer;
-  createdAt: number | null;
-  windows: number | null;
-};
-export type TmuxSessionCheck = {
-  name: string;
-  server: TmuxServer;
-  warnings: string[];
-  observed: {
-    mouse: string | null;
-    alternateScreen: string | null;
-    historyLimit: number | null;
-    terminalOverrides: string | null;
-  };
-};
+export type { TmuxServer, TmuxSessionCheck, TmuxSessionInfo };
 
 function validateShellExecutable(shell: string): string {
   const trimmed = shell.trim();
@@ -630,7 +614,7 @@ export async function tmuxPaneActiveProcess(
   const meta = await tmuxPaneMeta(name, serverHint);
   if (!meta || !meta.command) return null;
   if (!isShellCommand(meta.command)) return meta.command;
-  if (!meta.tty) return meta.command;
+  if (!meta.tty) return null;
   const fg = await ttyForegroundCommand(meta.tty, meta.panePid);
-  return fg ?? meta.command;
+  return fg ?? null;
 }

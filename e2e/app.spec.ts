@@ -825,8 +825,9 @@ test("switching same-name tmux sessions across servers keeps PTYs distinct", asy
     void dialog.accept();
   });
 
+  const tmuxSocket = process.env.AGMUX_TMUX_SOCKET ?? "agmux";
   await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "sh", "-lc", "echo default-server; exec cat"]);
-  await execFileAsync("tmux", ["-L", "agmux", "-f", "/dev/null", "new-session", "-d", "-s", sessionName, "sh", "-lc", "echo agmux-server; exec cat"]);
+  await execFileAsync("tmux", ["-L", tmuxSocket, "-f", "/dev/null", "new-session", "-d", "-s", sessionName, "sh", "-lc", "echo agmux-server; exec cat"]);
 
   try {
     await page.goto("/?nosup=1");
