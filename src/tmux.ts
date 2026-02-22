@@ -7,7 +7,8 @@ const execFileAsync = promisify(execFile);
 // Keep agmux sessions isolated from any user tmux server.
 // - `-L <socket>`: use a dedicated server socket name
 // - `-f /dev/null`: do not load user config; we set options explicitly
-const TMUX_SOCKET = process.env.AGMUX_TMUX_SOCKET ?? "agmux";
+const DEFAULT_TMUX_SOCKET = process.env.PORT ? `agmux-${process.env.PORT}` : "agmux";
+const TMUX_SOCKET = process.env.AGMUX_TMUX_SOCKET ?? DEFAULT_TMUX_SOCKET;
 const TMUX_BASE_ARGS = ["-L", TMUX_SOCKET, "-f", "/dev/null"];
 
 export type { TmuxServer, TmuxSessionCheck, TmuxSessionInfo };
@@ -228,6 +229,27 @@ export async function tmuxListSessions(): Promise<TmuxSessionInfo[]> {
     const bt = b.createdAt ?? 0;
     return bt - at || a.name.localeCompare(b.name);
   });
+}
+
+export async function tmuxHasAttachedLinkedViewSession(
+  baseSession: string,
+  server: TmuxServer,
+): Promise<boolean> {
+  const fmt = "#{session_name}\t#{session_attached}";
+  try {
+    const { stdout } = await tmuxExec(server, ["list-sessions", "-F", fmt]);
+    const lines = stdout.split("\n").map((v) => v.trim()).filter((v) => v.length > 0);
+    for (const line of lines) {
+      const [nameRaw, attachedRaw] = line.split("\t", 2);
+      const name = (nameRaw ?? "").trim();
+      if (!name || !tmuxIsLinkedViewSession(name, baseSession)) continue;
+      const attached = Number(attachedRaw);
+      if (Number.isFinite(attached) && attached > 0) return true;
+    }
+  } catch {
+    // ignore best-effort probe
+  }
+  return false;
 }
 
 async function tmuxShowOption(

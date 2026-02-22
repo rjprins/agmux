@@ -87,7 +87,7 @@ registerAgentRoutes({
 });
 
 registerWorktreeRoutes({ fastify, worktrees });
-registerTmuxRoutes({ fastify, agmuxSession: AGMUX_SESSION });
+registerTmuxRoutes({ fastify });
 registerSettingsRoutes({ fastify, store });
 registerPtyRoutes({
   fastify,

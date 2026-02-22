@@ -7,10 +7,12 @@ import {
   tmuxCreateLinkedSession,
   tmuxCreateWindow,
   tmuxEnsureSession,
+  tmuxHasAttachedLinkedViewSession,
   tmuxIsLinkedViewSession,
   tmuxKillWindow,
   tmuxListWindows,
   tmuxLocateSession,
+  tmuxTargetSession,
   type TmuxServer,
 } from "../../tmux.js";
 import { parseJsonBody } from "../auth.js";
@@ -233,11 +235,35 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
       reply.code(409);
       return { error: `tmux session exists on ${located}, not ${requestedServer}` };
     }
-    if (located === "agmux" && tmuxIsLinkedViewSession(name, agmuxSession)) {
+    if (tmuxIsLinkedViewSession(name)) {
       reply.code(400);
-      return { error: "internal linked session cannot be attached directly" };
+      return { error: "linked tmux view sessions cannot be attached directly" };
     }
     const server: TmuxServer = located;
+    const running = runtime.ptys.list() as Array<{
+      id: string;
+      status?: string;
+      tmuxSession?: string | null;
+      tmuxServer?: TmuxServer | null;
+    }>;
+    const existing = running.find(
+      (p) => p.status === "running" && p.tmuxSession === name && p.tmuxServer === server,
+    );
+    if (existing) {
+      return { id: existing.id, reused: true };
+    }
+    const baseSession = tmuxTargetSession(name);
+    const hasLocalForBase = running.some(
+      (p) =>
+        p.status === "running" &&
+        p.tmuxServer === server &&
+        p.tmuxSession &&
+        tmuxTargetSession(p.tmuxSession) === baseSession,
+    );
+    if (!hasLocalForBase && (await tmuxHasAttachedLinkedViewSession(baseSession, server))) {
+      reply.code(409);
+      return { error: "tmux session is already attached by another agmux server" };
+    }
     try {
       await tmuxApplySessionUiOptions(name, server);
     } catch {

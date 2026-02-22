@@ -9,15 +9,13 @@ import {
 
 type TmuxRoutesDeps = {
   fastify: FastifyInstance;
-  agmuxSession: string;
 };
 
 export function registerTmuxRoutes(deps: TmuxRoutesDeps): void {
-  const { fastify, agmuxSession } = deps;
+  const { fastify } = deps;
 
   fastify.get("/api/tmux/sessions", async () => {
-    const sessions = (await tmuxListSessions())
-      .filter((s) => !(s.server === "agmux" && tmuxIsLinkedViewSession(s.name, agmuxSession)));
+    const sessions = (await tmuxListSessions()).filter((s) => !tmuxIsLinkedViewSession(s.name));
     return { sessions };
   });
 

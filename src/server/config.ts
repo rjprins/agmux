@@ -54,7 +54,8 @@ export const WS_ALLOWED_ORIGINS = new Set(
   ].map((v) => v.toLowerCase()),
 );
 export const DEFAULT_BASE_BRANCH = "main";
-export const AGMUX_SESSION = process.env.AGMUX_TMUX_SESSION ?? "agmux";
+const DEFAULT_TMUX_SESSION = `agmux-${PORT}`;
+export const AGMUX_SESSION = process.env.AGMUX_TMUX_SESSION ?? DEFAULT_TMUX_SESSION;
 
 export function isLoopbackHost(host: string): boolean {
   const normalized = host.trim().toLowerCase();
