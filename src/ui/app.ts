@@ -1478,6 +1478,7 @@ type CloseWorktreeModalState = {
   worktreeName: string;
   worktreePath: string;
   dirty: boolean | null;
+  changes: string[];
   closing: boolean;
 };
 
@@ -1496,6 +1497,7 @@ function renderCloseWorktreeModalState(): void {
       ptyProcess: state.ptyProcess,
       worktreeName: state.worktreeName,
       dirty: state.dirty,
+      changes: state.changes,
       closing: state.closing,
     }
     : null;
@@ -1558,6 +1560,7 @@ function openCloseWorktreeModal(ptyId: string): void {
     worktreeName: wt,
     worktreePath,
     dirty: null,
+    changes: [],
     closing: false,
   };
   renderCloseWorktreeModalState();
@@ -1567,8 +1570,9 @@ function openCloseWorktreeModal(ptyId: string): void {
     .then(async (res) => {
       if (!closeWorktreeModalState || closeWorktreeModalState.ptyId !== ptyId) return;
       if (res.ok) {
-        const json = (await res.json()) as { dirty?: boolean };
+        const json = (await res.json()) as { dirty?: boolean; changes?: string[] };
         closeWorktreeModalState.dirty = json.dirty === true;
+        closeWorktreeModalState.changes = Array.isArray(json.changes) ? json.changes : [];
       } else {
         closeWorktreeModalState.dirty = false;
       }

@@ -20,6 +20,7 @@ type WorktreeServiceDeps = {
 export type WorktreeStatus = {
   dirty: boolean;
   branch: string;
+  changes: string[];
 };
 
 export type WorktreeSummary = {
@@ -99,7 +100,8 @@ export function createWorktreeService(deps: WorktreeServiceDeps) {
         else resolve(stdout);
       });
     });
-    const dirty = statusText.trim().length > 0;
+    const changes = statusText.split("\n").map((l) => l.trim()).filter(Boolean);
+    const dirty = changes.length > 0;
     let branch = "";
     try {
       branch = await new Promise<string>((resolve, reject) => {
@@ -111,7 +113,7 @@ export function createWorktreeService(deps: WorktreeServiceDeps) {
     } catch {
       // ignore
     }
-    return { dirty, branch };
+    return { dirty, branch, changes: changes.slice(0, 20) };
   }
 
   async function defaultBranch(projectRoot: string | null): Promise<string> {

@@ -4,6 +4,7 @@ export type CloseWorktreeModalViewModel = {
   ptyProcess: string;
   worktreeName: string;
   dirty: boolean | null; // null = still loading
+  changes: string[];
   closing: boolean;
 };
 
@@ -60,6 +61,9 @@ export function renderCloseWorktreeModal(
               ? "Worktree has uncommitted changes. Removing it will discard them."
               : "Worktree is clean."}
         </p>
+        {isDirty && model.changes.length > 0 && (
+          <pre className="close-wt-changes">{model.changes.slice(0, 10).join("\n")}{model.changes.length > 10 ? `\n... and ${model.changes.length - 10} more` : ""}</pre>
+        )}
 
         <div className="launch-modal-buttons close-wt-buttons">
           <button type="button" onClick={() => handlers.onClose()} disabled={model.closing}>

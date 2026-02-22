@@ -1157,6 +1157,19 @@ button:disabled {
   border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
 }
 
+.close-wt-changes {
+  font-size: 0.8em;
+  max-height: 10em;
+  overflow: auto;
+  margin: 0.25em 0 0.5em;
+  padding: 0.5em;
+  background: color-mix(in srgb, var(--danger) 5%, var(--bg));
+  border: 1px solid color-mix(in srgb, var(--danger) 20%, transparent);
+  border-radius: 4px;
+  white-space: pre;
+  color: var(--fg-muted);
+}
+
 .close-wt-buttons {
   flex-wrap: wrap;
 }
