@@ -37,15 +37,28 @@ type PtyRoutesDeps = {
   agmuxSession: string;
 };
 
-const FLAG_DEFAULTS: Record<string, Record<string, string>> = {
+export const FLAG_DEFAULTS: Record<string, Record<string, string>> = {
   claude: { "--permission-mode": "default" },
   codex: { "--ask-for-approval": "untrusted", "--sandbox": "read-only" },
 };
 
-function agentCommand(agent: string, flags: Record<string, string | boolean>): string {
+export function agentCommand(agent: string, flags: Record<string, string | boolean>): string {
   const defaults = FLAG_DEFAULTS[agent] ?? {};
+
+  // Codex: --full-auto and --dangerously-bypass-approvals-and-sandbox both make
+  // --ask-for-approval and --sandbox meaningless. Strip the conflicting flags so
+  // the generated command is not self-contradictory.
+  const suppressedFlags = new Set<string>();
+  if (agent === "codex") {
+    if (flags["--full-auto"] === true || flags["--dangerously-bypass-approvals-and-sandbox"] === true) {
+      suppressedFlags.add("--ask-for-approval");
+      suppressedFlags.add("--sandbox");
+    }
+  }
+
   const parts = [agent];
   for (const [flag, value] of Object.entries(flags)) {
+    if (suppressedFlags.has(flag)) continue;
     if (typeof value === "boolean") {
       if (value) parts.push(flag);
     } else if (typeof value === "string" && value && value !== defaults[flag]) {

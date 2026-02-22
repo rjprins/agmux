@@ -78,7 +78,6 @@ export function createWorktreeService(deps: WorktreeServiceDeps) {
     const cache = getWorktreeCache(repoRoot);
     const worktrees: WorktreeSummary[] = [];
     for (const entry of cache) {
-      if (entry.path === repoRoot) continue;
       worktrees.push({
         name: entry.branch || path.basename(entry.path),
         path: entry.path,
@@ -124,12 +123,48 @@ export function createWorktreeService(deps: WorktreeServiceDeps) {
         });
       });
       const branch = ref.replace(/^refs\/remotes\/origin\//, "");
-      if (branch) return branch;
+      // Only use the origin/HEAD branch if a local ref actually exists for it,
+      // so callers can use it as a base branch without error.
+      if (branch && (await gitRefExists(branch, cwd))) return branch;
     } catch {
       // fall through
     }
     for (const candidate of ["main", "master"]) {
       if (await gitRefExists(candidate, cwd)) return candidate;
+    }
+    // Neither "main" nor "master" exists. Return the current branch so we
+    // don't hand back a non-existent branch name as the default base.
+    try {
+      const current = await new Promise<string>((resolve, reject) => {
+        execFile("git", ["symbolic-ref", "--short", "HEAD"], { cwd }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout.trim());
+        });
+      });
+      if (current) return current;
+    } catch {
+      // HEAD is detached — fall through to branch enumeration.
+    }
+    // Detached HEAD with no main/master: return the first local branch found
+    // so we never hand back a branch name that doesn't exist in this repo.
+    // Use for-each-ref to enumerate actual refs rather than git-branch output
+    // which can be ambiguous in detached HEAD state.
+    try {
+      const output = await new Promise<string>((resolve, reject) => {
+        execFile(
+          "git",
+          ["for-each-ref", "refs/heads/", "--sort=-committerdate", "--format=%(refname:short)"],
+          { cwd },
+          (err, stdout) => {
+            if (err) reject(err);
+            else resolve(stdout.trim());
+          },
+        );
+      });
+      const first = output.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+      if (first) return first;
+    } catch {
+      // ignore
     }
     return "main";
   }
