@@ -121,6 +121,35 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
   }
 });
 
+test("mobile UI can send input via composer", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?nosup=1");
+
+  const token = await readSessionToken(page);
+  const createRes = await page.request.post(`/api/ptys/shell?token=${encodeURIComponent(token)}`);
+  expect(createRes.ok()).toBeTruthy();
+  const createJson = (await createRes.json()) as { id?: unknown };
+  const ptyId = typeof createJson.id === "string" ? createJson.id : null;
+
+  await expect(page.locator(".mobile-session-card")).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.locator(".mobile-connection")).toContainText("Live", { timeout: 10_000 });
+  await page.locator(".mobile-session-card").first().click();
+  await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 10_000 });
+
+  const textarea = page.locator(".mobile-composer textarea");
+  await textarea.fill("echo mobile-ok");
+  await expect(page.locator(".mobile-send")).toBeEnabled();
+  await page.locator(".mobile-send").click();
+
+  await expect
+    .poll(async () => page.locator(".focus-preview").innerText(), { timeout: 30_000 })
+    .toContain("mobile-ok");
+
+  if (ptyId) {
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  }
+});
+
 test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 520 });
   await page.goto("/?nosup=1");

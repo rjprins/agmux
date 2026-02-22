@@ -43,6 +43,15 @@ import {
   type SessionPreviewModalViewModel,
   type SessionPreviewMessage,
 } from "./session-preview-modal-view";
+import {
+  renderMobileView,
+  type MobileFocus,
+  type MobileInactivePreview,
+  type MobileInactiveSession,
+  type MobileRunningSession,
+  type MobileView,
+  type MobileViewModel,
+} from "./mobile-view";
 
 type ServerMsg = ServerToClientMessage;
 
@@ -56,12 +65,21 @@ const inputContextToggleEl = $("input-context-toggle");
 const inputContextLastEl = $("input-context-last");
 const inputHistoryLabelEl = $("input-history-label");
 const inputHistoryListEl = $("input-history-list");
+const mobileRoot = document.createElement("div");
+mobileRoot.id = "mobile-root";
+document.body.appendChild(mobileRoot);
 
 let ptys: PtySummary[] = [];
 let agentSessions: AgentSessionSummary[] = [];
 let activePtyId: string | null = null;
 let pendingActivePtyId: string | null = null;
 let inputHistoryExpanded = false;
+let wsConnected = false;
+
+let mobileView: MobileView = "active";
+let mobileInputDraft = "";
+let mobilePreviewState: MobileInactivePreview | null = null;
+let mobilePreviewSeq = 0;
 
 // Client-side worktree cache, populated from GET /api/worktrees
 let knownWorktrees: Array<{ name: string; path: string; branch: string }> = [];
@@ -294,8 +312,16 @@ async function refreshWorktreeCache(): Promise<void> {
   }
 }
 
-// Periodically refresh worktree cache
-setInterval(() => void refreshWorktreeCache(), 30_000);
+// Periodically refresh worktree cache (low frequency, skip when hidden).
+const WORKTREE_REFRESH_MS = 120_000;
+setInterval(() => {
+  if (document.hidden) return;
+  void refreshWorktreeCache();
+}, WORKTREE_REFRESH_MS);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) return;
+  void refreshWorktreeCache();
+});
 
 // Cache of directory existence checks, refreshed on each PTY list update.
 const directoryExistsCache = new Map<string, boolean>();
@@ -475,6 +501,14 @@ let activeTheme: Theme = THEMES.get(activeThemeKey) ?? THEMES.get(DEFAULT_THEME_
 // Apply theme to CSS vars immediately (before any terminal creation).
 applyTheme(activeTheme, []);
 
+const MOBILE_MEDIA_QUERY = "(max-width: 920px)";
+const mobileMedia = window.matchMedia(MOBILE_MEDIA_QUERY);
+let mobileViewport = mobileMedia.matches;
+mobileMedia.addEventListener("change", (ev) => {
+  mobileViewport = ev.matches;
+  renderMobileViewState();
+});
+
 function setTheme(key: string): void {
   const next = THEMES.get(key);
   if (!next) return;
@@ -509,6 +543,9 @@ terminalEl.appendChild(placeholderEl);
 function startAssetReloadPoller(): void {
   const urls = ["/app.js", "/styles.css", "/index.html", "/xterm.css"];
   const last = new Map<string, string>();
+  const BASE_INTERVAL_MS = 10_000;
+  const HIDDEN_INTERVAL_MS = 60_000;
+  let timer: ReturnType<typeof setTimeout> | null = null;
 
   async function headEtag(url: string): Promise<string> {
     try {
@@ -521,6 +558,7 @@ function startAssetReloadPoller(): void {
   }
 
   async function tick(): Promise<void> {
+    if (document.hidden) return;
     for (const url of urls) {
       const etag = await headEtag(url);
       if (!etag) continue;
@@ -533,8 +571,27 @@ function startAssetReloadPoller(): void {
     }
   }
 
-  setInterval(() => void tick(), 1500);
-  void tick();
+  function schedule(nextImmediate = false): void {
+    if (timer) return;
+    const delay = nextImmediate
+      ? 0
+      : (document.hidden ? HIDDEN_INTERVAL_MS : BASE_INTERVAL_MS);
+    timer = setTimeout(async () => {
+      timer = null;
+      await tick();
+      schedule();
+    }, delay);
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    schedule();
+  });
+
+  schedule(true);
 }
 
 function createTermState(ptyId: string): TermState {
@@ -679,6 +736,8 @@ function connectWs(): void {
   ws.addEventListener("open", () => {
     wsReconnectDelay = 0;
     addEvent(`WS connected`);
+    wsConnected = true;
+    scheduleMobileRender();
     for (const ptyId of subscribed) {
       sendWsMessage({ type: "subscribe", ptyId });
     }
@@ -687,6 +746,8 @@ function connectWs(): void {
 
   ws.addEventListener("close", () => {
     addEvent(`WS disconnected`);
+    wsConnected = false;
+    scheduleMobileRender();
     scheduleWsReconnect();
   });
 
@@ -854,7 +915,10 @@ function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_output") {
     const st = ensureTerm(msg.ptyId);
     st.term.write(msg.data);
-    if (msg.ptyId === activePtyId) scheduleReflow();
+    if (msg.ptyId === activePtyId) {
+      scheduleReflow();
+    }
+    if (mobileViewport) scheduleMobileRender();
     return;
   }
   if (msg.type === "pty_exit") {
@@ -879,12 +943,12 @@ function onServerMsg(msg: ServerMsg): void {
     highlight(msg.ptyId, 2000);
     return;
   }
-  if (msg.type === "pty_highlight") {
-    highlight(msg.ptyId, msg.ttlMs);
-    return;
-  }
   if (msg.type === "trigger_error") {
     addEvent(`[${msg.ptyId}] trigger error ${msg.trigger}: ${msg.message}`);
+    return;
+  }
+  if (msg.type === "pty_highlight") {
+    highlight(msg.ptyId, msg.ttlMs);
     return;
   }
 }
@@ -970,7 +1034,10 @@ function addEvent(text: string): void {
   while (eventsEl.children.length > 50) eventsEl.removeChild(eventsEl.lastElementChild!);
 }
 
+let listRefreshInFlight = false;
 async function refreshList(): Promise<void> {
+  if (listRefreshInFlight) return;
+  listRefreshInFlight = true;
   try {
     const [ptysRes, sessionsRes] = await Promise.all([
       authFetch("/api/ptys", { cache: "no-store" }),
@@ -1002,6 +1069,8 @@ async function refreshList(): Promise<void> {
     renderList();
   } catch (err) {
     addEvent(`Failed to refresh PTYs: ${errorMessage(err)}`);
+  } finally {
+    listRefreshInFlight = false;
   }
 }
 
@@ -2211,6 +2280,274 @@ function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePt
   };
 }
 
+// ---------------------------------------------------------------------------
+// Mobile UI
+// ---------------------------------------------------------------------------
+
+const AGENT_PROCESS_NAMES = [
+  "claude",
+  "codex",
+  "aider",
+  "goose",
+  "opencode",
+  "cursor-agent",
+  "pi",
+];
+const QUICK_PROMPTS_AGENT = [
+  "Summarize progress",
+  "Next steps?",
+  "Show diff summary",
+  "Run tests",
+];
+const QUICK_PROMPTS_SHELL = [
+  "pwd",
+  "ls",
+  "git status",
+  "git diff --stat",
+];
+
+function isAgentProcessName(process: string): boolean {
+  const lower = process.toLowerCase();
+  return AGENT_PROCESS_NAMES.some((name) => lower.includes(name));
+}
+
+function buildMobileSubtitle(worktree?: string, secondary?: string, cwd?: string): string {
+  const parts = [];
+  if (worktree) parts.push(worktree);
+  if (secondary) parts.push(secondary);
+  if (!parts.length && cwd) parts.push(cwd);
+  return parts.join(" / ");
+}
+
+function getOutputPreviewLines(ptyId: string, maxLines = 6): string[] {
+  const st = terms.get(ptyId);
+  if (!st) return [];
+  const buf = st.term.buffer.active;
+  const start = Math.max(0, buf.length - maxLines * 3);
+  const lines: string[] = [];
+  for (let i = start; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    const text = line.translateToString(true).replace(/\s+$/g, "");
+    lines.push(text);
+  }
+  while (lines.length > 0 && lines[0].trim().length === 0) lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) lines.pop();
+  return lines.slice(-maxLines);
+}
+
+function buildMobileRunningSession(p: PtySummary): MobileRunningSession {
+  const item = buildRunningPtyItem(p);
+  const subtitle = buildMobileSubtitle(item.worktree, item.secondaryText, item.cwd);
+  return {
+    id: p.id,
+    process: item.process,
+    subtitle,
+    worktree: item.worktree,
+    cwd: item.cwd,
+    readyState: item.readyState,
+    readyIndicator: item.readyIndicator,
+    readyReason: item.readyReason,
+    elapsed: item.elapsed,
+    lastInput: ptyLastInput.get(p.id) ?? "",
+    outputPreview: getOutputPreviewLines(p.id, 3),
+    active: item.active,
+  };
+}
+
+function buildMobileFocus(p: PtySummary): MobileFocus {
+  const item = buildRunningPtyItem(p);
+  return {
+    id: p.id,
+    title: item.process,
+    subtitle: buildMobileSubtitle(item.worktree, item.secondaryText, item.cwd),
+    readyState: item.readyState,
+    readyIndicator: item.readyIndicator,
+    readyReason: item.readyReason,
+    elapsed: item.elapsed,
+    lastInput: ptyLastInput.get(p.id) ?? "",
+    outputLines: getOutputPreviewLines(p.id, 140),
+  };
+}
+
+function buildMobileInactiveSession(session: AgentSessionSummary): MobileInactiveSession {
+  const elapsed = formatElapsedTime(session.lastSeenAt);
+  return {
+    id: session.id,
+    title: displaySessionTitle(session),
+    subtitle: displaySessionSubtitle(session),
+    provider: session.provider,
+    worktree: session.worktree ?? undefined,
+    elapsed: elapsed || undefined,
+  };
+}
+
+let mobileRenderPending = false;
+function scheduleMobileRender(): void {
+  if (!mobileViewport) return;
+  if (mobileRenderPending) return;
+  mobileRenderPending = true;
+  requestAnimationFrame(() => {
+    mobileRenderPending = false;
+    renderMobileViewState();
+  });
+}
+
+function sendMobileInput(text: string): void {
+  if (!activePtyId) return;
+  const trimmed = text.trim();
+  if (!trimmed) return;
+  const payload = text.endsWith("\n") ? text : `${text}\n`;
+  sendWsMessage({ type: "input", ptyId: activePtyId, data: payload });
+  trackUserInput(activePtyId, payload);
+  mobileInputDraft = "";
+  renderMobileViewState();
+}
+
+function openMobilePreview(agentSessionId: string): void {
+  const session = agentSessions.find((x) => x.id === agentSessionId);
+  if (!session) return;
+  const seq = ++mobilePreviewSeq;
+  mobilePreviewState = {
+    id: session.id,
+    title: displaySessionTitle(session),
+    subtitle: displaySessionSubtitle(session),
+    provider: session.provider,
+    providerSessionId: session.providerSessionId,
+    loading: true,
+    messages: [],
+  };
+  renderMobileViewState();
+
+  void authFetch(
+    `/api/agent-sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.providerSessionId)}/conversation`,
+  )
+    .then(async (res) => (res.ok ? res.json() : Promise.reject(new Error(await readApiError(res)))))
+    .then((data: { messages?: SessionPreviewMessage[] }) => {
+      if (!mobilePreviewState || seq !== mobilePreviewSeq) return;
+      mobilePreviewState.messages = Array.isArray(data.messages) ? data.messages : [];
+      mobilePreviewState.loading = false;
+      renderMobileViewState();
+    })
+    .catch(() => {
+      if (!mobilePreviewState || seq !== mobilePreviewSeq) return;
+      mobilePreviewState.messages = [];
+      mobilePreviewState.loading = false;
+      renderMobileViewState();
+    });
+}
+
+function buildMobileViewModel(): MobileViewModel {
+  const running = ptys.filter((p) => p.status === "running").map((p) => buildMobileRunningSession(p));
+  const activeIdx = running.findIndex((r) => r.id === activePtyId);
+  if (activeIdx > 0) {
+    const [active] = running.splice(activeIdx, 1);
+    running.unshift(active);
+  }
+
+  const activeSummary = activePtyId ? ptys.find((p) => p.id === activePtyId) ?? null : null;
+  const focus = activeSummary ? buildMobileFocus(activeSummary) : null;
+  const activeTitle = focus?.title ?? "No session";
+  const activeProcess = focus?.title ?? "";
+  const quickPrompts = focus
+    ? (activeProcess && isAgentProcessName(activeProcess) ? QUICK_PROMPTS_AGENT : QUICK_PROMPTS_SHELL)
+    : [];
+
+  const inactive = [...agentSessions]
+    .filter((session) => !hiddenAgentSessionIds.has(session.id))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
+    .map((session) => buildMobileInactiveSession(session));
+
+  return {
+    connected: wsConnected,
+    view: mobileView,
+    running,
+    inactive,
+    focus,
+    activeTitle,
+    inputDraft: mobileInputDraft,
+    quickPrompts,
+    preview: mobilePreviewState,
+  };
+}
+
+function renderMobileViewState(): void {
+  if (mobileView === "session") {
+    const active = activePtyId ? ptys.find((p) => p.id === activePtyId && p.status === "running") : null;
+    if (!active) mobileView = "active";
+  }
+  if (!mobileViewport && !mobilePreviewState) {
+  renderMobileView(mobileRoot, null, {
+    onSelectRunning: () => {},
+    onCloseRunning: () => {},
+    onOpenLaunch: () => {},
+    onShowInactive: () => {},
+    onBack: () => {},
+      onChangeDraft: () => {},
+      onSendDraft: () => {},
+      onQuickPrompt: () => {},
+      onInterrupt: () => {},
+      onPreviewInactive: () => {},
+      onRestoreInactive: () => {},
+      onClosePreview: () => {},
+    });
+    return;
+  }
+  renderMobileView(mobileRoot, buildMobileViewModel(), {
+    onSelectRunning: (ptyId) => {
+      setActive(ptyId);
+      mobileView = "session";
+      renderMobileViewState();
+    },
+    onCloseRunning: (ptyId) => {
+      killPty(ptyId);
+      if (activePtyId === ptyId && mobileView === "session") {
+        mobileView = "active";
+      }
+      renderMobileViewState();
+    },
+    onOpenLaunch: () => {
+      const active = activePtyId ? ptys.find((p) => p.id === activePtyId) : null;
+      const groupCwd = active?.cwd ? normalizeCwdGroupKey(active.cwd) : "";
+      openLaunchModal(groupCwd);
+    },
+    onShowInactive: () => {
+      mobileView = "inactive";
+      renderMobileViewState();
+    },
+    onBack: () => {
+      mobileView = "active";
+      renderMobileViewState();
+    },
+    onChangeDraft: (value) => {
+      mobileInputDraft = value;
+      renderMobileViewState();
+    },
+    onSendDraft: () => {
+      sendMobileInput(mobileInputDraft);
+    },
+    onQuickPrompt: (prompt) => {
+      sendMobileInput(prompt);
+    },
+    onInterrupt: () => {
+      if (!activePtyId) return;
+      sendWsMessage({ type: "input", ptyId: activePtyId, data: "\u0003" });
+      addEvent(`Sent interrupt to ${activePtyId}`);
+      scheduleMobileRender();
+    },
+    onPreviewInactive: (agentSessionId) => openMobilePreview(agentSessionId),
+    onRestoreInactive: (agentSessionId) => {
+      mobilePreviewState = null;
+      renderMobileViewState();
+      openAgentSessionActions(agentSessionId);
+    },
+    onClosePreview: () => {
+      mobilePreviewState = null;
+      renderMobileViewState();
+    },
+  });
+}
+
 function buildInactiveWorktreeSubgroups(
   items: InactivePtyItem[],
   keyPrefix: string,
@@ -2496,9 +2833,11 @@ function renderList(): void {
       renderList();
     },
   });
+  renderMobileViewState();
 }
 
 function focusActiveTerm(): void {
+  if (mobileViewport) return;
   const st = activePtyId ? terms.get(activePtyId) : null;
   if (st) st.term.focus();
 }
@@ -2911,8 +3250,37 @@ void (async () => {
   }
 })();
 
-// Refresh sidebar every 5 seconds to keep time badges and cwd state current.
-setInterval(() => void refreshList(), 5000);
+const LIST_REFRESH_ACTIVE_MS = 5000;
+const LIST_REFRESH_IDLE_MS = 15_000;
+const LIST_REFRESH_HIDDEN_MS = 30_000;
+let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+function listRefreshInterval(): number {
+  if (document.hidden) return LIST_REFRESH_HIDDEN_MS;
+  const running = ptys.some((p) => p.status === "running");
+  return running ? LIST_REFRESH_ACTIVE_MS : LIST_REFRESH_IDLE_MS;
+}
+
+function scheduleListRefresh(immediate = false): void {
+  if (listRefreshTimer) return;
+  const delay = immediate ? 0 : listRefreshInterval();
+  listRefreshTimer = setTimeout(async () => {
+    listRefreshTimer = null;
+    await refreshList();
+    scheduleListRefresh();
+  }, delay);
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (listRefreshTimer) {
+    clearTimeout(listRefreshTimer);
+    listRefreshTimer = null;
+  }
+  scheduleListRefresh();
+});
+
+// Refresh sidebar on a slower, adaptive cadence to reduce idle network traffic.
+scheduleListRefresh(true);
 
 // Minimal debug hooks for e2e tests and local inspection.
 function dumpBuffer(st: TermState, maxLines = 120): string {

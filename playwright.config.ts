@@ -6,11 +6,16 @@ const appPort = Number.isInteger(requestedPort) && requestedPort > 0 ? requested
 const appUrl = `http://127.0.0.1:${appPort}`;
 const dbPath = process.env.E2E_DB_PATH ?? `/tmp/agmux-e2e-${appPort}.db`;
 const e2eToken = process.env.E2E_AGMUX_TOKEN ?? "e2e-token";
-const tmuxSocket = process.env.E2E_TMUX_SOCKET ?? "agmux-e2e";
-const tmuxSession = process.env.E2E_TMUX_SESSION ?? "agmux-e2e";
+const e2eSuffix =
+  process.env.E2E_TMUX_SUFFIX ??
+  `${Date.now().toString(36)}-${process.pid}-${Math.floor(Math.random() * 1_000_000).toString(36)}`;
+const tmuxSocket = process.env.E2E_TMUX_SOCKET ?? `agmux-e2e-${e2eSuffix}`;
+const tmuxSession = process.env.E2E_TMUX_SESSION ?? `agmux-e2e-${e2eSuffix}`;
 
 process.env.AGMUX_TMUX_SOCKET = tmuxSocket;
 process.env.AGMUX_TMUX_SESSION = tmuxSession;
+process.env.E2E_TMUX_SOCKET = tmuxSocket;
+process.env.E2E_TMUX_SESSION = tmuxSession;
 
 export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
