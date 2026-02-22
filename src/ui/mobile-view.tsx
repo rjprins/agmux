@@ -39,7 +39,6 @@ export type MobileFocus = {
   readyReason: string;
   elapsed?: string;
   lastInput?: string;
-  outputLines?: string[];
 };
 
 export type MobileInactivePreview = {
@@ -77,6 +76,7 @@ export type MobileViewHandlers = {
   onPreviewInactive: (agentSessionId: string) => void;
   onRestoreInactive: (agentSessionId: string) => void;
   onClosePreview: () => void;
+  onTermMountReady: (el: HTMLElement | null) => void;
 };
 
 function renderEmpty(title: string, hint: string) {
@@ -186,17 +186,10 @@ export function renderMobileView(
                   {model.focus.elapsed ? <div className="focus-elapsed">{model.focus.elapsed}</div> : null}
                 </div>
                 <div className="focus-subtitle" title={model.focus.subtitle}>{model.focus.subtitle}</div>
-                <div className="focus-output focus-preview" role="log" aria-live="polite">
-                  {model.focus.outputLines && model.focus.outputLines.length > 0 ? (
-                    model.focus.outputLines.map((line, i) => (
-                      <div key={`${model.focus.id}-out-${i}`} className="focus-output-line">{line || " "}</div>
-                    ))
-                  ) : model.focus.lastInput ? (
-                    <div className="focus-last-input">Last input: <span>{model.focus.lastInput}</span></div>
-                  ) : (
-                    <div className="focus-placeholder">No output yet. Send a command to start.</div>
-                  )}
-                </div>
+                <div
+                  className="focus-xterm-mount"
+                  ref={(el: HTMLElement | null) => handlers.onTermMountReady(el)}
+                />
                 <div className="focus-actions">
                   <button type="button" className="ghost" onClick={() => handlers.onInterrupt()}>
                     Interrupt

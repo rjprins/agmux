@@ -1576,29 +1576,18 @@ button:disabled {
     overflow: hidden;
   }
 
-  .focus-output {
+  .focus-xterm-mount {
     margin-top: 10px;
-    background: rgba(31, 27, 22, 0.08);
     border-radius: 12px;
-    padding: 10px 12px;
-    font-family: "JetBrains Mono", "Fira Code", "SF Mono", "Consolas", monospace;
-    font-size: 12px;
-    color: rgba(31, 27, 22, 0.85);
-    max-height: 42vh;
-    overflow-y: auto;
-    white-space: pre-wrap;
+    overflow: hidden;
+    position: relative;
+    min-height: 35vh;
+    max-height: 55vh;
   }
 
-  .focus-last-input span {
-    font-weight: 600;
-  }
-
-  .focus-placeholder {
-    color: rgba(31, 27, 22, 0.55);
-  }
-
-  .focus-output-line + .focus-output-line {
-    margin-top: 4px;
+  .focus-xterm-mount .term-pane {
+    position: absolute;
+    inset: 0;
   }
 
   .focus-actions {
