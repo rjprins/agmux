@@ -62,6 +62,15 @@ Mobile and secondary UX
 
 * Improve mobile monitoring view
 
+Mobile agent UI (new)
+
+- [x] Design mobile-first agent UI (sessions, attention, agents)
+- [x] Add mobile composer for quick commands/prompts
+- [x] Add attention queue sourced from trigger events
+- [x] Add agent preview sheet with restore action
+- [x] Add responsive styling + animations for mobile layout
+- [x] Add Playwright e2e coverage for mobile composer flow
+
 Restore sessions
 
 - [x] Separate reconnect from restore in product model and code comments
