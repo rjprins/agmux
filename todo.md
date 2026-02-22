@@ -2,14 +2,12 @@
 
 Core reliability and usability
 
-* Fix garbled PTYs after refresh
-* Add proper scrollback support
-* Add config to toggle alternate screen stripping (default on/off TBD)
+* Fix garbled PTYs after server restart/refresh - still happens
+* Add scrollbar, is it possible?
 * Add scroll to bottom button and auto-scroll toggle
-* Show PTY window title dynamically
-* Tighten UI spacing, alignment, and visual hierarchy
 * Improve session naming defaults
-* Improve session switching speed
+* Sort sessions by worktree, make worktree pill more visible
+* Always collapse project by default, except when there are active sessions.
 
 Launch and session awareness
 
