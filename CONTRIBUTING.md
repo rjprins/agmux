@@ -8,7 +8,6 @@ Thanks for your interest in contributing! This guide will help you get started.
 - **npm**
 - **tmux** (for the default shell backend)
 - **build-essential** / C++ toolchain (for native addons: `node-pty`, `better-sqlite3`)
-- **Go 1.22+** (optional, only needed for the supervisor)
 
 On Ubuntu/Debian:
 ```sh
@@ -27,10 +26,10 @@ cd agmux
 # Install dependencies
 npm install
 
-# Start in live mode (auto-rebuild, auto-reload)
-npm run live
+# Start in dev mode (auto-rebuild, auto-reload)
+npm run dev
 
-# Or start the app only (no supervisor)
+# Or start the app only (no file watching)
 npm run app
 ```
 
@@ -64,7 +63,6 @@ src/
   triggers/          # Trigger matching engine
   ui/                # Browser UI (bundled with esbuild)
   ws/                # WebSocket hub
-supervisor/          # Go supervisor (auto-commit, rollback)
 triggers/            # User-editable trigger definitions
 public/              # Static assets (mostly generated)
 test/                # Unit tests

@@ -8,13 +8,7 @@
 | **npm** | Package management, native addon compilation |
 | **tmux** | Default PTY backend for persistent sessions |
 | **build-essential** | `node-pty` and `better-sqlite3` compile native C/C++ addons |
-| **git** | Supervisor auto-commits, general workflow |
-
-## Runtime (optional)
-
-| Dependency | Why |
-|---|---|
-| **Go** (1.22+) | Build the supervisor for live-reload mode (`npm run live`) |
+| **git** | Worktrees, repo metadata, general workflow |
 
 ## Agents (run inside PTYs)
 

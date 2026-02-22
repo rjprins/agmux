@@ -11,7 +11,6 @@ Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Trigger system** — pattern-match on terminal output and run custom actions
 - **Readiness detection** — detect when sessions are actively working vs waiting for input
 - **Inactive session discovery** — include recent Claude/Codex/Pi JSONL sessions in the inactive list
-- **Supervisor mode** — auto-commit, auto-reload, and rollback UI for self-editable development
 - **Themeable UI** — 5 built-in themes
 - **Multi-worktree support** — manage multiple git worktrees from one interface
 
@@ -35,37 +34,22 @@ See [docs/dependencies.md](docs/dependencies.md) for the full list.
 git clone https://github.com/rjprins/agmux.git
 cd agmux
 npm install
-npm run live
+npm run dev
 ```
 
-This starts the app with the supervisor (auto-rebuild, auto-reload, rollback UI).
+This starts the app with auto-rebuild and auto-reload.
 
 - App: `http://127.0.0.1:4821`
-- Rollback UI: `http://127.0.0.1:4822`
 
-If you get "address already in use", pick different ports:
+If you get "address already in use", pick a different port:
 ```sh
-APP_PORT=4823 SUP_PORT=4824 npm run live
+PORT=4823 npm run dev
 ```
 
-Start app only (no supervisor):
+Start app only (no file watching):
 ```sh
 npm run app
 ```
-
-## Supervisor
-
-The supervisor watches for file edits (including edits made by agents inside PTYs), auto-commits them to git, rebuilds the UI when needed, restarts the server, and triggers browser reloads. It also serves a rollback UI.
-
-For extra safety, you can install the supervisor binary outside the repo so PTY agents can't modify it:
-
-```sh
-cd supervisor
-GOCACHE=/tmp/go-build-cache go build -o ~/.local/bin/agmux-supervisor .
-~/.local/bin/agmux-supervisor -repo "$(pwd)/.." -app-port 4821 -sup-port 4822
-```
-
-Requires **Go 1.22+**. Optional hardening (Linux): make the installed supervisor binary non-writable for the PTY agent user.
 
 ## Triggers
 
