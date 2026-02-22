@@ -80,6 +80,8 @@ let mobileView: MobileView = "active";
 let mobileInputDraft = "";
 let mobilePreviewState: MobileInactivePreview | null = null;
 let mobilePreviewSeq = 0;
+let mobileTermMountEl: HTMLElement | null = null;
+let mobileReparentedPtyId: string | null = null;
 
 // Client-side worktree cache, populated from GET /api/worktrees
 let knownWorktrees: Array<{ name: string; path: string; branch: string }> = [];
@@ -2368,7 +2370,6 @@ function buildMobileFocus(p: PtySummary): MobileFocus {
     readyReason: item.readyReason,
     elapsed: item.elapsed,
     lastInput: ptyLastInput.get(p.id) ?? "",
-    outputLines: getOutputPreviewLines(p.id, 140),
   };
 }
 
@@ -2393,6 +2394,44 @@ function scheduleMobileRender(): void {
     mobileRenderPending = false;
     renderMobileViewState();
   });
+}
+
+function reparentTermToMobile(): void {
+  if (!mobileTermMountEl || !activePtyId) return;
+  // Already reparented for this PTY
+  if (mobileReparentedPtyId === activePtyId && mobileTermMountEl.contains(terms.get(activePtyId)?.container ?? null)) return;
+
+  // Return any previously reparented term first
+  returnTermToDesktop();
+
+  const st = terms.get(activePtyId);
+  if (!st) return;
+
+  st.container.classList.remove("hidden");
+  st.term.options.disableStdin = true;
+  mobileTermMountEl.appendChild(st.container);
+  mobileReparentedPtyId = activePtyId;
+
+  requestAnimationFrame(() => {
+    st.fit.fit();
+    const cols = st.term.cols;
+    const rows = st.term.rows;
+    if (cols > 0 && rows > 0 && (!st.lastResize || st.lastResize.cols !== cols || st.lastResize.rows !== rows)) {
+      st.lastResize = { cols, rows };
+      sendWsMessage({ type: "resize", ptyId: st.ptyId, cols, rows });
+    }
+  });
+}
+
+function returnTermToDesktop(): void {
+  if (!mobileReparentedPtyId) return;
+  const st = terms.get(mobileReparentedPtyId);
+  if (st) {
+    st.term.options.disableStdin = false;
+    st.container.classList.add("hidden");
+    terminalEl.appendChild(st.container);
+  }
+  mobileReparentedPtyId = null;
 }
 
 function sendMobileInput(text: string): void {
@@ -2479,12 +2518,14 @@ function renderMobileViewState(): void {
     if (!active) mobileView = "active";
   }
   if (!mobileViewport && !mobilePreviewState) {
-  renderMobileView(mobileRoot, null, {
-    onSelectRunning: () => {},
-    onCloseRunning: () => {},
-    onOpenLaunch: () => {},
-    onShowInactive: () => {},
-    onBack: () => {},
+    returnTermToDesktop();
+    mobileTermMountEl = null;
+    renderMobileView(mobileRoot, null, {
+      onSelectRunning: () => {},
+      onCloseRunning: () => {},
+      onOpenLaunch: () => {},
+      onShowInactive: () => {},
+      onBack: () => {},
       onChangeDraft: () => {},
       onSendDraft: () => {},
       onQuickPrompt: () => {},
@@ -2492,7 +2533,12 @@ function renderMobileViewState(): void {
       onPreviewInactive: () => {},
       onRestoreInactive: () => {},
       onClosePreview: () => {},
+      onTermMountReady: () => {},
     });
+    if (activePtyId) {
+      updateTerminalVisibility();
+      requestAnimationFrame(() => { fitAndResizeActive(); reflowActiveTerm(); });
+    }
     return;
   }
   renderMobileView(mobileRoot, buildMobileViewModel(), {
@@ -2502,8 +2548,10 @@ function renderMobileViewState(): void {
       renderMobileViewState();
     },
     onCloseRunning: (ptyId) => {
+      if (mobileReparentedPtyId === ptyId) returnTermToDesktop();
       killPty(ptyId);
       if (activePtyId === ptyId && mobileView === "session") {
+        mobileTermMountEl = null;
         mobileView = "active";
       }
       renderMobileViewState();
@@ -2518,6 +2566,8 @@ function renderMobileViewState(): void {
       renderMobileViewState();
     },
     onBack: () => {
+      returnTermToDesktop();
+      mobileTermMountEl = null;
       mobileView = "active";
       renderMobileViewState();
     },
@@ -2546,6 +2596,12 @@ function renderMobileViewState(): void {
     onClosePreview: () => {
       mobilePreviewState = null;
       renderMobileViewState();
+    },
+    onTermMountReady: (el) => {
+      mobileTermMountEl = el;
+      if (el && mobileView === "session" && activePtyId) {
+        reparentTermToMobile();
+      }
     },
   });
 }
@@ -2998,6 +3054,8 @@ function updateTerminalVisibility(): void {
 
 function fitAndResizeActive(): void {
   if (!activePtyId) return;
+  // On mobile, reparenting handles fit; skip if term is in hidden desktop container
+  if (mobileViewport && mobileReparentedPtyId !== activePtyId) return;
   const st = terms.get(activePtyId);
   if (!st) return;
 
