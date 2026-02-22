@@ -15,8 +15,7 @@
   "scripts": {
     "app": "node scripts/build-ui.mjs && node --import tsx src/server.ts",
     "app:watch": "node scripts/build-ui.mjs && node --watch --import tsx src/server.ts",
-    "live": "node scripts/live.mjs",
-    "dev": "npm run -s live",
+    "dev": "node scripts/dev.mjs",
     "ui:build": "node scripts/build-ui.mjs",
     "build": "tsc -p tsconfig.json && node scripts/build-ui.mjs",
     "start": "node dist/server.js",
