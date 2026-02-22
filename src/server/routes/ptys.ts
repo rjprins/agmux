@@ -253,14 +253,17 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
       return { id: existing.id, reused: true };
     }
     const baseSession = tmuxTargetSession(name);
-    const hasLocalForBase = running.some(
+    const existingForBase = running.find(
       (p) =>
         p.status === "running" &&
         p.tmuxServer === server &&
         p.tmuxSession &&
         tmuxTargetSession(p.tmuxSession) === baseSession,
     );
-    if (!hasLocalForBase && (await tmuxHasAttachedLinkedViewSession(baseSession, server))) {
+    if (existingForBase) {
+      return { id: existingForBase.id, reused: true };
+    }
+    if (await tmuxHasAttachedLinkedViewSession(baseSession, server)) {
       reply.code(409);
       return { error: "tmux session is already attached by another agmux server" };
     }

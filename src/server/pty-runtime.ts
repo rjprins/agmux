@@ -177,6 +177,9 @@ export function createRuntime(deps: RuntimeDeps) {
       const windowTargets = new Set(windows.map((w) => w.target));
 
       const runningByTarget = new Map<string, string>();
+      // Track PTYs that target a whole session (no window specifier) — these
+      // cover every window in that session and must not be duplicated.
+      const sessionLevelPtyIds = new Set<string>();
       for (const p of ptys.list()) {
         if (
           p.status === "running" &&
@@ -190,12 +193,15 @@ export function createRuntime(deps: RuntimeDeps) {
             continue;
           }
           runningByTarget.set(p.tmuxSession, p.id);
+          if (!p.tmuxSession.includes(":")) {
+            sessionLevelPtyIds.add(p.id);
+          }
         }
       }
 
       const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
       for (const w of windows) {
-        if (!runningByTarget.has(w.target)) {
+        if (!runningByTarget.has(w.target) && !runningByTarget.has(agmuxSession)) {
           const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(w.target);
           const summary = ptys.spawn({
             name: `shell:${path.basename(shell)}`,
@@ -214,6 +220,9 @@ export function createRuntime(deps: RuntimeDeps) {
       }
 
       for (const [target, ptyId] of runningByTarget) {
+        // Session-level PTYs (no window specifier) are not expected to match a
+        // specific window target — skip them to avoid false kills.
+        if (sessionLevelPtyIds.has(ptyId)) continue;
         if (!windowTargets.has(target)) {
           ptys.kill(ptyId);
           logger.info({ ptyId, tmuxSession: target }, "reconcile: killed PTY for missing window");

@@ -852,8 +852,10 @@ function onServerMsg(msg: ServerMsg): void {
           ? runningPtys.find(
             (p) =>
               p.backend === "tmux" &&
-              p.tmuxSession === saved.tmuxSession &&
-              (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true),
+              (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true) &&
+              (p.tmuxSession === saved.tmuxSession ||
+                (p.tmuxSession ?? "").startsWith(saved.tmuxSession + ":") ||
+                saved.tmuxSession.startsWith((p.tmuxSession ?? "") + ":")),
           )
           : null;
         if (fallback) {
@@ -2945,8 +2947,9 @@ async function attachTmuxSession(selected: TmuxSessionInfo): Promise<void> {
     (p) =>
       p.status === "running" &&
       p.backend === "tmux" &&
-      (p.tmuxSession ?? "") === selected.name &&
-      (p.tmuxServer ?? "agmux") === selected.server,
+      (p.tmuxServer ?? "agmux") === selected.server &&
+      ((p.tmuxSession ?? "") === selected.name ||
+        (p.tmuxSession ?? "").startsWith(selected.name + ":")),
   );
   if (existing) {
     addEvent(`Using existing tmux ${selected.name}`);
@@ -3299,8 +3302,10 @@ void (async () => {
           ? running.find(
             (p) =>
               p.backend === "tmux" &&
-              p.tmuxSession === saved.tmuxSession &&
-              (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true),
+              (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true) &&
+              (p.tmuxSession === saved.tmuxSession ||
+                (p.tmuxSession ?? "").startsWith(saved.tmuxSession + ":") ||
+                saved.tmuxSession.startsWith((p.tmuxSession ?? "") + ":")),
           )
           : null);
       if (target) setActive(target.id);
