@@ -1633,6 +1633,12 @@ button:disabled {
     resize: none;
   }
 
+  .focus-composer {
+    margin-top: 12px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(31, 27, 22, 0.12);
+  }
+
   .composer-header {
     display: flex;
     align-items: baseline;

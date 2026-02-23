@@ -1370,6 +1370,7 @@ function renderLaunchModalState(): void {
           if (res.ok) {
             const { id } = await res.json() as { id: string };
             closeLaunchModal();
+            void refreshWorktreeCache().then(() => renderList());
             setActive(id);
             return;
           }
@@ -1819,6 +1820,7 @@ async function restoreAgentSession(agentSessionId: string, target?: RestoreAgent
   }
   const json = (await res.json()) as { id: string };
   addEvent(`Restored agent session ${agentSessionId}`);
+  await refreshWorktreeCache();
   await refreshList();
   setActive(json.id);
   return true;
@@ -2597,13 +2599,16 @@ function renderList(): void {
     arr.push(buildRunningPtyItem(p));
   }
 
-  // Group inactive agent sessions by projectRoot.
+  // Group inactive agent sessions by project, preferring client-side worktree detection.
   const sortedAgentSessions = [...agentSessions]
     .filter((s) => !hiddenAgentSessionIds.has(s.id))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   const inactiveByProject = new Map<string, InactivePtyItem[]>();
   for (const session of sortedAgentSessions) {
-    const key = session.projectRoot ?? "";
+    // Prefer client-side worktree detection when it identifies the cwd as belonging
+    // to a known worktree, overriding a potentially stale server-side projectRoot.
+    const clientKey = session.cwd ? normalizeCwdGroupKey(session.cwd) : null;
+    const key = (clientKey && clientKey !== session.cwd) ? clientKey : (session.projectRoot ?? "");
     const item = buildInactiveAgentSessionItem(session);
     const items = inactiveByProject.get(key) ?? [];
     items.push(item);

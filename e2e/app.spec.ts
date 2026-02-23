@@ -139,7 +139,8 @@ test("mobile UI can send input via composer", async ({ page }) => {
   const textarea = page.locator(".mobile-composer textarea");
   await textarea.fill("echo mobile-ok");
   await expect(page.locator(".mobile-send")).toBeEnabled();
-  await page.locator(".mobile-send").click();
+  await textarea.press("Enter");
+  await expect(textarea).toHaveValue("");
 
   await expect
     .poll(async () => page.locator(".focus-preview").innerText(), { timeout: 30_000 })
