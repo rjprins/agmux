@@ -519,12 +519,71 @@ applyTheme(activeTheme, []);
 const MOBILE_MEDIA_QUERY = "(max-width: 920px)";
 const mobileMedia = window.matchMedia(MOBILE_MEDIA_QUERY);
 let mobileViewport = mobileMedia.matches;
+let mobileViewportSyncRaf = 0;
+let mobileViewportSyncNeedsResize = false;
+
+function syncMobileRootToVisualViewport(resizeActiveTerm: boolean): void {
+  if (!mobileViewport) {
+    mobileRoot.style.top = "";
+    mobileRoot.style.left = "";
+    mobileRoot.style.width = "";
+    mobileRoot.style.height = "";
+    if (resizeActiveTerm && activePtyId) {
+      requestAnimationFrame(() => {
+        fitAndResizeActive();
+        reflowActiveTerm();
+      });
+    }
+    return;
+  }
+  const vv = window.visualViewport;
+  if (!vv) {
+    mobileRoot.style.top = "";
+    mobileRoot.style.left = "";
+    mobileRoot.style.width = "";
+    mobileRoot.style.height = "";
+    if (resizeActiveTerm && activePtyId) {
+      requestAnimationFrame(() => {
+        fitAndResizeActive();
+        reflowActiveTerm();
+      });
+    }
+    return;
+  }
+  mobileRoot.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
+  mobileRoot.style.left = `${Math.max(0, Math.round(vv.offsetLeft))}px`;
+  mobileRoot.style.width = `${Math.round(vv.width)}px`;
+  mobileRoot.style.height = `${Math.round(vv.height)}px`;
+  if (resizeActiveTerm && activePtyId) {
+    requestAnimationFrame(() => {
+      fitAndResizeActive();
+      reflowActiveTerm();
+    });
+  }
+}
+
+function scheduleMobileViewportSync(resizeActiveTerm = false): void {
+  mobileViewportSyncNeedsResize = mobileViewportSyncNeedsResize || resizeActiveTerm;
+  if (mobileViewportSyncRaf) return;
+  mobileViewportSyncRaf = requestAnimationFrame(() => {
+    mobileViewportSyncRaf = 0;
+    const resizeNow = mobileViewportSyncNeedsResize;
+    mobileViewportSyncNeedsResize = false;
+    syncMobileRootToVisualViewport(resizeNow);
+  });
+}
+
 mobileMedia.addEventListener("change", (ev) => {
   mobileViewport = ev.matches;
   if (!mobileViewport) mobileSettingsOpen = false;
+  scheduleMobileViewportSync(true);
   applyTerminalAppearanceToAll();
   renderMobileViewState();
 });
+window.addEventListener("resize", () => scheduleMobileViewportSync(true));
+window.visualViewport?.addEventListener("resize", () => scheduleMobileViewportSync(true));
+window.visualViewport?.addEventListener("scroll", () => scheduleMobileViewportSync(true));
+scheduleMobileViewportSync(false);
 
 function effectiveTerminalTheme(): Theme {
   if (!mobileViewport) return activeTheme;

@@ -1377,7 +1377,11 @@ button:disabled {
   #mobile-root {
     display: block;
     position: fixed;
-    inset: 0;
+    inset: auto;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100dvh;
     z-index: 30;
   }
 
