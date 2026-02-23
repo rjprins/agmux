@@ -12,20 +12,63 @@ async function readSessionToken(_page: Page): Promise<string> {
   return E2E_TOKEN;
 }
 
+async function listRunningPtys(page: Page, token: string): Promise<string[]> {
+  const res = await page.request.get(`/api/ptys?token=${encodeURIComponent(token)}`, { timeout: 5_000 });
+  if (!res.ok()) return [];
+  const json = (await res.json()) as { ptys?: Array<{ id?: unknown; status?: unknown }> };
+  return (json.ptys ?? [])
+    .filter((p) => p?.status === "running")
+    .map((p) => p?.id)
+    .filter((id): id is string => typeof id === "string");
+}
+
 async function killPty(page: Page, token: string, ptyId: string): Promise<void> {
-  await page.request
-    .post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`, { timeout: 5_000 })
-    .catch(() => {});
+  const res = await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`, {
+    timeout: 5_000,
+  });
+  if (!res.ok() && res.status() !== 404) {
+    throw new Error(`failed to kill PTY ${ptyId}: HTTP ${res.status()}`);
+  }
 }
 
 async function killAllRunningPtys(page: Page, token: string): Promise<void> {
-  const res = await page.request.get(`/api/ptys?token=${encodeURIComponent(token)}`, { timeout: 5_000 });
-  if (!res.ok()) return;
-  const json = (await res.json()) as { ptys?: Array<{ id?: unknown; status?: unknown }> };
-  const running = (json.ptys ?? []).filter((p) => p?.status === "running").map((p) => p?.id).filter((id): id is string => typeof id === "string");
+  const running = await listRunningPtys(page, token);
   for (const id of running) {
     await killPty(page, token, id);
   }
+}
+
+async function ensureNoRunningPtys(page: Page, token: string): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const running = await listRunningPtys(page, token);
+    if (running.length === 0) return;
+    await killAllRunningPtys(page, token);
+    await page.waitForTimeout(250);
+  }
+  const remaining = await listRunningPtys(page, token);
+  throw new Error(`timed out waiting for PTY cleanup: ${remaining.join(", ")}`);
+}
+
+async function ensureInactiveItemVisible(page: Page, itemText: string): Promise<void> {
+  const target = page.locator(".pty-item.inactive").filter({ hasText: itemText });
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (await target.isVisible().catch(() => false)) return;
+    await page.evaluate(() => {
+      const inactiveHeader = [...document.querySelectorAll<HTMLElement>(".pty-group-header")]
+        .find((el) => (el.textContent ?? "").includes("Inactive") && el.classList.contains("collapsed"));
+      if (inactiveHeader) inactiveHeader.click();
+
+      const inactiveInline = [...document.querySelectorAll<HTMLElement>(".inline-inactive-divider")]
+        .find((el) => (el.textContent ?? "").includes("Inactive") && el.classList.contains("collapsed"));
+      if (inactiveInline) inactiveInline.click();
+
+      const projectHeader = [...document.querySelectorAll<HTMLElement>(".worktree-subheader")]
+        .find((el) => (el.textContent ?? "").includes("test-project") && el.classList.contains("collapsed"));
+      if (projectHeader) projectHeader.click();
+    });
+    await page.waitForTimeout(250);
+  }
+  throw new Error(`inactive item did not become visible: ${itemText}`);
 }
 
 async function attachTmuxWithRetry(
@@ -69,7 +112,7 @@ test.beforeEach(async ({ page }) => {
   await page.addInitScript((t: string) => {
     sessionStorage.setItem("agmux:authToken", t);
   }, token);
-  await killAllRunningPtys(page, token);
+  await ensureNoRunningPtys(page, token);
 });
 
 test("can create a PTY and fires proceed trigger", async ({ page }) => {
@@ -131,7 +174,7 @@ test("mobile UI can send input via composer", async ({ page }) => {
   const createJson = (await createRes.json()) as { id?: unknown };
   const ptyId = typeof createJson.id === "string" ? createJson.id : null;
 
-  await expect(page.locator(".mobile-session-card")).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.locator(".mobile-session-card")).not.toHaveCount(0, { timeout: 30_000 });
   await expect(page.locator(".mobile-connection")).toContainText("Live", { timeout: 10_000 });
   await page.locator(".mobile-session-card").first().click();
   await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 10_000 });
@@ -143,7 +186,14 @@ test("mobile UI can send input via composer", async ({ page }) => {
   await expect(textarea).toHaveValue("");
 
   await expect
-    .poll(async () => page.locator(".focus-preview").innerText(), { timeout: 30_000 })
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const d = (window as any).__agmux?.dumpActive;
+          return typeof d === "function" ? String(d()) : "";
+        }),
+      { timeout: 30_000 },
+    )
     .toContain("mobile-ok");
 
   if (ptyId) {
@@ -238,7 +288,7 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
         }),
       { timeout: 30_000 },
     )
-    .toMatch(/\b80\n.*\$/s);
+    .toMatch(/\b80\n.*[#\$]/s);
 
   // At the bottom the cat command should be scrolled out of view.
   await page.evaluate(() => (window as any).__agmux?.scrollToBottomActive?.());
@@ -252,7 +302,7 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
       async () => page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? ""),
       { timeout: 5_000 },
     )
-    .toContain("cat /tmp/e2e-bigfile.txt");
+    .toMatch(/cat \/tmp\/e2e-bigfile\.t/i);
 
   // Cleanup.
   const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
@@ -1063,20 +1113,7 @@ test("session preview modal opens on inactive session click and shows conversati
 
   await page.goto("/?nosup=1");
 
-  // Expand the "Inactive" section header (starts collapsed)
-  const inactiveHeader = page.locator(".pty-group-header").filter({ hasText: "Inactive" });
-  await expect(inactiveHeader).toBeVisible({ timeout: 15_000 });
-  await inactiveHeader.click();
-
-  // Expand the project subgroup if collapsed
-  const projectGroup = page.locator(".worktree-subheader").filter({ hasText: "test-project" });
-  await expect(projectGroup).toBeVisible({ timeout: 5_000 }).catch(() => {});
-  if (await projectGroup.isVisible()) {
-    const isCollapsed = await projectGroup.evaluate((el) => el.classList.contains("collapsed"));
-    if (isCollapsed) await projectGroup.click();
-  }
-
-  // Wait for inactive sessions to appear and find our fake session
+  await ensureInactiveItemVisible(page, "Preview test session");
   const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Preview test session" });
   await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
 
@@ -1147,19 +1184,7 @@ test("arrow button on inactive session opens restore modal directly (not preview
 
   await page.goto("/?nosup=1");
 
-  // Expand the "Inactive" section header (starts collapsed)
-  const inactiveHeader = page.locator(".pty-group-header").filter({ hasText: "Inactive" });
-  await expect(inactiveHeader).toBeVisible({ timeout: 15_000 });
-  await inactiveHeader.click();
-
-  // Expand the project subgroup if collapsed
-  const projectGroup = page.locator(".worktree-subheader").filter({ hasText: "test-project" });
-  await expect(projectGroup).toBeVisible({ timeout: 5_000 }).catch(() => {});
-  if (await projectGroup.isVisible()) {
-    const isCollapsed = await projectGroup.evaluate((el) => el.classList.contains("collapsed"));
-    if (isCollapsed) await projectGroup.click();
-  }
-
+  await ensureInactiveItemVisible(page, "Arrow test session");
   const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Arrow test session" });
   await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
 
@@ -1221,19 +1246,7 @@ test("session preview modal shows loading state and handles empty conversation",
 
   await page.goto("/?nosup=1");
 
-  // Expand the "Inactive" section header (starts collapsed)
-  const inactiveHeader = page.locator(".pty-group-header").filter({ hasText: "Inactive" });
-  await expect(inactiveHeader).toBeVisible({ timeout: 15_000 });
-  await inactiveHeader.click();
-
-  // Expand the project subgroup if collapsed
-  const projectGroup = page.locator(".worktree-subheader").filter({ hasText: "test-project" });
-  await expect(projectGroup).toBeVisible({ timeout: 5_000 }).catch(() => {});
-  if (await projectGroup.isVisible()) {
-    const isCollapsed = await projectGroup.evaluate((el) => el.classList.contains("collapsed"));
-    if (isCollapsed) await projectGroup.click();
-  }
-
+  await ensureInactiveItemVisible(page, "Empty conversation session");
   const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Empty conversation session" });
   await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
 

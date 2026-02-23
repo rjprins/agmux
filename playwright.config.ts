@@ -33,7 +33,7 @@ export default defineConfig({
     },
   },
   webServer: {
-    command: `AGMUX_TMUX_SOCKET=${tmuxSocket} AGMUX_TMUX_SESSION=${tmuxSession} AGMUX_TOKEN_ENABLED=1 AGMUX_TOKEN=${e2eToken} AGMUX_SHELL=bash AGMUX_SHELL_BACKEND=pty AGMUX_NO_OPEN=1 DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
+    command: `HOST=127.0.0.1 AGMUX_TMUX_SOCKET=${tmuxSocket} AGMUX_TMUX_SESSION=${tmuxSession} AGMUX_TOKEN_ENABLED=1 AGMUX_TOKEN=${e2eToken} AGMUX_SHELL=bash AGMUX_SHELL_BACKEND=pty AGMUX_NO_OPEN=1 DB_PATH=${dbPath} PORT=${appPort} npm run -s app`,
     url: appUrl,
     reuseExistingServer: false,
     timeout: 60_000,
