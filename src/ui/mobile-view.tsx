@@ -206,46 +206,46 @@ export function renderMobileView(
                     {model.focus.readyReason ? ` - ${model.focus.readyReason}` : ""}
                   </div>
                 </div>
+                <div className="mobile-composer focus-composer">
+                  <div className="composer-header">
+                    <div className="composer-title">Command</div>
+                    <div className="composer-target">{model.activeTitle}</div>
+                  </div>
+                  <textarea
+                    rows={3}
+                    placeholder="Send a quick directive or question"
+                    enterKeyHint="send"
+                    value={model.inputDraft}
+                    onInput={(ev) => handlers.onChangeDraft((ev.currentTarget as HTMLTextAreaElement).value)}
+                    onKeyDown={(ev) => {
+                      if (ev.key !== "Enter") return;
+                      if (ev.shiftKey || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+                      ev.preventDefault();
+                      handlers.onSendDraft();
+                    }}
+                  />
+                  <div className="composer-actions">
+                    <div className="quick-prompts">
+                      {model.quickPrompts.map((prompt) => (
+                        <button key={prompt} type="button" onClick={() => handlers.onQuickPrompt(prompt)}>
+                          {prompt}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      type="button"
+                      className="mobile-send"
+                      onClick={() => handlers.onSendDraft()}
+                      disabled={!model.connected || !model.inputDraft.trim()}
+                    >
+                      Send
+                    </button>
+                  </div>
+                </div>
               </section>
             ) : (
               renderEmpty("No active session", "Launch or restore a session to start.")
             )}
-
-            <section className="mobile-card mobile-composer">
-              <div className="composer-header">
-                <div className="composer-title">Command</div>
-                <div className="composer-target">{model.activeTitle}</div>
-              </div>
-              <textarea
-                rows={3}
-                placeholder="Send a quick directive or question"
-                value={model.inputDraft}
-                onInput={(ev) => handlers.onChangeDraft((ev.currentTarget as HTMLTextAreaElement).value)}
-                onKeyDown={(ev) => {
-                  if (ev.key === "Enter" && !ev.shiftKey) {
-                    ev.preventDefault();
-                    handlers.onSendDraft();
-                  }
-                }}
-              />
-              <div className="composer-actions">
-                <div className="quick-prompts">
-                  {model.quickPrompts.map((prompt) => (
-                    <button key={prompt} type="button" onClick={() => handlers.onQuickPrompt(prompt)}>
-                      {prompt}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  className="mobile-send"
-                  onClick={() => handlers.onSendDraft()}
-                  disabled={!model.connected || !model.focus || !model.inputDraft.trim()}
-                >
-                  Send
-                </button>
-              </div>
-            </section>
           </Fragment>
         ) : null}
 

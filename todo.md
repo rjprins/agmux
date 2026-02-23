@@ -2,6 +2,7 @@
 
 Core reliability and usability
 
+* Combine polling requests into one (list refresh polls /api/ptys + /api/agent-sessions every 5-15s, worktree cache polls /api/worktrees every 120s, asset poller HEADs 4 static files every 10s)
 * Fix garbled PTYs after server restart/refresh - still happens
 * Add scrollbar, is it possible?
 * Add scroll to bottom button and auto-scroll toggle
