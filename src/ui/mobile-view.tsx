@@ -51,6 +51,16 @@ export type MobileInactivePreview = {
   messages: Array<{ role: "user" | "assistant"; text: string }>;
 };
 
+export type MobileTerminalSnapshot = {
+  seq: number;
+  title: string;
+  subtitle: string;
+  capturedAt: string;
+  text: string;
+  lineCount: number;
+  truncated: boolean;
+};
+
 export type MobileViewModel = {
   connected: boolean;
   view: MobileView;
@@ -61,6 +71,7 @@ export type MobileViewModel = {
   inputDraft: string;
   quickPrompts: string[];
   preview: MobileInactivePreview | null;
+  terminalSnapshot: MobileTerminalSnapshot | null;
   settingsOpen: boolean;
   terminalThemeKey: string;
   terminalThemes: Array<{ key: string; name: string }>;
@@ -74,9 +85,14 @@ export type MobileViewHandlers = {
   onShowInactive: () => void;
   onBack: () => void;
   onChangeDraft: (value: string) => void;
-  onSendDraft: () => void;
+  onSendDraft: (value?: string) => void;
   onQuickPrompt: (prompt: string) => void;
   onInterrupt: () => void;
+  onArrowUp: () => void;
+  onArrowDown: () => void;
+  onTabKey: () => void;
+  onOpenTermSnapshot: () => void;
+  onCloseTermSnapshot: () => void;
   onPreviewInactive: (agentSessionId: string) => void;
   onRestoreInactive: (agentSessionId: string) => void;
   onClosePreview: () => void;
@@ -86,6 +102,8 @@ export type MobileViewHandlers = {
   onTerminalThemeChange: (key: string) => void;
   onTerminalFontSizeChange: (size: number) => void;
 };
+
+let lastSnapshotAutoscrollSeq = 0;
 
 function renderEmpty(title: string, hint: string) {
   return (
@@ -101,6 +119,9 @@ export function renderMobileView(
   model: MobileViewModel | null,
   handlers: MobileViewHandlers,
 ): void {
+  let composerDraftEl: HTMLTextAreaElement | null = null;
+  let snapshotPreEl: HTMLPreElement | null = null;
+  const sendComposerDraft = () => handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft);
   if (!model) {
     render(null, root);
     return;
@@ -206,6 +227,11 @@ export function renderMobileView(
                 <div className="focus-subtitle" title={model.focus.subtitle}>{model.focus.subtitle}</div>
                 <div
                   className="focus-xterm-mount"
+                  onPointerDownCapture={(ev) => {
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    handlers.onOpenTermSnapshot();
+                  }}
                   ref={(el: HTMLElement | null) => handlers.onTermMountReady(el)}
                 />
                 <div className="mobile-composer focus-composer">
@@ -213,22 +239,34 @@ export function renderMobileView(
                     rows={3}
                     placeholder="Send a quick directive or question"
                     enterKeyHint="send"
+                    ref={(el) => {
+                      composerDraftEl = el;
+                    }}
                     value={model.inputDraft}
                     onInput={(ev) => handlers.onChangeDraft((ev.currentTarget as HTMLTextAreaElement).value)}
                     onKeyDown={(ev) => {
                       if (ev.key !== "Enter") return;
                       if (ev.shiftKey || ev.altKey || ev.ctrlKey || ev.metaKey) return;
                       ev.preventDefault();
-                      handlers.onSendDraft();
+                      handlers.onSendDraft((ev.currentTarget as HTMLTextAreaElement).value);
                     }}
                   />
                   <div className="composer-actions">
-                    <div className="quick-prompts">
-                      {model.quickPrompts.map((prompt) => (
-                        <button key={prompt} type="button" onClick={() => handlers.onQuickPrompt(prompt)}>
-                          {prompt}
-                        </button>
-                      ))}
+                    <div className="composer-keys">
+                      <button type="button" className="ghost key-btn" aria-label="Arrow up" onClick={() => handlers.onArrowUp()}>
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost key-btn"
+                        aria-label="Arrow down"
+                        onClick={() => handlers.onArrowDown()}
+                      >
+                        ↓
+                      </button>
+                      <button type="button" className="ghost key-btn tab-btn" aria-label="Tab" onClick={() => handlers.onTabKey()}>
+                        Tab
+                      </button>
                       <button type="button" className="ghost composer-interrupt" onClick={() => handlers.onInterrupt()}>
                         Interrupt
                       </button>
@@ -236,7 +274,11 @@ export function renderMobileView(
                     <button
                       type="button"
                       className="mobile-send"
-                      onClick={() => handlers.onSendDraft()}
+                      onPointerDown={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                        sendComposerDraft();
+                      }}
                       disabled={!model.connected}
                     >
                       Send
@@ -320,6 +362,54 @@ export function renderMobileView(
                 Activate session
               </button>
             </div>
+          </div>
+        </div>
+      ) : null}
+
+      {model.terminalSnapshot ? (
+        <div
+          className="mobile-sheet fullscreen"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) handlers.onCloseTermSnapshot();
+          }}
+        >
+          <div className="mobile-sheet-panel terminal-snapshot-panel">
+            <div className="sheet-header">
+              <div>
+                <div className="sheet-title" title={model.terminalSnapshot.title}>
+                  {model.terminalSnapshot.title}
+                </div>
+                <div className="sheet-sub" title={model.terminalSnapshot.subtitle}>
+                  {model.terminalSnapshot.subtitle}
+                </div>
+                <div className="sheet-sub">
+                  Snapshot {model.terminalSnapshot.capturedAt}
+                  {model.terminalSnapshot.truncated ? " · showing latest lines" : ""}
+                </div>
+              </div>
+              <button type="button" className="ghost" onClick={() => handlers.onCloseTermSnapshot()}>
+                Close
+              </button>
+            </div>
+            <div className="sheet-body terminal-snapshot-body">
+              <pre
+                ref={(el) => {
+                  snapshotPreEl = el;
+                  if (!el) return;
+                  if (model.terminalSnapshot && lastSnapshotAutoscrollSeq !== model.terminalSnapshot.seq) {
+                    lastSnapshotAutoscrollSeq = model.terminalSnapshot.seq;
+                    requestAnimationFrame(() => {
+                      if (!snapshotPreEl) return;
+                      snapshotPreEl.scrollTop = snapshotPreEl.scrollHeight;
+                    });
+                  }
+                }}
+                style={{ fontSize: `${model.terminalFontSize}px` }}
+              >
+                {model.terminalSnapshot.text || "No terminal output yet."}
+              </pre>
+            </div>
+            <div className="sheet-sub">Lines: {model.terminalSnapshot.lineCount}</div>
           </div>
         </div>
       ) : null}

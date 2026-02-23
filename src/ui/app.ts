@@ -49,6 +49,7 @@ import {
   type MobileInactivePreview,
   type MobileInactiveSession,
   type MobileRunningSession,
+  type MobileTerminalSnapshot,
   type MobileView,
   type MobileViewModel,
 } from "./mobile-view";
@@ -79,6 +80,8 @@ let wsConnected = false;
 let mobileView: MobileView = "active";
 let mobileInputDraft = "";
 let mobilePreviewState: MobileInactivePreview | null = null;
+let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
+let mobileTerminalSnapshotSeq = 0;
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
@@ -653,7 +656,7 @@ const terms = new Map<string, TermState>();
 const subscribed = new Set<string>();
 let authToken = "";
 let ws: WebSocket | null = null;
-const TERMINAL_SCROLLBACK_LINES = 0;
+const TERMINAL_SCROLLBACK_LINES = 50_000;
 let tmuxSessions: TmuxSessionInfo[] = [];
 
 const placeholderEl = document.createElement("div");
@@ -2580,12 +2583,32 @@ function returnTermToDesktop(): void {
 
 function sendMobileInput(text: string): void {
   if (!activePtyId) return;
-  const normalized = text.replace(/\n/g, "\r");
-  const payload = normalized.length === 0
-    ? "\r"
-    : (normalized.endsWith("\r") ? normalized : `${normalized}\r`);
-  sendWsMessage({ type: "input", ptyId: activePtyId, data: payload });
-  trackUserInput(activePtyId, payload);
+  const normalized = text.replace(/\r\n?/g, "\n");
+  const activeSummary = ptys.find((p) => p.id === activePtyId) ?? null;
+  const activeProcess = activeSummary ? buildRunningPtyItem(activeSummary).process : "";
+  const isClaudeOrCodex = /(?:^|[\s:/-])(claude|codex)(?:$|[\s:/-])/i.test(activeProcess);
+
+  if (isClaudeOrCodex) {
+    // Claude/Codex mobile submit: flatten composer newlines, then send one delayed Enter.
+    const targetPtyId = activePtyId;
+    const body = normalized.replace(/[\r\n]+/g, "");
+    if (body.length > 0) {
+      sendWsMessage({ type: "input", ptyId: targetPtyId, data: body });
+    }
+    const delayedSubmitMs = 250;
+    setTimeout(() => {
+      sendWsMessage({ type: "input", ptyId: targetPtyId, data: "\r" });
+    }, delayedSubmitMs);
+    trackUserInput(targetPtyId, `${body}\r`);
+  } else {
+    // Default shell behavior: one payload ending with Enter.
+    const body = normalized.replace(/\n/g, "\r");
+    const payload = body.length === 0
+      ? "\r"
+      : (body.endsWith("\r") ? body : `${body}\r`);
+    sendWsMessage({ type: "input", ptyId: activePtyId, data: payload });
+    trackUserInput(activePtyId, payload);
+  }
   mobileInputDraft = "";
   renderMobileViewState();
 }
@@ -2623,6 +2646,33 @@ function openMobilePreview(agentSessionId: string): void {
     });
 }
 
+function captureMobileTerminalSnapshot(ptyId: string): MobileTerminalSnapshot | null {
+  const st = terms.get(ptyId);
+  if (!st) return null;
+  const summary = ptys.find((p) => p.id === ptyId);
+  const focus = summary ? buildMobileFocus(summary) : null;
+  const MAX_LINES = TERMINAL_SCROLLBACK_LINES;
+  const buf = st.term.buffer.active;
+  const start = Math.max(0, buf.length - MAX_LINES);
+  const lines: string[] = [];
+  for (let i = start; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    lines.push(line.translateToString(true).replace(/\s+$/g, ""));
+  }
+  while (lines.length > 0 && lines[0].length === 0) lines.shift();
+  while (lines.length > 0 && lines[lines.length - 1].length === 0) lines.pop();
+  return {
+    seq: ++mobileTerminalSnapshotSeq,
+    title: focus?.title ?? "Terminal snapshot",
+    subtitle: focus?.subtitle ?? "",
+    capturedAt: new Date().toLocaleTimeString(),
+    text: lines.join("\n"),
+    lineCount: lines.length,
+    truncated: buf.length > MAX_LINES,
+  };
+}
+
 function buildMobileViewModel(): MobileViewModel {
   const running = ptys.filter((p) => p.status === "running").map((p) => buildMobileRunningSession(p));
   const activeIdx = running.findIndex((r) => r.id === activePtyId);
@@ -2654,6 +2704,7 @@ function buildMobileViewModel(): MobileViewModel {
     inputDraft: mobileInputDraft,
     quickPrompts,
     preview: mobilePreviewState,
+    terminalSnapshot: mobileTerminalSnapshot,
     settingsOpen: mobileSettingsOpen,
     terminalThemeKey: mobileTerminalThemeKey,
     terminalThemes: [...THEMES].map(([key, theme]) => ({ key, name: theme.name })),
@@ -2666,7 +2717,7 @@ function renderMobileViewState(): void {
     const active = activePtyId ? ptys.find((p) => p.id === activePtyId && p.status === "running") : null;
     if (!active) mobileView = "active";
   }
-  if (!mobileViewport && !mobilePreviewState && !mobileSettingsOpen) {
+  if (!mobileViewport && !mobilePreviewState && !mobileSettingsOpen && !mobileTerminalSnapshot) {
     returnTermToDesktop();
     mobileTermMountEl = null;
     renderMobileView(mobileRoot, null, {
@@ -2679,6 +2730,11 @@ function renderMobileViewState(): void {
       onSendDraft: () => {},
       onQuickPrompt: () => {},
       onInterrupt: () => {},
+      onArrowUp: () => {},
+      onArrowDown: () => {},
+      onTabKey: () => {},
+      onOpenTermSnapshot: () => {},
+      onCloseTermSnapshot: () => {},
       onPreviewInactive: () => {},
       onRestoreInactive: () => {},
       onClosePreview: () => {},
@@ -2698,11 +2754,13 @@ function renderMobileViewState(): void {
     onSelectRunning: (ptyId) => {
       setActive(ptyId);
       mobileView = "session";
+      mobileTerminalSnapshot = null;
       renderMobileViewState();
     },
     onCloseRunning: (ptyId) => {
       if (mobileReparentedPtyId === ptyId) returnTermToDesktop();
       killPty(ptyId);
+      if (activePtyId === ptyId) mobileTerminalSnapshot = null;
       if (activePtyId === ptyId && mobileView === "session") {
         mobileTermMountEl = null;
         mobileView = "active";
@@ -2724,11 +2782,13 @@ function renderMobileViewState(): void {
     },
     onShowInactive: () => {
       mobileView = "inactive";
+      mobileTerminalSnapshot = null;
       renderMobileViewState();
     },
     onBack: () => {
       returnTermToDesktop();
       mobileTermMountEl = null;
+      mobileTerminalSnapshot = null;
       mobileView = "active";
       renderMobileViewState();
     },
@@ -2736,8 +2796,8 @@ function renderMobileViewState(): void {
       mobileInputDraft = value;
       renderMobileViewState();
     },
-    onSendDraft: () => {
-      sendMobileInput(mobileInputDraft);
+    onSendDraft: (value) => {
+      sendMobileInput(value ?? mobileInputDraft);
     },
     onQuickPrompt: (prompt) => {
       sendMobileInput(prompt);
@@ -2747,6 +2807,27 @@ function renderMobileViewState(): void {
       sendWsMessage({ type: "input", ptyId: activePtyId, data: "\u0003" });
       addEvent(`Sent interrupt to ${activePtyId}`);
       scheduleMobileRender();
+    },
+    onArrowUp: () => {
+      if (!activePtyId) return;
+      sendWsMessage({ type: "input", ptyId: activePtyId, data: "\u001b[A" });
+    },
+    onArrowDown: () => {
+      if (!activePtyId) return;
+      sendWsMessage({ type: "input", ptyId: activePtyId, data: "\u001b[B" });
+    },
+    onTabKey: () => {
+      if (!activePtyId) return;
+      sendWsMessage({ type: "input", ptyId: activePtyId, data: "\t" });
+    },
+    onOpenTermSnapshot: () => {
+      if (!activePtyId) return;
+      mobileTerminalSnapshot = captureMobileTerminalSnapshot(activePtyId);
+      renderMobileViewState();
+    },
+    onCloseTermSnapshot: () => {
+      mobileTerminalSnapshot = null;
+      renderMobileViewState();
     },
     onPreviewInactive: (agentSessionId) => openMobilePreview(agentSessionId),
     onRestoreInactive: (agentSessionId) => {
