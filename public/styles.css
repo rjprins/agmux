@@ -1350,6 +1350,7 @@ button:disabled {
       linear-gradient(180deg, #f7f1e4 0%, #e7edf4 100%);
     color: #1f1b16;
     font: 14px/1.5 "Space Grotesk", "Avenir Next", "Futura", "Trebuchet MS", sans-serif;
+    overflow: hidden;
   }
 
   #app {
@@ -1506,9 +1507,9 @@ button:disabled {
 
   .mobile-scroll {
     flex: 1;
-    overflow-y: auto;
-    padding-bottom: 28px;
-    -webkit-overflow-scrolling: touch;
+    min-height: 0;
+    overflow: hidden;
+    padding-bottom: 0;
   }
 
   .mobile-card {
@@ -1518,6 +1519,12 @@ button:disabled {
     padding: 14px;
     box-shadow: 0 12px 30px rgba(31, 27, 22, 0.08);
     margin-bottom: 12px;
+  }
+
+  .mobile-focus {
+    width: calc(100% + 32px);
+    margin-left: -16px;
+    margin-right: -16px;
   }
 
   .mobile-section-title {
@@ -1578,37 +1585,55 @@ button:disabled {
 
   .focus-xterm-mount {
     margin-top: 10px;
-    border-radius: 12px;
+    margin-left: -14px;
+    margin-right: -14px;
+    width: calc(100% + 28px);
+    border-radius: 0;
     overflow: hidden;
     position: relative;
-    min-height: 35vh;
-    max-height: 55vh;
+    min-height: 45vh;
+    max-height: 68vh;
+  }
+
+  .mobile-shell.mobile-view-session .mobile-scroll {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-shell.mobile-view-session {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .mobile-shell.mobile-view-session .mobile-focus {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    margin-left: 0;
+    margin-right: 0;
+    margin-bottom: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .mobile-shell.mobile-view-session .focus-xterm-mount {
+    flex: 1;
+    min-height: 0;
+    max-height: none;
+  }
+
+  .term-pane .xterm-viewport {
+    scrollbar-width: none;
+  }
+
+  .term-pane .xterm-viewport::-webkit-scrollbar {
+    width: 0;
+    height: 0;
   }
 
   .focus-xterm-mount .term-pane {
     position: absolute;
     inset: 0;
-  }
-
-  .focus-actions {
-    margin-top: 12px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .focus-actions .ghost {
-    padding: 6px 12px;
-    border-radius: 999px;
-    border: 1px solid rgba(31, 27, 22, 0.2);
-    background: transparent;
-    font-weight: 600;
-  }
-
-  .focus-state {
-    font-size: 12px;
-    color: rgba(31, 27, 22, 0.6);
   }
 
   .mobile-composer textarea {
@@ -1624,26 +1649,8 @@ button:disabled {
 
   .focus-composer {
     margin-top: 12px;
-    padding-top: 12px;
-    border-top: 1px solid rgba(31, 27, 22, 0.12);
-  }
-
-  .composer-header {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    margin-bottom: 8px;
-  }
-
-  .composer-title {
-    font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.16em;
-  }
-
-  .composer-target {
-    font-size: 12px;
-    color: rgba(31, 27, 22, 0.55);
+    padding-top: 0;
+    border-top: none;
   }
 
   .composer-actions {
@@ -1666,6 +1673,19 @@ button:disabled {
     border: 1px solid rgba(31, 27, 22, 0.18);
     background: rgba(255, 255, 255, 0.7);
     font-size: 11px;
+  }
+
+  .focus-close {
+    margin-left: 2px;
+  }
+
+  .composer-interrupt {
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(31, 27, 22, 0.2);
+    background: transparent;
+    font-size: 11px;
+    font-weight: 600;
   }
 
   .mobile-send {
@@ -1736,12 +1756,6 @@ button:disabled {
     border-radius: 999px;
     font-size: 11px;
     font-weight: 600;
-  }
-
-  .focus-actions .danger {
-    border-color: rgba(168, 52, 32, 0.35);
-    background: rgba(168, 52, 32, 0.08);
-    color: #a23220;
   }
 
   .inactive-card-header {
@@ -1916,6 +1930,33 @@ button:disabled {
     background: #1f1b16;
     color: #f8f5ee;
     font-weight: 600;
+  }
+
+  .mobile-settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .mobile-settings-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    font-size: 12px;
+    color: rgba(31, 27, 22, 0.7);
+  }
+
+  .mobile-settings-row select {
+    border: 1px solid rgba(31, 27, 22, 0.18);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.8);
+    color: #1f1b16;
+    padding: 8px 10px;
+    font: inherit;
+  }
+
+  .mobile-settings-row input[type="range"] {
+    width: 100%;
   }
 
   .launch-modal-overlay {

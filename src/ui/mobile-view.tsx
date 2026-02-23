@@ -61,6 +61,10 @@ export type MobileViewModel = {
   inputDraft: string;
   quickPrompts: string[];
   preview: MobileInactivePreview | null;
+  settingsOpen: boolean;
+  terminalThemeKey: string;
+  terminalThemes: Array<{ key: string; name: string }>;
+  terminalFontSize: number;
 };
 
 export type MobileViewHandlers = {
@@ -77,6 +81,10 @@ export type MobileViewHandlers = {
   onRestoreInactive: (agentSessionId: string) => void;
   onClosePreview: () => void;
   onTermMountReady: (el: HTMLElement | null) => void;
+  onOpenSettings: () => void;
+  onCloseSettings: () => void;
+  onTerminalThemeChange: (key: string) => void;
+  onTerminalFontSizeChange: (size: number) => void;
 };
 
 function renderEmpty(title: string, hint: string) {
@@ -99,7 +107,7 @@ export function renderMobileView(
   }
 
   render(
-    <div className="mobile-shell">
+    <div className={`mobile-shell mobile-view-${model.view}`}>
       <header className="mobile-topbar">
         <div className="mobile-brand">
           <div className="mobile-brand-title">agmux</div>
@@ -119,6 +127,9 @@ export function renderMobileView(
               Back
             </button>
           )}
+          <button type="button" className="mobile-action" onClick={() => handlers.onOpenSettings()}>
+            Settings
+          </button>
           <button type="button" className="mobile-new" onClick={() => handlers.onOpenLaunch()}>
             New
           </button>
@@ -184,33 +195,20 @@ export function renderMobileView(
                   <span className={`status-dot ${model.focus.readyIndicator}`} />
                   <div className="focus-title" title={model.focus.title}>{model.focus.title}</div>
                   {model.focus.elapsed ? <div className="focus-elapsed">{model.focus.elapsed}</div> : null}
+                  <button
+                    type="button"
+                    className="session-card-close focus-close"
+                    onClick={() => handlers.onCloseRunning(model.focus.id)}
+                  >
+                    Close
+                  </button>
                 </div>
                 <div className="focus-subtitle" title={model.focus.subtitle}>{model.focus.subtitle}</div>
                 <div
                   className="focus-xterm-mount"
                   ref={(el: HTMLElement | null) => handlers.onTermMountReady(el)}
                 />
-                <div className="focus-actions">
-                  <button type="button" className="ghost" onClick={() => handlers.onInterrupt()}>
-                    Interrupt
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost danger"
-                    onClick={() => handlers.onCloseRunning(model.focus.id)}
-                  >
-                    Close
-                  </button>
-                  <div className="focus-state">
-                    {model.focus.readyState === "ready" ? "Ready" : model.focus.readyState === "busy" ? "Busy" : "Unknown"}
-                    {model.focus.readyReason ? ` - ${model.focus.readyReason}` : ""}
-                  </div>
-                </div>
                 <div className="mobile-composer focus-composer">
-                  <div className="composer-header">
-                    <div className="composer-title">Command</div>
-                    <div className="composer-target">{model.activeTitle}</div>
-                  </div>
                   <textarea
                     rows={3}
                     placeholder="Send a quick directive or question"
@@ -231,12 +229,15 @@ export function renderMobileView(
                           {prompt}
                         </button>
                       ))}
+                      <button type="button" className="ghost composer-interrupt" onClick={() => handlers.onInterrupt()}>
+                        Interrupt
+                      </button>
                     </div>
                     <button
                       type="button"
                       className="mobile-send"
                       onClick={() => handlers.onSendDraft()}
-                      disabled={!model.connected || !model.inputDraft.trim()}
+                      disabled={!model.connected}
                     >
                       Send
                     </button>
@@ -318,6 +319,53 @@ export function renderMobileView(
               <button type="button" className="primary" onClick={() => handlers.onRestoreInactive(model.preview.id)}>
                 Activate session
               </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {model.settingsOpen ? (
+        <div
+          className="mobile-sheet"
+          onClick={(ev) => {
+            if (ev.target === ev.currentTarget) handlers.onCloseSettings();
+          }}
+        >
+          <div className="mobile-sheet-panel">
+            <div className="sheet-header">
+              <div>
+                <div className="sheet-title">Mobile terminal settings</div>
+                <div className="sheet-sub">Applies only to mobile terminal view</div>
+              </div>
+              <button type="button" className="ghost" onClick={() => handlers.onCloseSettings()}>
+                Close
+              </button>
+            </div>
+            <div className="mobile-settings-form">
+              <label className="mobile-settings-row">
+                <span>Theme</span>
+                <select
+                  value={model.terminalThemeKey}
+                  onChange={(ev) => handlers.onTerminalThemeChange((ev.target as HTMLSelectElement).value)}
+                >
+                  {model.terminalThemes.map((theme) => (
+                    <option key={theme.key} value={theme.key}>
+                      {theme.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="mobile-settings-row">
+                <span>Font size ({model.terminalFontSize}px)</span>
+                <input
+                  type="range"
+                  min={8}
+                  max={22}
+                  step={1}
+                  value={model.terminalFontSize}
+                  onInput={(ev) => handlers.onTerminalFontSizeChange(Number((ev.target as HTMLInputElement).value))}
+                />
+              </label>
             </div>
           </div>
         </div>

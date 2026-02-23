@@ -82,6 +82,7 @@ let mobilePreviewState: MobileInactivePreview | null = null;
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
+let mobileSettingsOpen = false;
 
 // Client-side worktree cache, populated from GET /api/worktrees
 let knownWorktrees: Array<{ name: string; path: string; branch: string }> = [];
@@ -497,8 +498,20 @@ document.querySelector(".sidebar")!.addEventListener("mousedown", (ev) => {
 // --- Theme ---
 
 const THEME_KEY = "agmux:theme";
+const MOBILE_TERMINAL_THEME_KEY = "agmux:mobileTerminalTheme";
+const MOBILE_TERMINAL_FONT_SIZE_KEY = "agmux:mobileTerminalFontSize";
+const MOBILE_TERMINAL_DEFAULT_THEME_KEY = "neutral-light";
+const DESKTOP_TERMINAL_FONT_SIZE = 13;
+const MOBILE_TERMINAL_FONT_SIZE_MIN = 8;
+const MOBILE_TERMINAL_FONT_SIZE_MAX = 22;
 let activeThemeKey = localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_KEY;
 let activeTheme: Theme = THEMES.get(activeThemeKey) ?? THEMES.get(DEFAULT_THEME_KEY)!;
+let mobileTerminalThemeKey = localStorage.getItem(MOBILE_TERMINAL_THEME_KEY) ?? MOBILE_TERMINAL_DEFAULT_THEME_KEY;
+if (!THEMES.has(mobileTerminalThemeKey)) mobileTerminalThemeKey = activeThemeKey;
+const storedMobileTerminalFontSize = Number(localStorage.getItem(MOBILE_TERMINAL_FONT_SIZE_KEY) ?? "");
+let mobileTerminalFontSize = Number.isFinite(storedMobileTerminalFontSize)
+  ? Math.max(MOBILE_TERMINAL_FONT_SIZE_MIN, Math.min(MOBILE_TERMINAL_FONT_SIZE_MAX, Math.round(storedMobileTerminalFontSize)))
+  : DESKTOP_TERMINAL_FONT_SIZE;
 
 // Apply theme to CSS vars immediately (before any terminal creation).
 applyTheme(activeTheme, []);
@@ -508,8 +521,34 @@ const mobileMedia = window.matchMedia(MOBILE_MEDIA_QUERY);
 let mobileViewport = mobileMedia.matches;
 mobileMedia.addEventListener("change", (ev) => {
   mobileViewport = ev.matches;
+  if (!mobileViewport) mobileSettingsOpen = false;
+  applyTerminalAppearanceToAll();
   renderMobileViewState();
 });
+
+function effectiveTerminalTheme(): Theme {
+  if (!mobileViewport) return activeTheme;
+  return THEMES.get(mobileTerminalThemeKey) ?? activeTheme;
+}
+
+function effectiveTerminalFontSize(): number {
+  return mobileViewport ? mobileTerminalFontSize : DESKTOP_TERMINAL_FONT_SIZE;
+}
+
+function applyTerminalAppearanceToAll(): void {
+  const nextTheme = effectiveTerminalTheme().terminal;
+  const nextFontSize = effectiveTerminalFontSize();
+  for (const st of terms.values()) {
+    st.term.options.theme = nextTheme;
+    st.term.options.fontSize = nextFontSize;
+  }
+  if (activePtyId) {
+    requestAnimationFrame(() => {
+      fitAndResizeActive();
+      reflowActiveTerm();
+    });
+  }
+}
 
 function setTheme(key: string): void {
   const next = THEMES.get(key);
@@ -517,9 +556,30 @@ function setTheme(key: string): void {
   activeThemeKey = key;
   activeTheme = next;
   localStorage.setItem(THEME_KEY, activeThemeKey);
-  applyTheme(activeTheme, terms.values());
+  applyTheme(activeTheme, []);
+  applyTerminalAppearanceToAll();
   renderList();
+  scheduleMobileRender();
   focusActiveTerm();
+}
+
+function setMobileTerminalTheme(key: string): void {
+  if (!THEMES.has(key)) return;
+  mobileTerminalThemeKey = key;
+  localStorage.setItem(MOBILE_TERMINAL_THEME_KEY, key);
+  applyTerminalAppearanceToAll();
+  scheduleMobileRender();
+}
+
+function setMobileTerminalFontSize(size: number): void {
+  const normalized = Math.max(
+    MOBILE_TERMINAL_FONT_SIZE_MIN,
+    Math.min(MOBILE_TERMINAL_FONT_SIZE_MAX, Math.round(size)),
+  );
+  mobileTerminalFontSize = normalized;
+  localStorage.setItem(MOBILE_TERMINAL_FONT_SIZE_KEY, String(normalized));
+  applyTerminalAppearanceToAll();
+  scheduleMobileRender();
 }
 
 type TermState = {
@@ -604,10 +664,10 @@ function createTermState(ptyId: string): TermState {
 
   const term = new Terminal({
     cursorBlink: true,
-    fontSize: 13,
+    fontSize: effectiveTerminalFontSize(),
     fontFamily:
       'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-    theme: activeTheme.terminal,
+    theme: effectiveTerminalTheme().terminal,
     scrollback: TERMINAL_SCROLLBACK_LINES,
   });
   const fit = new FitAddon();
@@ -2455,10 +2515,10 @@ function returnTermToDesktop(): void {
 
 function sendMobileInput(text: string): void {
   if (!activePtyId) return;
-  const trimmed = text.trim();
-  if (!trimmed) return;
   const normalized = text.replace(/\n/g, "\r");
-  const payload = normalized.endsWith("\r") ? normalized : `${normalized}\r`;
+  const payload = normalized.length === 0
+    ? "\r"
+    : (normalized.endsWith("\r") ? normalized : `${normalized}\r`);
   sendWsMessage({ type: "input", ptyId: activePtyId, data: payload });
   trackUserInput(activePtyId, payload);
   mobileInputDraft = "";
@@ -2529,6 +2589,10 @@ function buildMobileViewModel(): MobileViewModel {
     inputDraft: mobileInputDraft,
     quickPrompts,
     preview: mobilePreviewState,
+    settingsOpen: mobileSettingsOpen,
+    terminalThemeKey: mobileTerminalThemeKey,
+    terminalThemes: [...THEMES].map(([key, theme]) => ({ key, name: theme.name })),
+    terminalFontSize: mobileTerminalFontSize,
   };
 }
 
@@ -2537,7 +2601,7 @@ function renderMobileViewState(): void {
     const active = activePtyId ? ptys.find((p) => p.id === activePtyId && p.status === "running") : null;
     if (!active) mobileView = "active";
   }
-  if (!mobileViewport && !mobilePreviewState) {
+  if (!mobileViewport && !mobilePreviewState && !mobileSettingsOpen) {
     returnTermToDesktop();
     mobileTermMountEl = null;
     renderMobileView(mobileRoot, null, {
@@ -2554,6 +2618,10 @@ function renderMobileViewState(): void {
       onRestoreInactive: () => {},
       onClosePreview: () => {},
       onTermMountReady: () => {},
+      onOpenSettings: () => {},
+      onCloseSettings: () => {},
+      onTerminalThemeChange: () => {},
+      onTerminalFontSizeChange: () => {},
     });
     if (activePtyId) {
       updateTerminalVisibility();
@@ -2580,6 +2648,14 @@ function renderMobileViewState(): void {
       const active = activePtyId ? ptys.find((p) => p.id === activePtyId) : null;
       const groupCwd = active?.cwd ? normalizeCwdGroupKey(active.cwd) : "";
       openLaunchModal(groupCwd);
+    },
+    onOpenSettings: () => {
+      mobileSettingsOpen = true;
+      renderMobileViewState();
+    },
+    onCloseSettings: () => {
+      mobileSettingsOpen = false;
+      renderMobileViewState();
     },
     onShowInactive: () => {
       mobileView = "inactive";
@@ -2616,6 +2692,12 @@ function renderMobileViewState(): void {
     onClosePreview: () => {
       mobilePreviewState = null;
       renderMobileViewState();
+    },
+    onTerminalThemeChange: (key) => {
+      setMobileTerminalTheme(key);
+    },
+    onTerminalFontSizeChange: (size) => {
+      setMobileTerminalFontSize(size);
     },
     onTermMountReady: (el) => {
       mobileTermMountEl = el;
