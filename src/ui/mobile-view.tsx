@@ -221,6 +221,12 @@ export function renderMobileView(
                 placeholder="Send a quick directive or question"
                 value={model.inputDraft}
                 onInput={(ev) => handlers.onChangeDraft((ev.currentTarget as HTMLTextAreaElement).value)}
+                onKeyDown={(ev) => {
+                  if (ev.key === "Enter" && !ev.shiftKey) {
+                    ev.preventDefault();
+                    handlers.onSendDraft();
+                  }
+                }}
               />
               <div className="composer-actions">
                 <div className="quick-prompts">
