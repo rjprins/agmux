@@ -2730,8 +2730,8 @@ function renderMobileViewState(): void {
       mobileInputDraft = value;
       renderMobileViewState();
     },
-    onSendDraft: () => {
-      sendMobileInput(mobileInputDraft);
+    onSendDraft: (value) => {
+      sendMobileInput(value ?? mobileInputDraft);
     },
     onQuickPrompt: (prompt) => {
       sendMobileInput(prompt);

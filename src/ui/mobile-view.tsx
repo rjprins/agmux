@@ -74,7 +74,7 @@ export type MobileViewHandlers = {
   onShowInactive: () => void;
   onBack: () => void;
   onChangeDraft: (value: string) => void;
-  onSendDraft: () => void;
+  onSendDraft: (value?: string) => void;
   onQuickPrompt: (prompt: string) => void;
   onInterrupt: () => void;
   onPreviewInactive: (agentSessionId: string) => void;
@@ -101,6 +101,7 @@ export function renderMobileView(
   model: MobileViewModel | null,
   handlers: MobileViewHandlers,
 ): void {
+  let composerDraftEl: HTMLTextAreaElement | null = null;
   if (!model) {
     render(null, root);
     return;
@@ -213,13 +214,16 @@ export function renderMobileView(
                     rows={3}
                     placeholder="Send a quick directive or question"
                     enterKeyHint="send"
+                    ref={(el) => {
+                      composerDraftEl = el;
+                    }}
                     value={model.inputDraft}
                     onInput={(ev) => handlers.onChangeDraft((ev.currentTarget as HTMLTextAreaElement).value)}
                     onKeyDown={(ev) => {
                       if (ev.key !== "Enter") return;
                       if (ev.shiftKey || ev.altKey || ev.ctrlKey || ev.metaKey) return;
                       ev.preventDefault();
-                      handlers.onSendDraft();
+                      handlers.onSendDraft((ev.currentTarget as HTMLTextAreaElement).value);
                     }}
                   />
                   <div className="composer-actions">
@@ -236,7 +240,7 @@ export function renderMobileView(
                     <button
                       type="button"
                       className="mobile-send"
-                      onClick={() => handlers.onSendDraft()}
+                      onClick={() => handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft)}
                       disabled={!model.connected}
                     >
                       Send
