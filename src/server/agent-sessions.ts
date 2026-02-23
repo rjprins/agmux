@@ -1,6 +1,6 @@
 import path from "node:path";
-import type { AgentProvider, AgentSessionSummary, PtySummary } from "../types.js";
-import type { AgentSessionCwdSource, AgentSessionRecord, SqliteStore } from "../persist/sqlite.js";
+import type { AgentProvider, AgentSessionCwdSource, AgentSessionSummary, PtySummary } from "../types.js";
+import type { AgentSessionRecord, SqliteStore } from "../persist/sqlite.js";
 import type { LogSessionDiscovery } from "../logSessions.js";
 import { projectRootFromCwd, worktreeFromCwd } from "../worktree.js";
 

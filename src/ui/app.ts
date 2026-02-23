@@ -841,13 +841,13 @@ startAssetReloadPoller();
 function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_list") {
     ptys = msg.ptys;
+    const runningPtys = ptys.filter((p) => p.status === "running");
     if (activePtyId) {
       const active = ptys.find((p) => p.id === activePtyId);
       if (!active || active.status !== "running") {
         // PTY ID disappeared (e.g. server restart assigned new IDs).
         // Try to re-match by tmux session identity before giving up.
         const saved = loadSavedActivePty();
-        const runningPtys = ptys.filter((p) => p.status === "running");
         const fallback = saved?.tmuxSession
           ? runningPtys.find(
             (p) =>
@@ -865,9 +865,28 @@ function onServerMsg(msg: ServerMsg): void {
         }
       }
     }
+    if (!activePtyId && !pendingActivePtyId) {
+      const saved = loadSavedActivePty();
+      const target = saved
+        ? (
+          runningPtys.find((p) => p.id === saved.ptyId) ??
+          (saved.tmuxSession
+            ? runningPtys.find(
+              (p) =>
+                p.backend === "tmux" &&
+                p.tmuxSession === saved.tmuxSession &&
+                (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true),
+            )
+            : null)
+        )
+        : null;
+      if (target) {
+        setActive(target.id);
+      }
+    }
 
     // Drop terminals for sessions that are no longer running.
-    const running = new Set(ptys.filter((p) => p.status === "running").map((p) => p.id));
+    const running = new Set(runningPtys.map((p) => p.id));
     const allKnown = new Set(ptys.map((p) => p.id));
     prunePtyInputMeta(allKnown);
     for (const p of ptys) {
@@ -2438,7 +2457,8 @@ function sendMobileInput(text: string): void {
   if (!activePtyId) return;
   const trimmed = text.trim();
   if (!trimmed) return;
-  const payload = text.endsWith("\n") ? text : `${text}\n`;
+  const normalized = text.replace(/\n/g, "\r");
+  const payload = normalized.endsWith("\r") ? normalized : `${normalized}\r`;
   sendWsMessage({ type: "input", ptyId: activePtyId, data: payload });
   trackUserInput(activePtyId, payload);
   mobileInputDraft = "";
