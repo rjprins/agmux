@@ -2,6 +2,7 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 
 import type { SqliteStore } from "../../persist/sqlite.js";
+import type { SessionTaskRef } from "../../types.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxCreateLinkedSession,
@@ -32,6 +33,7 @@ type PtyRoutesDeps = {
     resolveProjectRoot: (raw: unknown) => Promise<string | null>;
     createWorktreeFromBase: (opts: { projectRoot?: string | null; branch: string; baseBranch?: string }) => Promise<string>;
     directoryExists: (path: string) => Promise<boolean>;
+    isKnownWorktreePath: (path: string) => boolean;
   };
   defaultBaseBranch: string;
   agmuxSession: string;
@@ -71,6 +73,42 @@ export function agentCommand(agent: string, flags: Record<string, string | boole
 export function registerPtyRoutes(deps: PtyRoutesDeps): void {
   const { fastify, store, runtime, worktrees, defaultBaseBranch, agmuxSession } = deps;
 
+  async function parseTaskRef(raw: unknown): Promise<{ taskRef: SessionTaskRef; worktreePath: string | null }> {
+    if (typeof raw !== "object" || !raw || Array.isArray(raw)) {
+      throw new Error("taskRef must be an object");
+    }
+    const record = raw as Record<string, unknown>;
+    const projectRootRaw = typeof record.projectRoot === "string" ? record.projectRoot.trim() : "";
+    const provider = typeof record.provider === "string" ? record.provider.trim() : "";
+    const taskId = typeof record.taskId === "string" ? record.taskId.trim() : "";
+    const worktreePathRaw = typeof record.worktreePath === "string" ? record.worktreePath.trim() : "";
+    if (!projectRootRaw) throw new Error("taskRef.projectRoot is required");
+    if (!provider) throw new Error("taskRef.provider is required");
+    if (!taskId) throw new Error("taskRef.taskId is required");
+
+    const projectRoot = path.resolve(projectRootRaw);
+    if (!(await worktrees.directoryExists(projectRoot))) {
+      throw new Error(`taskRef.projectRoot not found: ${projectRoot}`);
+    }
+
+    let worktreePath: string | null = null;
+    if (worktreePathRaw) {
+      worktreePath = path.resolve(worktreePathRaw);
+      if (!(await worktrees.directoryExists(worktreePath))) {
+        throw new Error(`taskRef.worktreePath not found: ${worktreePath}`);
+      }
+    }
+
+    return {
+      taskRef: {
+        projectRoot,
+        provider,
+        taskId,
+      },
+      worktreePath,
+    };
+  }
+
   fastify.get("/api/ptys", async () => {
     return { ptys: await runtime.listPtys() };
   });
@@ -95,6 +133,17 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     if (!worktree) {
       reply.code(400);
       return { error: "worktree is required" };
+    }
+
+    let launchTaskRef: { taskRef: SessionTaskRef; worktreePath: string | null } | null = null;
+    if (body.taskRef != null) {
+      try {
+        launchTaskRef = await parseTaskRef(body.taskRef);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        reply.code(400);
+        return { error: message };
+      }
     }
 
     const projectRoot = await worktrees.resolveProjectRoot(body.projectRoot);
@@ -155,6 +204,16 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     });
     runtime.trackLinkedSession(summary.id, linkedSession, "agmux");
     store.upsertSession(summary);
+    if (launchTaskRef) {
+      store.assignTaskToSession({
+        sessionId: summary.id,
+        projectRoot: launchTaskRef.taskRef.projectRoot,
+        provider: launchTaskRef.taskRef.provider,
+        taskId: launchTaskRef.taskRef.taskId,
+        worktreePath: launchTaskRef.worktreePath ?? (worktrees.isKnownWorktreePath(cwd) ? cwd : null),
+        cwd,
+      });
+    }
     fastify.log.info({ ptyId: summary.id, agent, cwd, tmuxSession: tmuxTarget }, "launch: shell spawned");
     await runtime.broadcastPtyList();
 
@@ -172,6 +231,53 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     store.setPreference("launch", { agent, flags: allFlags });
 
     return { id: summary.id };
+  });
+
+  fastify.post("/api/ptys/:id/task", async (req, reply) => {
+    const id = (req.params as any).id as string;
+    const summary = runtime.ptys.getSummary(id);
+    if (!summary) {
+      reply.code(404);
+      return { error: "unknown PTY" };
+    }
+
+    const body = parseJsonBody(req.body);
+    let parsedTaskRef: { taskRef: SessionTaskRef; worktreePath: string | null };
+    try {
+      parsedTaskRef = await parseTaskRef(body.taskRef);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reply.code(400);
+      return { error: message };
+    }
+
+    const cwd = summary.cwd ?? null;
+    const worktreePath = parsedTaskRef.worktreePath ?? (
+      cwd && worktrees.isKnownWorktreePath(cwd) ? cwd : null
+    );
+    const assignment = store.assignTaskToSession({
+      sessionId: id,
+      projectRoot: parsedTaskRef.taskRef.projectRoot,
+      provider: parsedTaskRef.taskRef.provider,
+      taskId: parsedTaskRef.taskRef.taskId,
+      worktreePath,
+      cwd,
+    });
+
+    await runtime.broadcastPtyList();
+    return { ok: true, assignment };
+  });
+
+  fastify.delete("/api/ptys/:id/task", async (req, reply) => {
+    const id = (req.params as any).id as string;
+    const summary = runtime.ptys.getSummary(id);
+    if (!summary) {
+      reply.code(404);
+      return { error: "unknown PTY" };
+    }
+    store.clearTaskAssignment(id);
+    await runtime.broadcastPtyList();
+    return { ok: true };
   });
 
   fastify.post("/api/ptys/shell", async (_req, reply) => {

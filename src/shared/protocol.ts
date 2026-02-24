@@ -5,6 +5,18 @@ export type PtyReadinessState = "ready" | "busy" | "unknown";
 export type PtyReadinessIndicator = "ready" | "busy";
 export type TmuxServer = "agmux" | "default";
 
+export type SessionTaskRef = {
+  projectRoot: string;
+  provider: string;
+  taskId: string;
+};
+
+export type SessionTaskAssignment = SessionTaskRef & {
+  assignedAt: number;
+  worktreePath: string | null;
+  cwd: string | null;
+};
+
 export type PtySummary = {
   id: PtyId;
   name: string;
@@ -25,6 +37,7 @@ export type PtySummary = {
   status: PtyStatus;
   exitCode?: number | null;
   exitSignal?: string | null;
+  task?: SessionTaskAssignment | null;
 };
 
 export type ClientToServerMessage =
