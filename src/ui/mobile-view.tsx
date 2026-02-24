@@ -1,4 +1,5 @@
 import { Fragment, render } from "preact";
+import { AnsiUp } from "ansi_up";
 
 // Mobile view states:
 // - "active": Active sessions list
@@ -53,12 +54,16 @@ export type MobileInactivePreview = {
 
 export type MobileTerminalSnapshot = {
   seq: number;
+  ptyId: string;
   title: string;
   subtitle: string;
   capturedAt: string;
   text: string;
   lineCount: number;
   truncated: boolean;
+  linesRequested: number;
+  loading: boolean;
+  error: string | null;
 };
 
 export type MobileViewModel = {
@@ -76,6 +81,9 @@ export type MobileViewModel = {
   terminalThemeKey: string;
   terminalThemes: Array<{ key: string; name: string }>;
   terminalFontSize: number;
+  historyButtonBg: string;
+  historyButtonText: string;
+  historyButtonBorder: string;
 };
 
 export type MobileViewHandlers = {
@@ -104,6 +112,8 @@ export type MobileViewHandlers = {
 };
 
 let lastSnapshotAutoscrollSeq = 0;
+const ansiUp = new AnsiUp();
+ansiUp.escape_for_html = true;
 
 function renderEmpty(title: string, hint: string) {
   return (
@@ -120,7 +130,7 @@ export function renderMobileView(
   handlers: MobileViewHandlers,
 ): void {
   let composerDraftEl: HTMLTextAreaElement | null = null;
-  let snapshotPreEl: HTMLPreElement | null = null;
+  let snapshotScrollEl: HTMLDivElement | null = null;
   const sendComposerDraft = () => handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft);
   if (!model) {
     render(null, root);
@@ -228,12 +238,36 @@ export function renderMobileView(
                 <div
                   className="focus-xterm-mount"
                   onPointerDownCapture={(ev) => {
+                    const target = ev.target as HTMLElement | null;
+                    if (target?.closest(".focus-history-btn")) return;
                     ev.preventDefault();
                     ev.stopPropagation();
-                    handlers.onOpenTermSnapshot();
+                    requestAnimationFrame(() => {
+                      if (!composerDraftEl) return;
+                      composerDraftEl.focus({ preventScroll: true });
+                      const pos = composerDraftEl.value.length;
+                      composerDraftEl.setSelectionRange(pos, pos);
+                    });
                   }}
                   ref={(el: HTMLElement | null) => handlers.onTermMountReady(el)}
-                />
+                >
+                  <button
+                    type="button"
+                    className="mobile-action focus-history-btn"
+                    style={{
+                      backgroundColor: model.historyButtonBg,
+                      color: model.historyButtonText,
+                      borderColor: model.historyButtonBorder,
+                    }}
+                    onPointerDown={(ev) => {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                    }}
+                    onClick={() => handlers.onOpenTermSnapshot()}
+                  >
+                    History
+                  </button>
+                </div>
                 <div className="mobile-composer focus-composer">
                   <textarea
                     rows={3}
@@ -383,33 +417,64 @@ export function renderMobileView(
                   {model.terminalSnapshot.subtitle}
                 </div>
                 <div className="sheet-sub">
-                  Snapshot {model.terminalSnapshot.capturedAt}
-                  {model.terminalSnapshot.truncated ? " · showing latest lines" : ""}
+                  {model.terminalSnapshot.loading
+                    ? `Loading tmux snapshot (${model.terminalSnapshot.linesRequested} lines)...`
+                    : model.terminalSnapshot.error
+                    ? "Snapshot failed"
+                    : `Snapshot ${model.terminalSnapshot.capturedAt}`}
+                  {!model.terminalSnapshot.loading && !model.terminalSnapshot.error && model.terminalSnapshot.truncated
+                    ? ` · showing latest ${model.terminalSnapshot.linesRequested} lines`
+                    : ""}
                 </div>
               </div>
               <button type="button" className="ghost" onClick={() => handlers.onCloseTermSnapshot()}>
                 Close
               </button>
             </div>
-            <div className="sheet-body terminal-snapshot-body">
-              <pre
-                ref={(el) => {
-                  snapshotPreEl = el;
-                  if (!el) return;
-                  if (model.terminalSnapshot && lastSnapshotAutoscrollSeq !== model.terminalSnapshot.seq) {
-                    lastSnapshotAutoscrollSeq = model.terminalSnapshot.seq;
-                    requestAnimationFrame(() => {
-                      if (!snapshotPreEl) return;
-                      snapshotPreEl.scrollTop = snapshotPreEl.scrollHeight;
-                    });
-                  }
-                }}
-                style={{ fontSize: `${model.terminalFontSize}px` }}
-              >
-                {model.terminalSnapshot.text || "No terminal output yet."}
-              </pre>
+            <div
+              className="sheet-body terminal-snapshot-body"
+              ref={(el) => {
+                snapshotScrollEl = el;
+                if (!el) return;
+                if (
+                  model.terminalSnapshot &&
+                  !model.terminalSnapshot.loading &&
+                  !model.terminalSnapshot.error &&
+                  lastSnapshotAutoscrollSeq !== model.terminalSnapshot.seq
+                ) {
+                  lastSnapshotAutoscrollSeq = model.terminalSnapshot.seq;
+                  requestAnimationFrame(() => {
+                    if (!snapshotScrollEl) return;
+                    snapshotScrollEl.scrollTop = snapshotScrollEl.scrollHeight;
+                  });
+                }
+              }}
+            >
+              {model.terminalSnapshot.loading ? (
+                <div className="terminal-snapshot-render" style={{ fontSize: `${model.terminalFontSize}px` }}>
+                  Loading tmux scrollback...
+                </div>
+              ) : model.terminalSnapshot.error ? (
+                <div className="terminal-snapshot-render" style={{ fontSize: `${model.terminalFontSize}px` }}>
+                  {`Error: ${model.terminalSnapshot.error}`}
+                </div>
+              ) : (
+                <div
+                  className="terminal-snapshot-render"
+                  style={{ fontSize: `${model.terminalFontSize}px` }}
+                  dangerouslySetInnerHTML={{
+                    __html: model.terminalSnapshot.text
+                      ? ansiUp.ansi_to_html(model.terminalSnapshot.text)
+                      : "No terminal output yet.",
+                  }}
+                />
+              )}
             </div>
-            <div className="sheet-sub">Lines: {model.terminalSnapshot.lineCount}</div>
+            <div className="sheet-sub">
+              {model.terminalSnapshot.error
+                ? "Lines: 0"
+                : `Lines: ${model.terminalSnapshot.lineCount}`}
+            </div>
           </div>
         </div>
       ) : null}

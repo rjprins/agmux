@@ -82,6 +82,7 @@ let mobileInputDraft = "";
 let mobilePreviewState: MobileInactivePreview | null = null;
 let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
 let mobileTerminalSnapshotSeq = 0;
+let mobileTerminalSnapshotPendingRequestId: string | null = null;
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
@@ -657,6 +658,7 @@ const subscribed = new Set<string>();
 let authToken = "";
 let ws: WebSocket | null = null;
 const TERMINAL_SCROLLBACK_LINES = 50_000;
+const MOBILE_TMUX_SNAPSHOT_LINES = 4_000;
 let tmuxSessions: TmuxSessionInfo[] = [];
 
 const placeholderEl = document.createElement("div");
@@ -1094,6 +1096,36 @@ function onServerMsg(msg: ServerMsg): void {
   }
   if (msg.type === "pty_highlight") {
     highlight(msg.ptyId, msg.ttlMs);
+    return;
+  }
+  if (msg.type === "mobile_snapshot_response") {
+    if (msg.requestId !== mobileTerminalSnapshotPendingRequestId) return;
+    mobileTerminalSnapshotPendingRequestId = null;
+    if (!mobileTerminalSnapshot || msg.ptyId !== mobileTerminalSnapshot.ptyId) return;
+    if (!msg.ok) {
+      mobileTerminalSnapshot = {
+        ...mobileTerminalSnapshot,
+        capturedAt: "",
+        text: "",
+        lineCount: 0,
+        truncated: false,
+        loading: false,
+        error: msg.error,
+      };
+      renderMobileViewState();
+      return;
+    }
+    mobileTerminalSnapshot = {
+      ...mobileTerminalSnapshot,
+      seq: ++mobileTerminalSnapshotSeq,
+      capturedAt: new Date(msg.capturedAt).toLocaleTimeString(),
+      text: msg.text,
+      lineCount: msg.lineCount,
+      truncated: msg.truncated,
+      loading: false,
+      error: null,
+    };
+    renderMobileViewState();
     return;
   }
 }
@@ -2603,32 +2635,11 @@ function returnTermToDesktop(): void {
 function sendMobileInput(text: string): void {
   if (!activePtyId) return;
   const normalized = text.replace(/\r\n?/g, "\n");
-  const activeSummary = ptys.find((p) => p.id === activePtyId) ?? null;
-  const activeProcess = activeSummary ? buildRunningPtyItem(activeSummary).process : "";
-  const inferredAgent = inferAgentFromRecentInput(activePtyId);
-  const isClaudeOrCodex = Boolean(inferredAgent) || /claude|codex/i.test(activeProcess);
-
-  if (isClaudeOrCodex) {
-    // Claude/Codex mobile submit: flatten composer newlines, then send one delayed Enter.
-    const targetPtyId = activePtyId;
-    const body = normalized.replace(/[\r\n]+/g, "");
-    if (body.length > 0) {
-      sendWsMessage({ type: "input", ptyId: targetPtyId, data: body });
-    }
-    const delayedSubmitMs = 250;
-    setTimeout(() => {
-      sendWsMessage({ type: "input", ptyId: targetPtyId, data: "\r" });
-    }, delayedSubmitMs);
-    trackUserInput(targetPtyId, `${body}\r`);
-  } else {
-    // Default shell behavior: one payload ending with Enter.
-    const body = normalized.replace(/\n/g, "\r");
-    const payload = body.length === 0
-      ? "\r"
-      : (body.endsWith("\r") ? body : `${body}\r`);
-    sendWsMessage({ type: "input", ptyId: activePtyId, data: payload });
-    trackUserInput(activePtyId, payload);
-  }
+  // Mobile submit is always server-gated: write body, then server sends Enter.
+  const targetPtyId = activePtyId;
+  const body = normalized.replace(/[\r\n]+/g, "");
+  sendWsMessage({ type: "mobile_submit", ptyId: targetPtyId, body });
+  trackUserInput(targetPtyId, `${body}\r`);
   mobileInputDraft = "";
   renderMobileViewState();
 }
@@ -2666,31 +2677,42 @@ function openMobilePreview(agentSessionId: string): void {
     });
 }
 
-function captureMobileTerminalSnapshot(ptyId: string): MobileTerminalSnapshot | null {
-  const st = terms.get(ptyId);
-  if (!st) return null;
+function requestMobileTmuxSnapshot(ptyId: string): void {
   const summary = ptys.find((p) => p.id === ptyId);
   const focus = summary ? buildMobileFocus(summary) : null;
-  const MAX_LINES = TERMINAL_SCROLLBACK_LINES;
-  const buf = st.term.buffer.active;
-  const start = Math.max(0, buf.length - MAX_LINES);
-  const lines: string[] = [];
-  for (let i = start; i < buf.length; i++) {
-    const line = buf.getLine(i);
-    if (!line) continue;
-    lines.push(line.translateToString(true).replace(/\s+$/g, ""));
-  }
-  while (lines.length > 0 && lines[0].length === 0) lines.shift();
-  while (lines.length > 0 && lines[lines.length - 1].length === 0) lines.pop();
-  return {
-    seq: ++mobileTerminalSnapshotSeq,
+  const seq = ++mobileTerminalSnapshotSeq;
+  const requestId = `mobile-snapshot-${seq}`;
+  mobileTerminalSnapshotPendingRequestId = requestId;
+  mobileTerminalSnapshot = {
+    seq,
+    ptyId,
     title: focus?.title ?? "Terminal snapshot",
     subtitle: focus?.subtitle ?? "",
-    capturedAt: new Date().toLocaleTimeString(),
-    text: lines.join("\n"),
-    lineCount: lines.length,
-    truncated: buf.length > MAX_LINES,
+    capturedAt: "",
+    text: "",
+    lineCount: 0,
+    truncated: false,
+    linesRequested: MOBILE_TMUX_SNAPSHOT_LINES,
+    loading: true,
+    error: null,
   };
+  renderMobileViewState();
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    mobileTerminalSnapshotPendingRequestId = null;
+    mobileTerminalSnapshot = {
+      ...mobileTerminalSnapshot,
+      loading: false,
+      error: "Not connected",
+    };
+    renderMobileViewState();
+    return;
+  }
+  sendWsMessage({
+    type: "mobile_snapshot_request",
+    requestId,
+    ptyId,
+    lines: MOBILE_TMUX_SNAPSHOT_LINES,
+  });
 }
 
 function buildMobileViewModel(): MobileViewModel {
@@ -2713,6 +2735,8 @@ function buildMobileViewModel(): MobileViewModel {
     .filter((session) => !hiddenAgentSessionIds.has(session.id))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
     .map((session) => buildMobileInactiveSession(session));
+  const mobileTheme = THEMES.get(mobileTerminalThemeKey) ?? activeTheme;
+  const terminalTheme = mobileTheme.terminal;
 
   return {
     connected: wsConnected,
@@ -2729,6 +2753,9 @@ function buildMobileViewModel(): MobileViewModel {
     terminalThemeKey: mobileTerminalThemeKey,
     terminalThemes: [...THEMES].map(([key, theme]) => ({ key, name: theme.name })),
     terminalFontSize: mobileTerminalFontSize,
+    historyButtonBg: terminalTheme.background ?? mobileTheme.panel,
+    historyButtonText: terminalTheme.foreground ?? mobileTheme.text,
+    historyButtonBorder: terminalTheme.cursor ?? mobileTheme.line,
   };
 }
 
@@ -2775,12 +2802,16 @@ function renderMobileViewState(): void {
       setActive(ptyId);
       mobileView = "session";
       mobileTerminalSnapshot = null;
+      mobileTerminalSnapshotPendingRequestId = null;
       renderMobileViewState();
     },
     onCloseRunning: (ptyId) => {
       if (mobileReparentedPtyId === ptyId) returnTermToDesktop();
       killPty(ptyId);
-      if (activePtyId === ptyId) mobileTerminalSnapshot = null;
+      if (activePtyId === ptyId) {
+        mobileTerminalSnapshot = null;
+        mobileTerminalSnapshotPendingRequestId = null;
+      }
       if (activePtyId === ptyId && mobileView === "session") {
         mobileTermMountEl = null;
         mobileView = "active";
@@ -2803,12 +2834,14 @@ function renderMobileViewState(): void {
     onShowInactive: () => {
       mobileView = "inactive";
       mobileTerminalSnapshot = null;
+      mobileTerminalSnapshotPendingRequestId = null;
       renderMobileViewState();
     },
     onBack: () => {
       returnTermToDesktop();
       mobileTermMountEl = null;
       mobileTerminalSnapshot = null;
+      mobileTerminalSnapshotPendingRequestId = null;
       mobileView = "active";
       renderMobileViewState();
     },
@@ -2842,11 +2875,11 @@ function renderMobileViewState(): void {
     },
     onOpenTermSnapshot: () => {
       if (!activePtyId) return;
-      mobileTerminalSnapshot = captureMobileTerminalSnapshot(activePtyId);
-      renderMobileViewState();
+      requestMobileTmuxSnapshot(activePtyId);
     },
     onCloseTermSnapshot: () => {
       mobileTerminalSnapshot = null;
+      mobileTerminalSnapshotPendingRequestId = null;
       renderMobileViewState();
     },
     onPreviewInactive: (agentSessionId) => openMobilePreview(agentSessionId),

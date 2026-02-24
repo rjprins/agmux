@@ -31,7 +31,9 @@ export type ClientToServerMessage =
   | { type: "subscribe"; ptyId: PtyId }
   | { type: "input"; ptyId: PtyId; data: string }
   | { type: "resize"; ptyId: PtyId; cols: number; rows: number }
-  | { type: "tmux_control"; ptyId: PtyId; direction: "up" | "down"; lines: number };
+  | { type: "tmux_control"; ptyId: PtyId; direction: "up" | "down"; lines: number }
+  | { type: "mobile_submit"; ptyId: PtyId; body: string }
+  | { type: "mobile_snapshot_request"; requestId: string; ptyId: PtyId; lines: number };
 
 export type ServerToClientMessage =
   | { type: "pty_list"; ptys: PtySummary[] }
@@ -56,7 +58,24 @@ export type ServerToClientMessage =
       ts: number;
     }
   | { type: "pty_highlight"; ptyId: PtyId; reason: string; ttlMs: number }
-  | { type: "trigger_error"; ptyId: PtyId; trigger: string; ts: number; message: string };
+  | { type: "trigger_error"; ptyId: PtyId; trigger: string; ts: number; message: string }
+  | {
+      type: "mobile_snapshot_response";
+      requestId: string;
+      ptyId: PtyId;
+      ok: true;
+      capturedAt: number;
+      lineCount: number;
+      truncated: boolean;
+      text: string;
+    }
+  | {
+      type: "mobile_snapshot_response";
+      requestId: string;
+      ptyId: PtyId;
+      ok: false;
+      error: string;
+    };
 
 export type AgentProvider = "claude" | "codex" | "pi";
 export type AgentSessionCwdSource = "runtime" | "db" | "log" | "user";
