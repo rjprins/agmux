@@ -32,6 +32,7 @@ import { registerPtyRoutes } from "./server/routes/ptys.js";
 import { registerSettingsRoutes } from "./server/routes/settings.js";
 import { registerStaticRoutes } from "./server/routes/static.js";
 import { registerTmuxRoutes } from "./server/routes/tmux.js";
+import { registerTaskRoutes } from "./server/routes/tasks.js";
 import { registerTriggerRoutes } from "./server/routes/triggers.js";
 import { registerWorktreeRoutes } from "./server/routes/worktrees.js";
 import { createWorktreeService } from "./server/worktrees.js";
@@ -89,6 +90,7 @@ registerAgentRoutes({
 registerWorktreeRoutes({ fastify, worktrees });
 registerTmuxRoutes({ fastify });
 registerSettingsRoutes({ fastify, store });
+registerTaskRoutes({ fastify, store });
 registerPtyRoutes({
   fastify,
   store,
