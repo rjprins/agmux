@@ -10,8 +10,18 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TMUX_SOCKET = process.env.PORT ? `agmux-${process.env.PORT}` : "agmux";
 const TMUX_SOCKET = process.env.AGMUX_TMUX_SOCKET ?? DEFAULT_TMUX_SOCKET;
 const TMUX_BASE_ARGS = ["-L", TMUX_SOCKET, "-f", "/dev/null"];
+const DEBUG_ACTIVE_PROCESS = process.env.AGMUX_DEBUG_ACTIVE_PROCESS !== "0";
 
 export type { TmuxServer, TmuxSessionCheck, TmuxSessionInfo };
+
+function debugActiveProcess(details: Record<string, unknown>): void {
+  if (!DEBUG_ACTIVE_PROCESS) return;
+  try {
+    console.log("[agmux][active-process]", JSON.stringify(details));
+  } catch {
+    // ignore logging issues
+  }
+}
 
 function validateShellExecutable(shell: string): string {
   const trimmed = shell.trim();
@@ -560,7 +570,12 @@ async function tmuxPaneMeta(
   }
 }
 
-async function ttyForegroundCommand(tty: string, panePid: number | null): Promise<string | null> {
+type ForegroundProcess = {
+  pid: number;
+  comm: string;
+};
+
+async function ttyForegroundProcess(tty: string, panePid: number | null): Promise<ForegroundProcess | null> {
   try {
     const ttyArg = tty.startsWith("/dev/") ? tty.slice("/dev/".length) : tty;
     const { stdout } = await execFileAsync("ps", ["-o", "pid=,pgid=,tpgid=,comm=", "-t", ttyArg]);
@@ -575,19 +590,40 @@ async function ttyForegroundCommand(tty: string, panePid: number | null): Promis
       })
       .filter((r): r is { pid: number; pgid: number; tpgid: number; comm: string } => r != null);
 
-    // Prefer the foreground process group leader (pid === tpgid) that isn't a shell.
     for (const r of rows) {
-      if (r.pid === r.tpgid && !isShellCommand(r.comm)) return r.comm;
+      if (r.pid === r.tpgid && !isShellCommand(r.comm)) return { pid: r.pid, comm: r.comm };
     }
-    // Fall back to any non-shell process in the foreground group (pgid === tpgid),
-    // e.g. other members of a pipeline. This excludes background helpers like
-    // gitstatusd that the shell spawns automatically.
     for (const r of rows) {
       if (panePid != null && r.pid === panePid) continue;
       if (r.pgid !== r.tpgid) continue;
-      if (!isShellCommand(r.comm)) return r.comm;
+      if (!isShellCommand(r.comm)) return { pid: r.pid, comm: r.comm };
     }
     return null;
+  } catch {
+    return null;
+  }
+}
+
+const RUNTIME_WRAPPER_COMMANDS = new Set(["node", "python", "python3", "bun", "deno", "npm", "npx", "pnpm", "yarn"]);
+
+function isRuntimeWrapperCommand(cmd: string): boolean {
+  return RUNTIME_WRAPPER_COMMANDS.has(normalizeCommandName(cmd));
+}
+
+export function inferAgentFromProcessArgs(args: string): string | null {
+  const text = args.toLowerCase();
+  const direct = text.match(/(?:^|\s)(codex|claude|aider|goose|opencode|cursor-agent)(?=\s|$)/);
+  if (direct) return direct[1];
+  const pathLike = text.match(/(?:\/|\\)(codex|claude|aider|goose|opencode|cursor-agent)(?:[\\/._ -]|$)/);
+  if (pathLike) return pathLike[1];
+  return null;
+}
+
+async function processArgs(pid: number): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "args=", "-p", String(pid)]);
+    const out = stdout.trim();
+    return out.length > 0 ? out : null;
   } catch {
     return null;
   }
@@ -638,8 +674,100 @@ export async function tmuxPaneActiveProcess(
 ): Promise<string | null> {
   const meta = await tmuxPaneMeta(name, serverHint);
   if (!meta || !meta.command) return null;
-  if (!isShellCommand(meta.command)) return meta.command;
+  if (!isShellCommand(meta.command)) {
+    if (!isRuntimeWrapperCommand(meta.command)) {
+      debugActiveProcess({ name, mode: "meta-direct", command: meta.command, panePid: meta.panePid });
+      return meta.command;
+    }
+
+    // For wrapper commands (node/python/etc), prefer the foreground TTY process.
+    // pane_pid can point at the parent shell even when pane_current_command is the wrapper.
+    if (meta.tty) {
+      const fg = await ttyForegroundProcess(meta.tty, meta.panePid);
+      if (fg) {
+        if (!isRuntimeWrapperCommand(fg.comm)) {
+          debugActiveProcess({
+            name,
+            mode: "meta-wrapper-foreground-direct",
+            command: meta.command,
+            panePid: meta.panePid,
+            fgPid: fg.pid,
+            fgComm: fg.comm,
+          });
+          return fg.comm;
+        }
+        const fgArgs = await processArgs(fg.pid);
+        if (fgArgs) {
+          const inferred = inferAgentFromProcessArgs(fgArgs);
+          debugActiveProcess({
+            name,
+            mode: "meta-wrapper-foreground-wrapper",
+            command: meta.command,
+            panePid: meta.panePid,
+            fgPid: fg.pid,
+            fgComm: fg.comm,
+            inferred,
+            args: fgArgs.slice(0, 260),
+          });
+          return inferred ?? fg.comm;
+        }
+        debugActiveProcess({
+          name,
+          mode: "meta-wrapper-foreground-wrapper-no-args",
+          command: meta.command,
+          panePid: meta.panePid,
+          fgPid: fg.pid,
+          fgComm: fg.comm,
+        });
+        return fg.comm;
+      }
+    }
+
+    // Fallback to pane_pid args if no foreground process could be resolved.
+    if (!meta.panePid) {
+      debugActiveProcess({ name, mode: "meta-wrapper-no-pane-pid", command: meta.command });
+      return meta.command;
+    }
+    const args = await processArgs(meta.panePid);
+    if (!args) {
+      debugActiveProcess({ name, mode: "meta-wrapper-no-args", command: meta.command, panePid: meta.panePid });
+      return meta.command;
+    }
+    const inferred = inferAgentFromProcessArgs(args);
+    debugActiveProcess({
+      name,
+      mode: "meta-wrapper",
+      command: meta.command,
+      panePid: meta.panePid,
+      inferred,
+      args: args.slice(0, 260),
+    });
+    return inferred ?? meta.command;
+  }
   if (!meta.tty) return null;
-  const fg = await ttyForegroundCommand(meta.tty, meta.panePid);
-  return fg ?? null;
+  const fg = await ttyForegroundProcess(meta.tty, meta.panePid);
+  if (!fg) {
+    debugActiveProcess({ name, mode: "shell-no-foreground", tty: meta.tty, panePid: meta.panePid });
+    return null;
+  }
+  if (!isRuntimeWrapperCommand(fg.comm)) {
+    debugActiveProcess({ name, mode: "shell-foreground-direct", tty: meta.tty, fgPid: fg.pid, fgComm: fg.comm });
+    return fg.comm;
+  }
+  const args = await processArgs(fg.pid);
+  if (!args) {
+    debugActiveProcess({ name, mode: "shell-foreground-wrapper-no-args", tty: meta.tty, fgPid: fg.pid, fgComm: fg.comm });
+    return fg.comm;
+  }
+  const inferred = inferAgentFromProcessArgs(args);
+  debugActiveProcess({
+    name,
+    mode: "shell-foreground-wrapper",
+    tty: meta.tty,
+    fgPid: fg.pid,
+    fgComm: fg.comm,
+    inferred,
+    args: args.slice(0, 260),
+  });
+  return inferred ?? fg.comm;
 }

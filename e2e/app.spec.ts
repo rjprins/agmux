@@ -572,6 +572,37 @@ test("tmux claude/codex subprocess prompt uses prompt readiness detection", asyn
   }
 });
 
+test("tmux node-wrapped codex command shows codex as active process", async ({ page }) => {
+  const hasTmux = await commandAvailable("tmux", ["-V"]);
+  const hasNode = await commandAvailable("node", ["--version"]);
+  test.skip(!hasTmux || !hasNode, "requires tmux and node");
+
+  const suffix = `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
+  const sessionName = `agmux_e2e_codex_node_${suffix}`;
+  const scriptPath = `/tmp/codex-e2e-${suffix}.js`;
+  let ptyId: string | null = null;
+
+  fs.writeFileSync(scriptPath, "setTimeout(() => process.exit(0), 20000);\n", "utf8");
+  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "node", scriptPath]);
+
+  try {
+    await page.goto("/?nosup=1");
+    const token = await readSessionToken(page);
+    ptyId = await attachTmuxWithRetry(page, token, sessionName);
+
+    const item = page.locator(`.pty-item[data-pty-id="${ptyId}"]`);
+    await expect(item).toHaveCount(1, { timeout: 10_000 });
+    await expect(item.locator(".primary")).toContainText("codex", { timeout: 12_000 });
+  } finally {
+    if (ptyId) {
+      const token = await readSessionToken(page);
+      await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+    }
+    await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
+    await execFileAsync("rm", ["-f", scriptPath]).catch(() => {});
+  }
+});
+
 test("escape key is delivered to tmux session promptly", async ({ page }) => {
   const hasTmux = await commandAvailable("tmux", ["-V"]);
   test.skip(!hasTmux, "requires tmux");
