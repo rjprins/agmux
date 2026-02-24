@@ -192,7 +192,7 @@ test("mobile UI can send input via composer", async ({ page }) => {
   const ptyId = typeof createJson.id === "string" ? createJson.id : null;
 
   await expect(page.locator(".mobile-session-card")).not.toHaveCount(0, { timeout: 30_000 });
-  await expect(page.locator(".mobile-connection")).toContainText("Live", { timeout: 10_000 });
+  await expect(page.locator(".mobile-brand-title")).toContainText("agmux", { timeout: 10_000 });
   await page.locator(".mobile-session-card").first().click();
   await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 10_000 });
 
@@ -251,18 +251,56 @@ test("mobile session dropdown switches active session", async ({ page }) => {
 
   await page.locator(".mobile-running-dropdown-toggle").click();
   await expect(page.locator(".mobile-running-dropdown-panel")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(`.mobile-running-dropdown-panel .mobile-session-card[data-pty-id="${firstId}"]`)).toHaveCount(0);
   await page.locator(`.mobile-running-dropdown-panel .mobile-session-card[data-pty-id="${secondId}"]`).click();
 
   await page.locator(".mobile-running-dropdown-toggle").click();
   await expect(page.locator(".mobile-running-dropdown-panel")).toBeVisible({ timeout: 5_000 });
-  await expect(page.locator(".mobile-running-dropdown-panel .mobile-session-card.active")).toHaveAttribute(
-    "data-pty-id",
-    secondId,
-    { timeout: 10_000 },
-  );
+  await expect(page.locator(`.mobile-running-dropdown-panel .mobile-session-card[data-pty-id="${secondId}"]`)).toHaveCount(0);
+  await expect(page.locator(`.mobile-running-dropdown-panel .mobile-session-card[data-pty-id="${firstId}"]`)).toHaveCount(1);
 
   await page.request.post(`/api/ptys/${encodeURIComponent(firstId)}/kill?token=${encodeURIComponent(token)}`);
   await page.request.post(`/api/ptys/${encodeURIComponent(secondId)}/kill?token=${encodeURIComponent(token)}`);
+});
+
+test("mobile session view survives refresh and remains interactive", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?nosup=1");
+
+  const token = await readSessionToken(page);
+  const createRes = await page.request.post(`/api/ptys/shell?token=${encodeURIComponent(token)}`);
+  expect(createRes.ok()).toBeTruthy();
+  const createJson = (await createRes.json()) as { id?: unknown };
+  const ptyId = typeof createJson.id === "string" ? createJson.id : null;
+  expect(ptyId).toBeTruthy();
+  if (!ptyId) return;
+
+  await expect(page.locator(`.mobile-session-card[data-pty-id="${ptyId}"]`)).toHaveCount(1, { timeout: 30_000 });
+  await page.locator(`.mobile-session-card[data-pty-id="${ptyId}"]`).click();
+  await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 10_000 });
+
+  await page.reload();
+
+  await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 30_000 });
+  await expect(page.locator(".mobile-composer textarea")).toHaveCount(1, { timeout: 10_000 });
+
+  const textarea = page.locator(".mobile-composer textarea");
+  await textarea.fill("echo mobile-refresh-ok");
+  await page.locator(".mobile-send").click();
+  await expect(textarea).toHaveValue("");
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate(() => {
+          const d = (window as any).__agmux?.dumpActive;
+          return typeof d === "function" ? String(d()) : "";
+        }),
+      { timeout: 30_000 },
+    )
+    .toContain("mobile-refresh-ok");
+
+  await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
 });
 
 test("xterm viewport scrolls with mouse wheel", async ({ page }) => {

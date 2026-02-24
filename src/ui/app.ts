@@ -129,6 +129,7 @@ let mobileSnapshotRestorePtyId: string | null = loadSavedMobileSnapshotPtyId();
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
+let pendingMobileSubscribePtyId: string | null = null;
 let mobileSettingsOpen = false;
 
 // Client-side worktree cache, populated from GET /api/worktrees
@@ -631,7 +632,14 @@ function scheduleMobileViewportSync(resizeActiveTerm = false): void {
 
 mobileMedia.addEventListener("change", (ev) => {
   mobileViewport = ev.matches;
-  if (!mobileViewport) mobileSettingsOpen = false;
+  if (!mobileViewport) {
+    mobileSettingsOpen = false;
+    // If we were waiting to subscribe until mobile fit/resize completed, do it now.
+    if (pendingMobileSubscribePtyId) {
+      subscribeIfNeeded(pendingMobileSubscribePtyId);
+      pendingMobileSubscribePtyId = null;
+    }
+  }
   scheduleMobileViewportSync(true);
   applyTerminalAppearanceToAll();
   renderMobileViewState();
@@ -2683,14 +2691,27 @@ function reparentTermToMobile(): void {
   mobileTermMountEl.appendChild(st.container);
   mobileReparentedPtyId = activePtyId;
 
-  requestAnimationFrame(() => {
+  const fitResizeAndReflow = () => {
     st.fit.fit();
     const cols = st.term.cols;
     const rows = st.term.rows;
+    if (cols > 0 && rows > 0) {
+      maybeSubscribeAfterStableMobileResize(st.ptyId, cols, rows);
+    }
     if (cols > 0 && rows > 0 && (!st.lastResize || st.lastResize.cols !== cols || st.lastResize.rows !== rows)) {
       st.lastResize = { cols, rows };
       sendWsMessage({ type: "resize", ptyId: st.ptyId, cols, rows });
     }
+    // Force xterm to recompute wraps after container move/resizes.
+    scheduleReflow();
+  };
+
+  requestAnimationFrame(() => {
+    fitResizeAndReflow();
+    // A second pass on the next frame catches late layout/font settling on mobile refresh.
+    requestAnimationFrame(() => {
+      fitResizeAndReflow();
+    });
   });
 }
 
@@ -2844,9 +2865,28 @@ function buildMobileViewModel(): MobileViewModel {
 
 function renderMobileViewState(): void {
   if (mobileView === "session") {
-    const active = activePtyId ? ptys.find((p) => p.id === activePtyId && p.status === "running") : null;
-    const hasRunning = ptys.some((p) => p.status === "running");
-    if (!active && hasRunning) {
+    const runningPtys = ptys.filter((p) => p.status === "running");
+    const active = activePtyId ? runningPtys.find((p) => p.id === activePtyId) : null;
+    if (!active && runningPtys.length > 0) {
+      const saved = loadSavedActivePty();
+      const restoreTarget = saved
+        ? (
+          runningPtys.find((p) => p.id === saved.ptyId) ??
+          (saved.tmuxSession
+            ? runningPtys.find(
+              (p) =>
+                p.backend === "tmux" &&
+                p.tmuxSession === saved.tmuxSession &&
+                (saved.tmuxServer ? p.tmuxServer === saved.tmuxServer : true),
+            )
+            : null)
+        )
+        : null;
+      const fallback = restoreTarget ?? runningPtys[0];
+      setActive(fallback.id);
+    }
+    const activeAfterRestore = activePtyId ? runningPtys.find((p) => p.id === activePtyId) : null;
+    if (!activeAfterRestore && runningPtys.length > 0) {
       mobileView = "active";
       saveMobileView();
     }
@@ -3313,7 +3353,13 @@ function setActive(ptyId: string): void {
   saveActivePty(ptyId);
   ensureTerm(ptyId);
   updateTerminalVisibility();
-  subscribeIfNeeded(ptyId);
+  // On mobile we wait until the terminal is mounted and has a stable size
+  // before subscribing, so server-side wrapping uses the right PTY width.
+  if (mobileViewport) {
+    pendingMobileSubscribePtyId = ptyId;
+  } else {
+    subscribeIfNeeded(ptyId);
+  }
   requestAnimationFrame(() => {
     fitAndResizeActive();
     reflowActiveTerm();
@@ -3416,6 +3462,15 @@ function subscribeIfNeeded(ptyId: string): void {
   sendWsMessage({ type: "subscribe", ptyId });
 }
 
+function maybeSubscribeAfterStableMobileResize(ptyId: string, cols: number, rows: number): void {
+  if (!mobileViewport) return;
+  if (cols <= 0 || rows <= 0) return;
+  if (activePtyId !== ptyId) return;
+  if (pendingMobileSubscribePtyId && pendingMobileSubscribePtyId !== ptyId) return;
+  subscribeIfNeeded(ptyId);
+  if (pendingMobileSubscribePtyId === ptyId) pendingMobileSubscribePtyId = null;
+}
+
 // Force xterm.js to reflow the active terminal buffer.  A plain refresh()
 // only re-renders the viewport without recalculating line wrapping, which
 // leaves garbled output after reconnects and resizes.  Scrolling by +1/−1
@@ -3463,6 +3518,7 @@ function fitAndResizeActive(): void {
   const cols = st.term.cols;
   const rows = st.term.rows;
   if (cols <= 0 || rows <= 0) return;
+  maybeSubscribeAfterStableMobileResize(activePtyId, cols, rows);
   if (st.lastResize && st.lastResize.cols === cols && st.lastResize.rows === rows) return;
 
   st.lastResize = { cols, rows };
