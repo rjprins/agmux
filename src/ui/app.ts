@@ -2563,12 +2563,34 @@ function isAgentProcessName(process: string): boolean {
   return AGENT_PROCESS_NAMES.some((name) => lower.includes(name));
 }
 
-function buildMobileSubtitle(worktree?: string, secondary?: string, cwd?: string): string {
-  const parts = [];
+function pathBaseName(input: string): string {
+  const normalized = input.replace(/\/+$/g, "");
+  const segs = normalized.split("/").filter(Boolean);
+  return segs.at(-1) ?? input;
+}
+
+function mobileActiveProcessLabel(process: string): string {
+  const trimmed = process.trim();
+  if (!trimmed) return "";
+  const lower = trimmed.toLowerCase();
+  if (lower.startsWith("shell:")) return "";
+  if (isShellProcess(trimmed)) return "";
+  return trimmed;
+}
+
+function buildMobileTitle(pty: PtySummary, process: string, worktree?: string): string {
+  const parts: string[] = [];
+  if (pty.cwd) {
+    const projectRoot = normalizeCwdGroupKey(pty.cwd);
+    const project = pathBaseName(projectRoot);
+    if (project) parts.push(project);
+  }
   if (worktree) parts.push(worktree);
-  if (secondary) parts.push(secondary);
-  if (!parts.length && cwd) parts.push(cwd);
-  return parts.join(" / ");
+  const active = mobileActiveProcessLabel(process);
+  if (active) parts.push(active);
+  if (parts.length > 0) return parts.join(" • ");
+  if (worktree) return worktree;
+  return "Session";
 }
 
 function getOutputPreviewLines(ptyId: string, maxLines = 6): string[] {
@@ -2590,18 +2612,18 @@ function getOutputPreviewLines(ptyId: string, maxLines = 6): string[] {
 
 function buildMobileRunningSession(p: PtySummary): MobileRunningSession {
   const item = buildRunningPtyItem(p);
-  const subtitle = buildMobileSubtitle(item.worktree, item.secondaryText, item.cwd);
+  const lastInput = ptyLastInput.get(p.id) ?? "";
   return {
     id: p.id,
-    process: item.process,
-    subtitle,
+    process: buildMobileTitle(p, item.process, item.worktree),
+    subtitle: lastInput,
     worktree: item.worktree,
     cwd: item.cwd,
     readyState: item.readyState,
     readyIndicator: item.readyIndicator,
     readyReason: item.readyReason,
     elapsed: item.elapsed,
-    lastInput: ptyLastInput.get(p.id) ?? "",
+    lastInput,
     outputPreview: getOutputPreviewLines(p.id, 3),
     active: item.active,
   };
@@ -2609,15 +2631,16 @@ function buildMobileRunningSession(p: PtySummary): MobileRunningSession {
 
 function buildMobileFocus(p: PtySummary): MobileFocus {
   const item = buildRunningPtyItem(p);
+  const lastInput = ptyLastInput.get(p.id) ?? "";
   return {
     id: p.id,
-    title: item.process,
-    subtitle: buildMobileSubtitle(item.worktree, item.secondaryText, item.cwd),
+    title: buildMobileTitle(p, item.process, item.worktree),
+    subtitle: lastInput,
     readyState: item.readyState,
     readyIndicator: item.readyIndicator,
     readyReason: item.readyReason,
     elapsed: item.elapsed,
-    lastInput: ptyLastInput.get(p.id) ?? "",
+    lastInput,
   };
 }
 
@@ -2786,7 +2809,7 @@ function buildMobileViewModel(): MobileViewModel {
   const activeSummary = activePtyId ? ptys.find((p) => p.id === activePtyId) ?? null : null;
   const focus = activeSummary ? buildMobileFocus(activeSummary) : null;
   const activeTitle = focus?.title ?? "No session";
-  const activeProcess = focus?.title ?? "";
+  const activeProcess = activeSummary ? buildRunningPtyItem(activeSummary).process : "";
   const quickPrompts = focus
     ? (activeProcess && isAgentProcessName(activeProcess) ? QUICK_PROMPTS_AGENT : QUICK_PROMPTS_SHELL)
     : [];
