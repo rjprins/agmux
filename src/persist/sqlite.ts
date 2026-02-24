@@ -116,6 +116,9 @@ export class SqliteStore {
     if (!have.has("tmux_server")) {
       this.db.exec(`alter table sessions add column tmux_server text;`);
     }
+    if (!have.has("task_id")) {
+      this.db.exec(`alter table sessions add column task_id text;`);
+    }
 
     const agentCols = this.db.prepare(`pragma table_info(agent_sessions);`).all() as Array<{ name: string }>;
     const haveAgent = new Set(agentCols.map((c) => c.name));
