@@ -2012,6 +2012,17 @@ button:disabled {
     font-weight: 600;
   }
 
+  .terminal-snapshot-actions {
+    display: flex;
+    gap: 8px;
+  }
+
+  .terminal-snapshot-actions .ghost,
+  .terminal-snapshot-actions .primary {
+    width: 50%;
+    margin: 0;
+  }
+
   .mobile-settings-form {
     display: flex;
     flex-direction: column;

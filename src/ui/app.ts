@@ -77,12 +77,55 @@ let pendingActivePtyId: string | null = null;
 let inputHistoryExpanded = false;
 let wsConnected = false;
 
-let mobileView: MobileView = "active";
+const MOBILE_VIEW_KEY = "agmux:mobileView";
+const MOBILE_SNAPSHOT_OPEN_PTY_KEY = "agmux:mobileSnapshotOpenPtyId";
+
+function loadSavedMobileView(): MobileView {
+  try {
+    const raw = sessionStorage.getItem(MOBILE_VIEW_KEY);
+    if (raw === "session" || raw === "inactive" || raw === "active") return raw;
+  } catch {
+    // ignore
+  }
+  return "active";
+}
+
+function saveMobileView(): void {
+  try {
+    sessionStorage.setItem(MOBILE_VIEW_KEY, mobileView);
+  } catch {
+    // ignore
+  }
+}
+
+function loadSavedMobileSnapshotPtyId(): string | null {
+  try {
+    const raw = sessionStorage.getItem(MOBILE_SNAPSHOT_OPEN_PTY_KEY)?.trim() ?? "";
+    return raw.length > 0 ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveMobileSnapshotPtyId(ptyId: string | null): void {
+  try {
+    if (!ptyId) {
+      sessionStorage.removeItem(MOBILE_SNAPSHOT_OPEN_PTY_KEY);
+      return;
+    }
+    sessionStorage.setItem(MOBILE_SNAPSHOT_OPEN_PTY_KEY, ptyId);
+  } catch {
+    // ignore
+  }
+}
+
+let mobileView: MobileView = loadSavedMobileView();
 let mobileInputDraft = "";
 let mobilePreviewState: MobileInactivePreview | null = null;
 let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
 let mobileTerminalSnapshotSeq = 0;
 let mobileTerminalSnapshotPendingRequestId: string | null = null;
+let mobileSnapshotRestorePtyId: string | null = loadSavedMobileSnapshotPtyId();
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
@@ -974,6 +1017,10 @@ startAssetReloadPoller();
 function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_list") {
     ptys = msg.ptys;
+    if (mobileSnapshotRestorePtyId && !ptys.some((p) => p.id === mobileSnapshotRestorePtyId && p.status === "running")) {
+      mobileSnapshotRestorePtyId = null;
+      saveMobileSnapshotPtyId(null);
+    }
     const runningPtys = ptys.filter((p) => p.status === "running");
     if (activePtyId) {
       const active = ptys.find((p) => p.id === activePtyId);
@@ -2700,6 +2747,7 @@ function requestMobileTmuxSnapshot(ptyId: string): void {
     error: null,
   };
   renderMobileViewState();
+  saveMobileSnapshotPtyId(ptyId);
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     mobileTerminalSnapshotPendingRequestId = null;
     mobileTerminalSnapshot = {
@@ -2716,6 +2764,15 @@ function requestMobileTmuxSnapshot(ptyId: string): void {
     ptyId,
     lines: MOBILE_TMUX_SNAPSHOT_LINES,
   });
+}
+
+function maybeRestoreMobileSnapshot(): void {
+  if (!mobileViewport) return;
+  if (!mobileSnapshotRestorePtyId) return;
+  if (!activePtyId || activePtyId !== mobileSnapshotRestorePtyId) return;
+  if (mobileTerminalSnapshot || mobileTerminalSnapshotPendingRequestId) return;
+  mobileSnapshotRestorePtyId = null;
+  requestMobileTmuxSnapshot(activePtyId);
 }
 
 function buildMobileViewModel(): MobileViewModel {
@@ -2765,7 +2822,11 @@ function buildMobileViewModel(): MobileViewModel {
 function renderMobileViewState(): void {
   if (mobileView === "session") {
     const active = activePtyId ? ptys.find((p) => p.id === activePtyId && p.status === "running") : null;
-    if (!active) mobileView = "active";
+    const hasRunning = ptys.some((p) => p.status === "running");
+    if (!active && hasRunning) {
+      mobileView = "active";
+      saveMobileView();
+    }
   }
   if (!mobileViewport && !mobilePreviewState && !mobileSettingsOpen && !mobileTerminalSnapshot) {
     returnTermToDesktop();
@@ -2804,8 +2865,10 @@ function renderMobileViewState(): void {
     onSelectRunning: (ptyId) => {
       setActive(ptyId);
       mobileView = "session";
+      saveMobileView();
       mobileTerminalSnapshot = null;
       mobileTerminalSnapshotPendingRequestId = null;
+      saveMobileSnapshotPtyId(null);
       renderMobileViewState();
     },
     onCloseRunning: (ptyId) => {
@@ -2814,10 +2877,12 @@ function renderMobileViewState(): void {
       if (activePtyId === ptyId) {
         mobileTerminalSnapshot = null;
         mobileTerminalSnapshotPendingRequestId = null;
+        saveMobileSnapshotPtyId(null);
       }
       if (activePtyId === ptyId && mobileView === "session") {
         mobileTermMountEl = null;
         mobileView = "active";
+        saveMobileView();
       }
       renderMobileViewState();
     },
@@ -2836,8 +2901,10 @@ function renderMobileViewState(): void {
     },
     onShowInactive: () => {
       mobileView = "inactive";
+      saveMobileView();
       mobileTerminalSnapshot = null;
       mobileTerminalSnapshotPendingRequestId = null;
+      saveMobileSnapshotPtyId(null);
       renderMobileViewState();
     },
     onBack: () => {
@@ -2846,6 +2913,8 @@ function renderMobileViewState(): void {
       mobileTerminalSnapshot = null;
       mobileTerminalSnapshotPendingRequestId = null;
       mobileView = "active";
+      saveMobileView();
+      saveMobileSnapshotPtyId(null);
       renderMobileViewState();
     },
     onChangeDraft: (value) => {
@@ -2883,6 +2952,7 @@ function renderMobileViewState(): void {
     onCloseTermSnapshot: () => {
       mobileTerminalSnapshot = null;
       mobileTerminalSnapshotPendingRequestId = null;
+      saveMobileSnapshotPtyId(null);
       renderMobileViewState();
     },
     onPreviewInactive: (agentSessionId) => openMobilePreview(agentSessionId),
@@ -2908,6 +2978,7 @@ function renderMobileViewState(): void {
       }
     },
   });
+  maybeRestoreMobileSnapshot();
 }
 
 function buildInactiveWorktreeSubgroups(

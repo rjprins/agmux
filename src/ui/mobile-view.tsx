@@ -131,7 +131,15 @@ export function renderMobileView(
 ): void {
   let composerDraftEl: HTMLTextAreaElement | null = null;
   let snapshotScrollEl: HTMLDivElement | null = null;
-  const sendComposerDraft = () => handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft);
+  const dismissKeyboard = () => {
+    requestAnimationFrame(() => {
+      composerDraftEl?.blur();
+    });
+  };
+  const sendComposerDraft = () => {
+    handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft);
+    dismissKeyboard();
+  };
   if (!model) {
     render(null, root);
     return;
@@ -282,7 +290,7 @@ export function renderMobileView(
                       if (ev.key !== "Enter") return;
                       if (ev.shiftKey || ev.altKey || ev.ctrlKey || ev.metaKey) return;
                       ev.preventDefault();
-                      handlers.onSendDraft((ev.currentTarget as HTMLTextAreaElement).value);
+                      sendComposerDraft();
                     }}
                   />
                   <div className="composer-actions">
@@ -427,9 +435,6 @@ export function renderMobileView(
                     : ""}
                 </div>
               </div>
-              <button type="button" className="ghost" onClick={() => handlers.onCloseTermSnapshot()}>
-                Close
-              </button>
             </div>
             <div
               className="sheet-body terminal-snapshot-body"
@@ -474,6 +479,14 @@ export function renderMobileView(
               {model.terminalSnapshot.error
                 ? "Lines: 0"
                 : `Lines: ${model.terminalSnapshot.lineCount}`}
+            </div>
+            <div className="sheet-actions terminal-snapshot-actions">
+              <button type="button" className="ghost" onClick={() => handlers.onOpenTermSnapshot()}>
+                Refresh
+              </button>
+              <button type="button" className="primary" onClick={() => handlers.onCloseTermSnapshot()}>
+                Close
+              </button>
             </div>
           </div>
         </div>
