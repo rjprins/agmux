@@ -4,6 +4,8 @@ export type {
   AgentSessionSummary,
   ClientToServerMessage,
   PtyId,
+  SessionTaskAssignment,
+  SessionTaskRef,
   PtyReadinessIndicator,
   PtyReadinessState,
   PtyStatus,

@@ -32,6 +32,7 @@ describe("route wiring", () => {
       resolveProjectRoot: async () => null,
       createWorktreeFromBase: async () => "",
       directoryExists: async () => true,
+      isKnownWorktreePath: () => true,
     } as any;
 
     registerPtyRoutes({

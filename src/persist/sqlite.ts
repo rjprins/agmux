@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import fs from "node:fs";
 import path from "node:path";
-import type { AgentSessionCwdSource, PtySummary } from "../types.js";
+import type { AgentSessionCwdSource, PtySummary, SessionTaskAssignment, SessionTaskRef } from "../types.js";
 
 export type PersistedEvent = {
   sessionId: string;
@@ -32,6 +32,19 @@ export type AgentSessionRecord = {
   createdAt: number;
   lastSeenAt: number;
   lastRestoredAt: number | null;
+};
+
+export type SessionTaskAssignmentRecord = SessionTaskAssignment & {
+  sessionId: string;
+  unassignedAt: number | null;
+  active: boolean;
+};
+
+export type AssignTaskToSessionInput = SessionTaskRef & {
+  sessionId: string;
+  worktreePath?: string | null;
+  cwd?: string | null;
+  assignedAt?: number;
 };
 
 export class SqliteStore {
@@ -102,6 +115,29 @@ export class SqliteStore {
 
       create index if not exists idx_agent_sessions_last_seen
         on agent_sessions(last_seen_at desc);
+
+      create table if not exists session_task_assignments (
+        id integer primary key autoincrement,
+        session_id text not null,
+        project_root text not null,
+        task_provider text not null,
+        task_id text not null,
+        worktree_path text,
+        cwd text,
+        assigned_at integer not null,
+        unassigned_at integer,
+        active integer not null default 1
+      );
+
+      create index if not exists idx_session_task_assignments_session
+        on session_task_assignments(session_id, active);
+
+      create index if not exists idx_session_task_assignments_task
+        on session_task_assignments(project_root, task_provider, task_id, active);
+
+      create unique index if not exists idx_session_task_assignments_one_active_per_session
+        on session_task_assignments(session_id)
+        where active = 1;
     `);
 
     // Backwards-compatible column adds for existing DBs.
@@ -302,6 +338,159 @@ export class SqliteStore {
       value_json: JSON.stringify(value),
       updated_at: Date.now(),
     });
+  }
+
+  assignTaskToSession(input: AssignTaskToSessionInput): SessionTaskAssignmentRecord {
+    const now = input.assignedAt ?? Date.now();
+    const worktreePath = input.worktreePath ?? null;
+    const cwd = input.cwd ?? null;
+
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        update session_task_assignments
+        set active = 0, unassigned_at = @now
+        where session_id = @session_id and active = 1;
+      `).run({
+        now,
+        session_id: input.sessionId,
+      });
+
+      this.db.prepare(`
+        insert into session_task_assignments (
+          session_id, project_root, task_provider, task_id, worktree_path, cwd, assigned_at, active
+        ) values (
+          @session_id, @project_root, @task_provider, @task_id, @worktree_path, @cwd, @assigned_at, 1
+        );
+      `).run({
+        session_id: input.sessionId,
+        project_root: input.projectRoot,
+        task_provider: input.provider,
+        task_id: input.taskId,
+        worktree_path: worktreePath,
+        cwd,
+        assigned_at: now,
+      });
+
+      this.db.prepare(`
+        update sessions
+        set task_id = @task_id
+        where id = @session_id;
+      `).run({
+        session_id: input.sessionId,
+        task_id: `${input.provider}:${input.taskId}`,
+      });
+    });
+
+    tx();
+    return {
+      sessionId: input.sessionId,
+      projectRoot: input.projectRoot,
+      provider: input.provider,
+      taskId: input.taskId,
+      worktreePath,
+      cwd,
+      assignedAt: now,
+      unassignedAt: null,
+      active: true,
+    };
+  }
+
+  clearTaskAssignment(sessionId: string, unassignedAt = Date.now()): void {
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`
+        update session_task_assignments
+        set active = 0, unassigned_at = @unassigned_at
+        where session_id = @session_id and active = 1;
+      `).run({
+        session_id: sessionId,
+        unassigned_at: unassignedAt,
+      });
+
+      this.db.prepare(`
+        update sessions
+        set task_id = null
+        where id = @session_id;
+      `).run({
+        session_id: sessionId,
+      });
+    });
+
+    tx();
+  }
+
+  getActiveTaskAssignment(sessionId: string): SessionTaskAssignmentRecord | null {
+    const row = this.db.prepare(`
+      select session_id, project_root, task_provider, task_id, worktree_path, cwd, assigned_at, unassigned_at, active
+      from session_task_assignments
+      where session_id = ? and active = 1
+      order by assigned_at desc
+      limit 1;
+    `).get(sessionId) as
+      | {
+          session_id: string;
+          project_root: string;
+          task_provider: string;
+          task_id: string;
+          worktree_path: string | null;
+          cwd: string | null;
+          assigned_at: number;
+          unassigned_at: number | null;
+          active: number;
+        }
+      | undefined;
+
+    if (!row) return null;
+    return {
+      sessionId: row.session_id,
+      projectRoot: row.project_root,
+      provider: row.task_provider,
+      taskId: row.task_id,
+      worktreePath: row.worktree_path,
+      cwd: row.cwd,
+      assignedAt: row.assigned_at,
+      unassignedAt: row.unassigned_at,
+      active: row.active === 1,
+    };
+  }
+
+  listActiveTaskAssignments(sessionIds?: string[]): SessionTaskAssignmentRecord[] {
+    if (Array.isArray(sessionIds) && sessionIds.length === 0) return [];
+
+    const rows = Array.isArray(sessionIds)
+      ? this.db.prepare(`
+          select session_id, project_root, task_provider, task_id, worktree_path, cwd, assigned_at, unassigned_at, active
+          from session_task_assignments
+          where active = 1 and session_id in (${sessionIds.map(() => "?").join(",")})
+          order by assigned_at desc;
+        `).all(...sessionIds)
+      : this.db.prepare(`
+          select session_id, project_root, task_provider, task_id, worktree_path, cwd, assigned_at, unassigned_at, active
+          from session_task_assignments
+          where active = 1
+          order by assigned_at desc;
+        `).all();
+
+    return (rows as Array<{
+      session_id: string;
+      project_root: string;
+      task_provider: string;
+      task_id: string;
+      worktree_path: string | null;
+      cwd: string | null;
+      assigned_at: number;
+      unassigned_at: number | null;
+      active: number;
+    }>).map((row) => ({
+      sessionId: row.session_id,
+      projectRoot: row.project_root,
+      provider: row.task_provider,
+      taskId: row.task_id,
+      worktreePath: row.worktree_path,
+      cwd: row.cwd,
+      assignedAt: row.assigned_at,
+      unassignedAt: row.unassigned_at,
+      active: row.active === 1,
+    }));
   }
 
   getAgentSession(provider: string, providerSessionId: string): AgentSessionRecord | null {

@@ -105,7 +105,27 @@ export function createRuntime(deps: RuntimeDeps) {
   }, cwdPollIntervalMs);
 
   async function listPtys(): Promise<PtySummary[]> {
-    return readinessEngine.withActiveProcesses(ptys.list());
+    const base = await readinessEngine.withActiveProcesses(ptys.list());
+    if (base.length === 0) return base;
+
+    const assignments = store.listActiveTaskAssignments(base.map((p) => p.id));
+    const bySessionId = new Map(assignments.map((a) => [a.sessionId, a]));
+
+    return base.map((summary) => {
+      const assignment = bySessionId.get(summary.id);
+      if (!assignment) return summary;
+      return {
+        ...summary,
+        task: {
+          projectRoot: assignment.projectRoot,
+          provider: assignment.provider,
+          taskId: assignment.taskId,
+          assignedAt: assignment.assignedAt,
+          worktreePath: assignment.worktreePath,
+          cwd: assignment.cwd,
+        },
+      };
+    });
   }
 
   async function broadcastPtyList(): Promise<void> {
@@ -147,6 +167,7 @@ export function createRuntime(deps: RuntimeDeps) {
   ptys.on("exit", (ptyId: string, code: number | null, signal: string | null) => {
     const summary = ptys.getSummary(ptyId);
     if (summary) store.upsertSession(summary);
+    store.clearTaskAssignment(ptyId);
     readinessEngine.markExited(ptyId);
     agentSessions.detachPty(ptyId);
     logger.info({ ptyId, code, signal }, "pty exited");
