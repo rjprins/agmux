@@ -215,6 +215,7 @@ export function renderMobileView(
     render(null, root);
     return;
   }
+  const selectableRunning = model.running.filter((session) => !session.active);
 
   render(
     <div className={`mobile-shell mobile-view-${model.view}`}>
@@ -231,14 +232,14 @@ export function renderMobileView(
               Back
             </button>
           ) : null}
-          {model.view === "session" && model.running.length > 0 ? (
+          {model.view === "session" && selectableRunning.length > 0 ? (
             <details className="mobile-running-dropdown" ref={(el) => (runningDropdownEl = el)}>
               <summary className="mobile-action mobile-running-dropdown-toggle">
-                Sessions ({model.running.length})
+                Sessions ({selectableRunning.length})
               </summary>
               <div className="mobile-running-dropdown-panel">
                 <ul className="mobile-session-list mobile-session-dropdown-list">
-                  {model.running.map((session, index) =>
+                  {selectableRunning.map((session, index) =>
                     renderRunningSessionCard(session, index, handlers, () => {
                       if (runningDropdownEl) runningDropdownEl.open = false;
                     }),
