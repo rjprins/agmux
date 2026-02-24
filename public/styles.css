@@ -1609,6 +1609,11 @@ button:disabled {
     padding-right: 0;
   }
 
+  .mobile-shell.mobile-view-session .mobile-topbar {
+    padding-left: max(12px, env(safe-area-inset-left));
+    padding-right: max(12px, env(safe-area-inset-right));
+  }
+
   .mobile-shell.mobile-view-session .mobile-focus {
     flex: 1;
     width: 100%;
