@@ -526,6 +526,13 @@ let mobileViewport = mobileMedia.matches;
 let mobileViewportSyncRaf = 0;
 let mobileViewportSyncNeedsResize = false;
 
+function isMobileKeyboardLikelyOpen(): boolean {
+  if (!mobileViewport) return false;
+  const vv = window.visualViewport;
+  if (!vv) return false;
+  return vv.height < (window.innerHeight - 120);
+}
+
 function syncMobileRootToVisualViewport(resizeActiveTerm: boolean): void {
   if (!mobileViewport) {
     mobileRoot.style.top = "";
@@ -558,7 +565,9 @@ function syncMobileRootToVisualViewport(resizeActiveTerm: boolean): void {
   mobileRoot.style.left = `${Math.max(0, Math.round(vv.offsetLeft))}px`;
   mobileRoot.style.width = `${Math.round(vv.width)}px`;
   mobileRoot.style.height = `${Math.round(vv.height)}px`;
-  if (resizeActiveTerm && activePtyId) {
+  // Avoid refitting terminal rows while software keyboard is open; this prevents
+  // disruptive row-count jumps that make output appear to scroll away while typing.
+  if (resizeActiveTerm && activePtyId && !isMobileKeyboardLikelyOpen()) {
     requestAnimationFrame(() => {
       fitAndResizeActive();
       reflowActiveTerm();
@@ -3356,6 +3365,7 @@ function updateTerminalVisibility(): void {
 
 function fitAndResizeActive(): void {
   if (!activePtyId) return;
+  if (isMobileKeyboardLikelyOpen()) return;
   // On mobile, reparenting handles fit; skip if term is in hidden desktop container
   if (mobileViewport && mobileReparentedPtyId !== activePtyId) return;
   const st = terms.get(activePtyId);
