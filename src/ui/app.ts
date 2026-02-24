@@ -1728,6 +1728,7 @@ function openCloseWorktreeModal(ptyId: string): void {
 }
 
 const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
+const runtimeProcessNames = new Set(["node", "python", "python3", "bun", "deno"]);
 
 function normalizeProcessName(s: string): string {
   const v = s.trim();
@@ -1737,6 +1738,17 @@ function normalizeProcessName(s: string): string {
 
 function isShellProcess(s: string): boolean {
   return shellProcessNames.has(normalizeProcessName(s));
+}
+
+function isGenericRuntimeProcess(s: string): boolean {
+  return runtimeProcessNames.has(normalizeProcessName(s));
+}
+
+function inferAgentFromRecentInput(ptyId: string): "codex" | "claude" | null {
+  const recent = (ptyLastInput.get(ptyId) ?? "").toLowerCase();
+  if (/\bcodex\b/.test(recent)) return "codex";
+  if (/\bclaude\b/.test(recent)) return "claude";
+  return null;
 }
 
 function truncateText(s: string, max = 68): string {
@@ -2383,8 +2395,15 @@ let archivedSectionExpandedOverride = loadBooleanPreference(ARCHIVED_SECTION_EXP
 function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const title = (ptyTitles.get(p.id) ?? "").trim();
   const activeProcess = compactWhitespace(p.activeProcess ?? "");
-  const process =
-    (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name;
+  const inferredAgent = inferAgentFromRecentInput(p.id);
+  const preferTitleAgentLabel = Boolean(title) && isAgentProcessName(title) && isGenericRuntimeProcess(activeProcess);
+  const process = preferTitleAgentLabel
+    ? title
+    : (
+      inferredAgent && isGenericRuntimeProcess(activeProcess)
+        ? inferredAgent
+        : ((activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || title || p.name)
+    );
   const inputPreview = ptyLastInput.get(p.id) ?? "";
   const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
   const changedAt = ptyStateChangedAt.get(p.id);
@@ -2586,7 +2605,8 @@ function sendMobileInput(text: string): void {
   const normalized = text.replace(/\r\n?/g, "\n");
   const activeSummary = ptys.find((p) => p.id === activePtyId) ?? null;
   const activeProcess = activeSummary ? buildRunningPtyItem(activeSummary).process : "";
-  const isClaudeOrCodex = /(?:^|[\s:/-])(claude|codex)(?:$|[\s:/-])/i.test(activeProcess);
+  const inferredAgent = inferAgentFromRecentInput(activePtyId);
+  const isClaudeOrCodex = Boolean(inferredAgent) || /claude|codex/i.test(activeProcess);
 
   if (isClaudeOrCodex) {
     // Claude/Codex mobile submit: flatten composer newlines, then send one delayed Enter.
