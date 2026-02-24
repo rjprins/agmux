@@ -124,6 +124,66 @@ function renderEmpty(title: string, hint: string) {
   );
 }
 
+function renderRunningSessionCard(
+  session: MobileRunningSession,
+  index: number,
+  handlers: MobileViewHandlers,
+  onAfterSelect?: () => void,
+) {
+  const selectSession = () => {
+    onAfterSelect?.();
+    handlers.onSelectRunning(session.id);
+  };
+  return (
+    <li
+      key={session.id}
+      data-pty-id={session.id}
+      className={`mobile-session-card state-${session.readyState}${session.active ? " active" : ""}`}
+      style={{ "--stagger": `${index * 60}ms` } as Record<string, string>}
+      onPointerDown={(ev) => {
+        if (!onAfterSelect) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        selectSession();
+      }}
+      onClick={() => {
+        if (onAfterSelect) return;
+        selectSession();
+      }}
+    >
+      <div className="session-card-header">
+        <span className={`status-dot ${session.readyIndicator}`} />
+        <div className="session-card-title" title={session.process}>{session.process}</div>
+        {session.elapsed ? <div className="session-card-elapsed">{session.elapsed}</div> : null}
+        <button
+          type="button"
+          className="session-card-close"
+          onClick={(ev) => {
+            ev.stopPropagation();
+            handlers.onCloseRunning(session.id);
+          }}
+        >
+          Close
+        </button>
+      </div>
+      <div className="session-card-sub" title={session.subtitle}>{session.subtitle}</div>
+      {session.outputPreview && session.outputPreview.length > 0 ? (
+        <div className="session-card-output" role="status">
+          {session.outputPreview.map((line, i) => (
+            <div key={`${session.id}-preview-${i}`} className="session-card-output-line">
+              {line || " "}
+            </div>
+          ))}
+        </div>
+      ) : session.lastInput ? (
+        <div className="session-card-input">{session.lastInput}</div>
+      ) : (
+        <div className="session-card-input">No output yet</div>
+      )}
+    </li>
+  );
+}
+
 export function renderMobileView(
   root: Element,
   model: MobileViewModel | null,
@@ -131,14 +191,25 @@ export function renderMobileView(
 ): void {
   let composerDraftEl: HTMLTextAreaElement | null = null;
   let snapshotScrollEl: HTMLDivElement | null = null;
+  let runningDropdownEl: HTMLDetailsElement | null = null;
   const dismissKeyboard = () => {
+    const activeEl = document.activeElement as HTMLElement | null;
+    composerDraftEl?.blur();
+    activeEl?.blur?.();
     requestAnimationFrame(() => {
       composerDraftEl?.blur();
+      const nextActiveEl = document.activeElement as HTMLElement | null;
+      nextActiveEl?.blur?.();
     });
   };
   const sendComposerDraft = () => {
     handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft);
     dismissKeyboard();
+  };
+  const themedOverlayButtonStyle = {
+    backgroundColor: model.historyButtonBg,
+    color: model.historyButtonText,
+    borderColor: model.historyButtonBorder,
   };
   if (!model) {
     render(null, root);
@@ -149,78 +220,54 @@ export function renderMobileView(
     <div className={`mobile-shell mobile-view-${model.view}`}>
       <header className="mobile-topbar">
         <div className="mobile-brand">
-          <div className="mobile-brand-title">agmux</div>
+          <div className="mobile-brand-row">
+            <div className="mobile-brand-title">agmux</div>
+          </div>
           <div className="mobile-brand-sub">agent control</div>
         </div>
         <div className="mobile-actions">
-          <div className={`mobile-connection ${model.connected ? "ok" : "warn"}`}>
-            <span className="conn-dot" />
-            {model.connected ? "Live" : "Reconnecting"}
-          </div>
-          {model.view === "active" ? (
-            <button type="button" className="mobile-action" onClick={() => handlers.onShowInactive()}>
-              Inactive
-            </button>
-          ) : (
+          {model.view !== "active" ? (
             <button type="button" className="mobile-action" onClick={() => handlers.onBack()}>
               Back
             </button>
-          )}
-          <button type="button" className="mobile-action" onClick={() => handlers.onOpenSettings()}>
-            Settings
-          </button>
+          ) : null}
+          {model.view === "session" && model.running.length > 0 ? (
+            <details className="mobile-running-dropdown" ref={(el) => (runningDropdownEl = el)}>
+              <summary className="mobile-action mobile-running-dropdown-toggle">
+                Sessions ({model.running.length})
+              </summary>
+              <div className="mobile-running-dropdown-panel">
+                <ul className="mobile-session-list mobile-session-dropdown-list">
+                  {model.running.map((session, index) =>
+                    renderRunningSessionCard(session, index, handlers, () => {
+                      if (runningDropdownEl) runningDropdownEl.open = false;
+                    }),
+                  )}
+                </ul>
+              </div>
+            </details>
+          ) : null}
           <button type="button" className="mobile-new" onClick={() => handlers.onOpenLaunch()}>
             New
           </button>
         </div>
       </header>
+      {!model.connected ? <div className="mobile-reconnect-bar">Reconnecting</div> : null}
 
       <div className="mobile-scroll">
         {model.view === "active" ? (
           <section className="mobile-section">
-            <div className="mobile-section-title">Active sessions</div>
+            <div className="mobile-section-head">
+              <div className="mobile-section-title">Active sessions</div>
+              <button type="button" className="mobile-action" onClick={() => handlers.onShowInactive()}>
+                Inactive
+              </button>
+            </div>
             {model.running.length === 0 ? (
               renderEmpty("No active sessions", "Start one from the New button.")
             ) : (
               <ul className="mobile-session-list">
-                {model.running.map((session, index) => (
-                  <li
-                    key={session.id}
-                    className={`mobile-session-card state-${session.readyState}${session.active ? " active" : ""}`}
-                    style={{ "--stagger": `${index * 60}ms` } as Record<string, string>}
-                    onClick={() => handlers.onSelectRunning(session.id)}
-                  >
-                    <div className="session-card-header">
-                      <span className={`status-dot ${session.readyIndicator}`} />
-                      <div className="session-card-title" title={session.process}>{session.process}</div>
-                      {session.elapsed ? <div className="session-card-elapsed">{session.elapsed}</div> : null}
-                      <button
-                        type="button"
-                        className="session-card-close"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onCloseRunning(session.id);
-                        }}
-                      >
-                        Close
-                      </button>
-                    </div>
-                    <div className="session-card-sub" title={session.subtitle}>{session.subtitle}</div>
-                    {session.outputPreview && session.outputPreview.length > 0 ? (
-                      <div className="session-card-output" role="status">
-                        {session.outputPreview.map((line, i) => (
-                          <div key={`${session.id}-preview-${i}`} className="session-card-output-line">
-                            {line || " "}
-                          </div>
-                        ))}
-                      </div>
-                    ) : session.lastInput ? (
-                      <div className="session-card-input">{session.lastInput}</div>
-                    ) : (
-                      <div className="session-card-input">No output yet</div>
-                    )}
-                  </li>
-                ))}
+                {model.running.map((session, index) => renderRunningSessionCard(session, index, handlers))}
               </ul>
             )}
           </section>
@@ -247,7 +294,7 @@ export function renderMobileView(
                   className="focus-xterm-mount"
                   onPointerDownCapture={(ev) => {
                     const target = ev.target as HTMLElement | null;
-                    if (target?.closest(".focus-history-btn")) return;
+                    if (target?.closest(".focus-history-btn, .focus-settings-btn")) return;
                     ev.preventDefault();
                     ev.stopPropagation();
                     requestAnimationFrame(() => {
@@ -262,11 +309,7 @@ export function renderMobileView(
                   <button
                     type="button"
                     className="mobile-action focus-history-btn"
-                    style={{
-                      backgroundColor: model.historyButtonBg,
-                      color: model.historyButtonText,
-                      borderColor: model.historyButtonBorder,
-                    }}
+                    style={themedOverlayButtonStyle}
                     onPointerDown={(ev) => {
                       ev.preventDefault();
                       ev.stopPropagation();
@@ -274,6 +317,20 @@ export function renderMobileView(
                     onClick={() => handlers.onOpenTermSnapshot()}
                   >
                     History
+                  </button>
+                  <button
+                    type="button"
+                    className="mobile-action focus-settings-btn"
+                    style={themedOverlayButtonStyle}
+                    aria-label="Settings"
+                    title="Settings"
+                    onPointerDown={(ev) => {
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                    }}
+                    onClick={() => handlers.onOpenSettings()}
+                  >
+                    ⚙
                   </button>
                 </div>
                 <div className="mobile-composer focus-composer">
@@ -316,11 +373,7 @@ export function renderMobileView(
                     <button
                       type="button"
                       className="mobile-send"
-                      onPointerDown={(ev) => {
-                        ev.preventDefault();
-                        ev.stopPropagation();
-                        sendComposerDraft();
-                      }}
+                      onClick={() => sendComposerDraft()}
                       disabled={!model.connected}
                     >
                       Send
