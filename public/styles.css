@@ -1417,18 +1417,26 @@ button:disabled {
 
   .mobile-topbar {
     display: flex;
-    align-items: center;
+    flex-direction: row;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
     padding: 6px 4px 12px;
+    z-index: 4;
   }
 
   .mobile-actions {
     display: flex;
     align-items: center;
+    gap: 6px;
+    flex-wrap: nowrap;
+    justify-content: end;
+  }
+
+  .mobile-brand-row {
+    display: flex;
+    align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
-    justify-content: flex-end;
   }
 
   .mobile-brand-title {
@@ -1438,36 +1446,27 @@ button:disabled {
   }
 
   .mobile-brand-sub {
-    font-size: 11px;
+    font-size: 10px;
     text-transform: uppercase;
-    letter-spacing: 0.2em;
+    letter-spacing: 0.12em;
     color: rgba(31, 27, 22, 0.55);
+    white-space: nowrap;
   }
 
-  .mobile-connection {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
+  .mobile-reconnect-bar {
+    margin: -4px 4px 8px;
     padding: 4px 10px;
     border-radius: 999px;
-    background: rgba(255, 255, 255, 0.55);
-    border: 1px solid rgba(31, 27, 22, 0.1);
-  }
-
-  .mobile-connection .conn-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #6fbf73;
-  }
-
-  .mobile-connection.warn .conn-dot {
-    background: #f6a34f;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    color: #6a4112;
+    background: linear-gradient(90deg, rgba(246, 163, 79, 0.25), rgba(255, 214, 156, 0.75), rgba(246, 163, 79, 0.25));
+    border: 1px solid rgba(141, 82, 25, 0.24);
   }
 
   .mobile-new {
-    padding: 6px 12px;
+    padding: 5px 10px;
     border-radius: 999px;
     border: 1px solid rgba(31, 27, 22, 0.2);
     background: #1f1b16;
@@ -1480,12 +1479,53 @@ button:disabled {
   }
 
   .mobile-action {
-    padding: 6px 10px;
+    padding: 5px 8px;
     border-radius: 999px;
     border: 1px solid rgba(31, 27, 22, 0.18);
     background: rgba(255, 255, 255, 0.7);
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
+  }
+
+  .mobile-running-dropdown {
+    position: relative;
+  }
+
+  .mobile-running-dropdown-toggle {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    white-space: nowrap;
+    min-width: 108px;
+    text-align: center;
+  }
+
+  .mobile-running-dropdown-toggle::-webkit-details-marker {
+    display: none;
+  }
+
+  .mobile-running-dropdown-panel {
+    position: fixed;
+    top: calc(env(safe-area-inset-top) + 68px);
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(92vw, 440px);
+    max-height: min(60dvh, 520px);
+    overflow: auto;
+    padding: 10px;
+    border-radius: 14px;
+    border: 1px solid rgba(31, 27, 22, 0.16);
+    background: rgba(248, 244, 236, 0.97);
+    box-shadow: 0 14px 34px rgba(31, 27, 22, 0.22);
+    z-index: 12;
+  }
+
+  .mobile-session-dropdown-list {
+    gap: 8px;
+  }
+
+  .mobile-running-dropdown-panel .mobile-session-card {
+    animation: none;
   }
 
   .mobile-tabs {
@@ -1531,12 +1571,21 @@ button:disabled {
     margin-right: -16px;
   }
 
+  .mobile-section-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    margin-top: 16px;
+    margin-bottom: 8px;
+  }
+
   .mobile-section-title {
     font-size: 12px;
     text-transform: uppercase;
     letter-spacing: 0.16em;
     color: rgba(31, 27, 22, 0.55);
-    margin: 16px 0 8px;
+    margin: 0;
   }
 
   .mobile-focus .focus-header {
@@ -1603,6 +1652,21 @@ button:disabled {
     backdrop-filter: blur(4px);
   }
 
+  .focus-settings-btn {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    z-index: 3;
+    font-size: 12px;
+    line-height: 1.2;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(16, 15, 13, 0.62);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: #fff9ea;
+    backdrop-filter: blur(4px);
+  }
+
   .focus-xterm-mount {
     margin-top: 10px;
     margin-left: -14px;
@@ -1626,8 +1690,9 @@ button:disabled {
   }
 
   .mobile-shell.mobile-view-session .mobile-topbar {
-    padding-left: max(12px, env(safe-area-inset-left));
-    padding-right: max(12px, env(safe-area-inset-right));
+    padding-left: max(20px, calc(env(safe-area-inset-left) + 4px));
+    padding-right: max(20px, calc(env(safe-area-inset-right) + 4px));
+    z-index: 6;
   }
 
   .mobile-shell.mobile-view-session .mobile-focus {

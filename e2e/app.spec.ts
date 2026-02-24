@@ -226,6 +226,45 @@ test("mobile UI can send input via composer", async ({ page }) => {
   }
 });
 
+test("mobile session dropdown switches active session", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?nosup=1");
+
+  const token = await readSessionToken(page);
+  const createOne = await page.request.post(`/api/ptys/shell?token=${encodeURIComponent(token)}`);
+  expect(createOne.ok()).toBeTruthy();
+  const oneJson = (await createOne.json()) as { id?: unknown };
+  const firstId = typeof oneJson.id === "string" ? oneJson.id : null;
+
+  const createTwo = await page.request.post(`/api/ptys/shell?token=${encodeURIComponent(token)}`);
+  expect(createTwo.ok()).toBeTruthy();
+  const twoJson = (await createTwo.json()) as { id?: unknown };
+  const secondId = typeof twoJson.id === "string" ? twoJson.id : null;
+
+  expect(firstId).toBeTruthy();
+  expect(secondId).toBeTruthy();
+  if (!firstId || !secondId) return;
+
+  await expect(page.locator(".mobile-session-card")).toHaveCount(2, { timeout: 30_000 });
+  await page.locator(`.mobile-session-card[data-pty-id="${firstId}"]`).first().click();
+  await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 10_000 });
+
+  await page.locator(".mobile-running-dropdown-toggle").click();
+  await expect(page.locator(".mobile-running-dropdown-panel")).toBeVisible({ timeout: 5_000 });
+  await page.locator(`.mobile-running-dropdown-panel .mobile-session-card[data-pty-id="${secondId}"]`).click();
+
+  await page.locator(".mobile-running-dropdown-toggle").click();
+  await expect(page.locator(".mobile-running-dropdown-panel")).toBeVisible({ timeout: 5_000 });
+  await expect(page.locator(".mobile-running-dropdown-panel .mobile-session-card.active")).toHaveAttribute(
+    "data-pty-id",
+    secondId,
+    { timeout: 10_000 },
+  );
+
+  await page.request.post(`/api/ptys/${encodeURIComponent(firstId)}/kill?token=${encodeURIComponent(token)}`);
+  await page.request.post(`/api/ptys/${encodeURIComponent(secondId)}/kill?token=${encodeURIComponent(token)}`);
+});
+
 test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
   await page.setViewportSize({ width: 1100, height: 520 });
   await page.goto("/?nosup=1");
