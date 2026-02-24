@@ -499,11 +499,14 @@ export async function tmuxScrollHistory(
 export async function tmuxCapturePaneVisible(
   name: string,
   serverHint?: TmuxServer | null,
+  historyLines = 0,
 ): Promise<string | null> {
   const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return null;
   try {
-    const { stdout } = await tmuxExec(server, ["capture-pane", "-p", "-e", "-J", "-t", name]);
+    const args = ["capture-pane", "-p", "-e", "-J", "-t", name];
+    if (historyLines > 0) args.splice(1, 0, "-S", `-${Math.floor(historyLines)}`);
+    const { stdout } = await tmuxExec(server, args);
     const lines = stdout.replaceAll("\r", "").split("\n");
     while (lines.length > 0 && lines[0].trim().length === 0) lines.shift();
     while (lines.length > 0 && lines[lines.length - 1].trim().length === 0) lines.pop();

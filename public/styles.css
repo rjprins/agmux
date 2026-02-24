@@ -1587,6 +1587,22 @@ button:disabled {
     overflow: hidden;
   }
 
+  .focus-history-btn {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3;
+    font-size: 12px;
+    line-height: 1.2;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(16, 15, 13, 0.62);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: #fff9ea;
+    backdrop-filter: blur(4px);
+  }
+
   .focus-xterm-mount {
     margin-top: 10px;
     margin-left: -14px;
@@ -1963,17 +1979,15 @@ button:disabled {
     border-radius: 12px;
   }
 
-  .terminal-snapshot-body pre {
+  .terminal-snapshot-render {
     margin: 0;
     padding: 12px;
     min-height: 100%;
     white-space: pre;
-    overflow: auto;
     user-select: text;
     -webkit-user-select: text;
     font: 12px/1.35 "JetBrains Mono", "Fira Code", "SF Mono", "Consolas", monospace;
     color: #161616;
-    -webkit-overflow-scrolling: touch;
   }
 
   .sheet-message + .sheet-message {

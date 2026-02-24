@@ -166,6 +166,23 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
 
 test("mobile UI can send input via composer", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const sent: unknown[] = [];
+    (window as any).__agmuxSentWs = sent;
+    const originalSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      try {
+        if (typeof data === "string") {
+          sent.push(JSON.parse(data));
+        } else {
+          sent.push(String(data));
+        }
+      } catch {
+        sent.push(String(data));
+      }
+      return originalSend.call(this, data);
+    };
+  });
   await page.goto("/?nosup=1");
 
   const token = await readSessionToken(page);
@@ -195,6 +212,14 @@ test("mobile UI can send input via composer", async ({ page }) => {
       { timeout: 30_000 },
     )
     .toContain("mobile-ok");
+
+  const mobileSubmitBodies = await page.evaluate(() => {
+    const sent = ((window as any).__agmuxSentWs ?? []) as Array<{ type?: unknown; body?: unknown }>;
+    return sent
+      .filter((msg) => msg && msg.type === "mobile_submit")
+      .map((msg) => (typeof msg.body === "string" ? msg.body : ""));
+  });
+  expect(mobileSubmitBodies).toContain("echo mobile-ok");
 
   if (ptyId) {
     await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
