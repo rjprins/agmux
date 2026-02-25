@@ -664,6 +664,7 @@ button:disabled {
 }
 
 .terminal-wrap {
+  position: relative;
   padding: 8px;
   overflow: hidden;
   min-height: 0;
@@ -671,6 +672,28 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 6px;
+}
+
+#btn-follow {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  z-index: 8;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(16, 15, 13, 0.62);
+  color: #fff9ea;
+  backdrop-filter: blur(4px);
+  padding: 6px 12px;
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+  display: none;
+}
+
+#btn-follow.visible {
+  display: inline-flex;
 }
 
 .input-context {
@@ -1639,6 +1662,22 @@ button:disabled {
   .focus-history-btn {
     position: absolute;
     top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 3;
+    font-size: 12px;
+    line-height: 1.2;
+    padding: 6px 10px;
+    border-radius: 999px;
+    background: rgba(16, 15, 13, 0.62);
+    border-color: rgba(255, 255, 255, 0.28);
+    color: #fff9ea;
+    backdrop-filter: blur(4px);
+  }
+
+  .focus-follow-btn {
+    position: absolute;
+    bottom: 10px;
     left: 50%;
     transform: translateX(-50%);
     z-index: 3;
