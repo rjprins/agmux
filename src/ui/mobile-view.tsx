@@ -84,6 +84,7 @@ export type MobileViewModel = {
   historyButtonBg: string;
   historyButtonText: string;
   historyButtonBorder: string;
+  showFollowButton: boolean;
 };
 
 export type MobileViewHandlers = {
@@ -99,6 +100,7 @@ export type MobileViewHandlers = {
   onArrowUp: () => void;
   onArrowDown: () => void;
   onTabKey: () => void;
+  onFollowOutput: () => void;
   onOpenTermSnapshot: () => void;
   onCloseTermSnapshot: () => void;
   onPreviewInactive: (agentSessionId: string) => void;
@@ -295,7 +297,7 @@ export function renderMobileView(
                   className="focus-xterm-mount"
                   onPointerDownCapture={(ev) => {
                     const target = ev.target as HTMLElement | null;
-                    if (target?.closest(".focus-history-btn, .focus-settings-btn")) return;
+                    if (target?.closest(".focus-history-btn, .focus-follow-btn, .focus-settings-btn")) return;
                     ev.preventDefault();
                     ev.stopPropagation();
                     requestAnimationFrame(() => {
@@ -307,6 +309,20 @@ export function renderMobileView(
                   }}
                   ref={(el: HTMLElement | null) => handlers.onTermMountReady(el)}
                 >
+                  {model.showFollowButton ? (
+                    <button
+                      type="button"
+                      className="mobile-action focus-follow-btn"
+                      style={themedOverlayButtonStyle}
+                      onPointerDown={(ev) => {
+                        ev.preventDefault();
+                        ev.stopPropagation();
+                      }}
+                      onClick={() => handlers.onFollowOutput()}
+                    >
+                      Follow ↓
+                    </button>
+                  ) : null}
                   <button
                     type="button"
                     className="mobile-action focus-history-btn"

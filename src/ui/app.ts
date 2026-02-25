@@ -120,7 +120,7 @@ function saveMobileSnapshotPtyId(ptyId: string | null): void {
 }
 
 let mobileView: MobileView = loadSavedMobileView();
-let mobileInputDraft = "";
+const mobileInputDraftByPtyId = new Map<string, string>();
 let mobilePreviewState: MobileInactivePreview | null = null;
 let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
 let mobileTerminalSnapshotSeq = 0;
@@ -514,9 +514,11 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
 // Input history is loaded from the server after auth; see boot sequence below.
 
 const btnNew = $("btn-new") as HTMLButtonElement;
+const btnFollow = $("btn-follow") as HTMLButtonElement;
 const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
 const btnSidebarToggle = $("btn-sidebar-toggle") as HTMLButtonElement;
 btnNew.disabled = true;
+btnFollow.classList.remove("visible");
 
 let sidebarCollapsed = false;
 function toggleSidebar(): void {
@@ -642,6 +644,7 @@ mobileMedia.addEventListener("change", (ev) => {
   }
   scheduleMobileViewportSync(true);
   applyTerminalAppearanceToAll();
+  updateFollowButtonVisibility();
   renderMobileViewState();
 });
 window.addEventListener("resize", () => scheduleMobileViewportSync(true));
@@ -824,6 +827,12 @@ function createTermState(ptyId: string): TermState {
     sendWsMessage({ type: "input", ptyId, data });
   });
 
+  term.onScroll(() => {
+    if (activePtyId !== ptyId) return;
+    updateFollowButtonVisibility();
+    if (mobileViewport) scheduleMobileRender();
+  });
+
   const copyToast = document.createElement("div");
   copyToast.className = "copy-toast";
   copyToast.textContent = "Copied";
@@ -871,6 +880,7 @@ function removeTerm(ptyId: string): void {
   terms.delete(ptyId);
   ptyTitles.delete(ptyId);
   ptyInputLineBuffers.delete(ptyId);
+  mobileInputDraftByPtyId.delete(ptyId);
   ptyReady.delete(ptyId);
   ptyStateChangedAt.delete(ptyId);
 }
@@ -1127,6 +1137,7 @@ function onServerMsg(msg: ServerMsg): void {
     const st = ensureTerm(msg.ptyId);
     st.term.write(msg.data);
     if (msg.ptyId === activePtyId) {
+      updateFollowButtonVisibility();
       scheduleReflow();
     }
     if (mobileViewport) scheduleMobileRender();
@@ -2740,8 +2751,22 @@ function sendMobileInput(text: string): void {
   const body = normalized.replace(/[\r\n]+/g, "");
   sendWsMessage({ type: "mobile_submit", ptyId: targetPtyId, body });
   trackUserInput(targetPtyId, `${body}\r`);
-  mobileInputDraft = "";
+  mobileInputDraftByPtyId.delete(targetPtyId);
   renderMobileViewState();
+}
+
+function activeMobileInputDraft(): string {
+  if (!activePtyId) return "";
+  return mobileInputDraftByPtyId.get(activePtyId) ?? "";
+}
+
+function setActiveMobileInputDraft(value: string): void {
+  if (!activePtyId) return;
+  if (!value) {
+    mobileInputDraftByPtyId.delete(activePtyId);
+    return;
+  }
+  mobileInputDraftByPtyId.set(activePtyId, value);
 }
 
 function openMobilePreview(agentSessionId: string): void {
@@ -2855,7 +2880,7 @@ function buildMobileViewModel(): MobileViewModel {
     inactive,
     focus,
     activeTitle,
-    inputDraft: mobileInputDraft,
+    inputDraft: activeMobileInputDraft(),
     quickPrompts,
     preview: mobilePreviewState,
     terminalSnapshot: mobileTerminalSnapshot,
@@ -2866,6 +2891,7 @@ function buildMobileViewModel(): MobileViewModel {
     historyButtonBg: terminalTheme.background ?? mobileTheme.panel,
     historyButtonText: terminalTheme.foreground ?? mobileTheme.text,
     historyButtonBorder: terminalTheme.cursor ?? mobileTheme.line,
+    showFollowButton: focus ? activeTermIsScrolledUp() : false,
   };
 }
 
@@ -2913,6 +2939,7 @@ function renderMobileViewState(): void {
       onArrowUp: () => {},
       onArrowDown: () => {},
       onTabKey: () => {},
+      onFollowOutput: () => {},
       onOpenTermSnapshot: () => {},
       onCloseTermSnapshot: () => {},
       onPreviewInactive: () => {},
@@ -2987,11 +3014,11 @@ function renderMobileViewState(): void {
       renderMobileViewState();
     },
     onChangeDraft: (value) => {
-      mobileInputDraft = value;
+      setActiveMobileInputDraft(value);
       renderMobileViewState();
     },
     onSendDraft: (value) => {
-      sendMobileInput(value ?? mobileInputDraft);
+      sendMobileInput(value ?? activeMobileInputDraft());
     },
     onQuickPrompt: (prompt) => {
       sendMobileInput(prompt);
@@ -3013,6 +3040,9 @@ function renderMobileViewState(): void {
     onTabKey: () => {
       if (!activePtyId) return;
       sendWsMessage({ type: "input", ptyId: activePtyId, data: "\t" });
+    },
+    onFollowOutput: () => {
+      scrollActiveTerminalToBottom();
     },
     onOpenTermSnapshot: () => {
       if (!activePtyId) return;
@@ -3430,6 +3460,10 @@ btnNew.addEventListener("click", () => {
   });
 });
 
+btnFollow.addEventListener("click", () => {
+  scrollActiveTerminalToBottom();
+});
+
 tmuxSessionSelect.addEventListener("change", () => {
   const selected = selectedTmuxSession();
   if (!selected) return;
@@ -3478,6 +3512,34 @@ function maybeSubscribeAfterStableMobileResize(ptyId: string, cols: number, rows
   if (pendingMobileSubscribePtyId === ptyId) pendingMobileSubscribePtyId = null;
 }
 
+function termIsScrolledUp(term: Terminal): boolean {
+  const b = term.buffer.active as unknown as { baseY?: unknown; viewportY?: unknown; length: number };
+  const baseY = typeof b.baseY === "number" ? b.baseY : Math.max(0, b.length - term.rows);
+  const viewportY = typeof b.viewportY === "number" ? b.viewportY : baseY;
+  return viewportY < baseY;
+}
+
+function activeTermIsScrolledUp(): boolean {
+  if (!activePtyId) return false;
+  const st = terms.get(activePtyId);
+  if (!st) return false;
+  return termIsScrolledUp(st.term);
+}
+
+function updateFollowButtonVisibility(): void {
+  const visible = !mobileViewport && activeTermIsScrolledUp();
+  btnFollow.classList.toggle("visible", visible);
+}
+
+function scrollActiveTerminalToBottom(): void {
+  if (!activePtyId) return;
+  const st = terms.get(activePtyId);
+  if (!st) return;
+  st.term.scrollToBottom();
+  updateFollowButtonVisibility();
+  if (mobileViewport) scheduleMobileRender();
+}
+
 // Force xterm.js to reflow the active terminal buffer.  A plain refresh()
 // only re-renders the viewport without recalculating line wrapping, which
 // leaves garbled output after reconnects and resizes.  Scrolling by +1/−1
@@ -3506,6 +3568,7 @@ function scheduleReflow(): void {
 function updateTerminalVisibility(): void {
   const hasActive = Boolean(activePtyId);
   placeholderEl.classList.toggle("hidden", hasActive);
+  updateFollowButtonVisibility();
   renderInputContextBar();
   for (const [ptyId, st] of terms.entries()) {
     st.container.classList.toggle("hidden", !hasActive || ptyId !== activePtyId);
@@ -3863,9 +3926,6 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
     return lines.join("\n");
   },
   scrollToBottomActive: () => {
-    if (!activePtyId) return;
-    const st = terms.get(activePtyId);
-    if (!st) return;
-    st.term.scrollToBottom();
+    scrollActiveTerminalToBottom();
   },
 };
