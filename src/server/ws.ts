@@ -2,7 +2,7 @@ import { WebSocketServer } from "ws";
 import type WebSocket from "ws";
 import type { FastifyInstance } from "fastify";
 
-import type { ClientToServerMessage, ServerToClientMessage } from "../types.js";
+import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from "../types.js";
 import type { PtyManager } from "../pty/manager.js";
 import type { ReadinessEngine } from "../readiness/engine.js";
 import type { WsHub } from "../ws/hub.js";
@@ -19,13 +19,26 @@ type WsDeps = {
   listPtys: () => Promise<unknown>;
 };
 
-const SUBSCRIBE_SCROLLBACK_SNAPSHOT_LINES = 3000;
 const MOBILE_SNAPSHOT_MAX_LINES = 20_000;
 const MOBILE_SUBMIT_GATE_TIMEOUT_MS = 800;
 const MOBILE_SUBMIT_MAX_BODY_BYTES = 64 * 1024;
 
 function send(ws: WebSocket, msg: ServerToClientMessage): void {
   ws.send(JSON.stringify(msg));
+}
+
+function tmuxCaptureTarget(summary: PtySummary): { target: string; server: PtySummary["tmuxServer"] } | null {
+  const args = Array.isArray(summary.args) ? summary.args : [];
+  // Prefer the exact attached linked-session target used by this PTY process.
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] !== "-t") continue;
+    const candidate = (args[i + 1] ?? "").trim();
+    if (!candidate) continue;
+    return { target: candidate, server: summary.tmuxServer };
+  }
+  const fallback = (summary.tmuxSession ?? "").trim();
+  if (!fallback) return null;
+  return { target: fallback, server: summary.tmuxServer };
 }
 
 function parseWsMessage(raw: unknown): ClientToServerMessage | null {
@@ -151,21 +164,6 @@ export function registerWs(deps: WsDeps): void {
 
       if (msg.type === "subscribe") {
         client.subscribed.add(msg.ptyId);
-        const summary = ptys.getSummary(msg.ptyId);
-        if (summary?.tmuxSession) {
-          void tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer, SUBSCRIBE_SCROLLBACK_SNAPSHOT_LINES)
-            .then((snapshot) => {
-              if (!snapshot || ws.readyState !== ws.OPEN) return;
-              send(ws, {
-                type: "pty_output",
-                ptyId: msg.ptyId,
-                data: snapshot.endsWith("\n") ? snapshot : `${snapshot}\n`,
-              });
-            })
-            .catch(() => {
-              // ignore best-effort snapshot for tmux attach
-            });
-        }
         return;
       }
       if (msg.type === "input") {
@@ -204,7 +202,7 @@ export function registerWs(deps: WsDeps): void {
       }
       if (msg.type === "mobile_snapshot_request") {
         const summary = ptys.getSummary(msg.ptyId);
-        if (!summary || !summary.tmuxSession) {
+        if (!summary) {
           send(ws, {
             type: "mobile_snapshot_response",
             requestId: msg.requestId,
@@ -214,7 +212,18 @@ export function registerWs(deps: WsDeps): void {
           });
           return;
         }
-        void tmuxCapturePaneVisible(summary.tmuxSession, summary.tmuxServer, msg.lines)
+        const capture = tmuxCaptureTarget(summary);
+        if (!capture) {
+          send(ws, {
+            type: "mobile_snapshot_response",
+            requestId: msg.requestId,
+            ptyId: msg.ptyId,
+            ok: false,
+            error: "PTY is not an active tmux session",
+          });
+          return;
+        }
+        void tmuxCapturePaneVisible(capture.target, capture.server, msg.lines)
           .then((snapshot) => {
             if (ws.readyState !== ws.OPEN) return;
             const text = snapshot ?? "";
