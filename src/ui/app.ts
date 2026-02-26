@@ -129,7 +129,6 @@ let mobileSnapshotRestorePtyId: string | null = loadSavedMobileSnapshotPtyId();
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
-let pendingMobileSubscribePtyId: string | null = null;
 let mobileSettingsOpen = false;
 
 // Client-side worktree cache, populated from GET /api/worktrees
@@ -607,13 +606,15 @@ function syncMobileRootToVisualViewport(resizeActiveTerm: boolean): void {
     }
     return;
   }
+  // Keep width anchored to layout viewport. Some mobile browsers report a
+  // transiently narrow visualViewport.width after refresh/zoom churn, which
+  // causes PTY cols to collapse and wrap at roughly half width.
+  const layoutWidth = Math.max(window.innerWidth, document.documentElement.clientWidth || 0);
   mobileRoot.style.top = `${Math.max(0, Math.round(vv.offsetTop))}px`;
-  mobileRoot.style.left = `${Math.max(0, Math.round(vv.offsetLeft))}px`;
-  mobileRoot.style.width = `${Math.round(vv.width)}px`;
-  mobileRoot.style.height = `${Math.round(vv.height)}px`;
-  // Avoid refitting terminal rows while software keyboard is open; this prevents
-  // disruptive row-count jumps that make output appear to scroll away while typing.
-  if (resizeActiveTerm && activePtyId && !isMobileKeyboardLikelyOpen()) {
+  mobileRoot.style.left = "0px";
+  mobileRoot.style.width = `${Math.max(1, Math.round(layoutWidth))}px`;
+  mobileRoot.style.height = `${Math.max(1, Math.round(vv.height))}px`;
+  if (resizeActiveTerm && activePtyId) {
     requestAnimationFrame(() => {
       fitAndResizeActive();
       reflowActiveTerm();
@@ -636,11 +637,6 @@ mobileMedia.addEventListener("change", (ev) => {
   mobileViewport = ev.matches;
   if (!mobileViewport) {
     mobileSettingsOpen = false;
-    // If we were waiting to subscribe until mobile fit/resize completed, do it now.
-    if (pendingMobileSubscribePtyId) {
-      subscribeIfNeeded(pendingMobileSubscribePtyId);
-      pendingMobileSubscribePtyId = null;
-    }
   }
   scheduleMobileViewportSync(true);
   applyTerminalAppearanceToAll();
@@ -649,8 +645,10 @@ mobileMedia.addEventListener("change", (ev) => {
 });
 window.addEventListener("resize", () => scheduleMobileViewportSync(true));
 window.visualViewport?.addEventListener("resize", () => scheduleMobileViewportSync(true));
-window.visualViewport?.addEventListener("scroll", () => scheduleMobileViewportSync(true));
-scheduleMobileViewportSync(false);
+window.visualViewport?.addEventListener("scroll", () => {
+  scheduleMobileViewportSync(!isMobileKeyboardLikelyOpen());
+});
+scheduleMobileViewportSync(true);
 
 function effectiveTerminalTheme(): Theme {
   if (!mobileViewport) return activeTheme;
@@ -713,11 +711,13 @@ type TermState = {
   container: HTMLDivElement;
   term: Terminal;
   fit: FitAddon;
+  opened: boolean;
   lastResize: { cols: number; rows: number } | null;
 };
 
 const terms = new Map<string, TermState>();
 const subscribed = new Set<string>();
+const pendingResizeByPtyId = new Map<string, { cols: number; rows: number }>();
 let authToken = "";
 let ws: WebSocket | null = null;
 const TERMINAL_SCROLLBACK_LINES = 50_000;
@@ -800,7 +800,11 @@ function createTermState(ptyId: string): TermState {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
-  term.open(container);
+  let opened = false;
+  if (!mobileViewport) {
+    term.open(container);
+    opened = true;
+  }
 
   // Intercept wheel events and scroll tmux history instead.
   container.addEventListener(
@@ -857,7 +861,7 @@ function createTermState(ptyId: string): TermState {
     renderList();
   });
 
-  return { ptyId, container, term, fit, lastResize: null };
+  return { ptyId, container, term, fit, opened, lastResize: null };
 }
 
 function ensureTerm(ptyId: string): TermState {
@@ -866,6 +870,50 @@ function ensureTerm(ptyId: string): TermState {
   const created = createTermState(ptyId);
   terms.set(ptyId, created);
   return created;
+}
+
+function remapPtyState(oldPtyId: string, newPtyId: string): void {
+  if (!oldPtyId || !newPtyId || oldPtyId === newPtyId) return;
+
+  const moveMapValue = <T,>(m: Map<string, T>): void => {
+    if (!m.has(oldPtyId) || m.has(newPtyId)) return;
+    const value = m.get(oldPtyId)!;
+    m.set(newPtyId, value);
+    m.delete(oldPtyId);
+  };
+  const moveSetValue = (s: Set<string>): void => {
+    if (!s.has(oldPtyId)) return;
+    s.delete(oldPtyId);
+    s.add(newPtyId);
+  };
+
+  const st = terms.get(oldPtyId);
+  if (st && !terms.has(newPtyId)) {
+    terms.delete(oldPtyId);
+    st.ptyId = newPtyId;
+    st.container.dataset.ptyId = newPtyId;
+    terms.set(newPtyId, st);
+  }
+
+  moveMapValue(ptyTitles);
+  moveMapValue(ptyLastInput);
+  moveMapValue(ptyInputHistory);
+  moveMapValue(ptyInputLineBuffers);
+  moveMapValue(ptyInputProcessHints);
+  moveMapValue(mobileInputDraftByPtyId);
+  moveMapValue(ptyReady);
+  moveMapValue(ptyStateChangedAt);
+  moveMapValue(pendingResizeByPtyId);
+
+  moveSetValue(subscribed);
+  moveSetValue(pendingHistorySaves);
+
+  if (pendingActivePtyId === oldPtyId) pendingActivePtyId = newPtyId;
+  if (mobileReparentedPtyId === oldPtyId) mobileReparentedPtyId = newPtyId;
+  if (mobileSnapshotRestorePtyId === oldPtyId) mobileSnapshotRestorePtyId = newPtyId;
+  if (mobileTerminalSnapshot && mobileTerminalSnapshot.ptyId === oldPtyId) {
+    mobileTerminalSnapshot = { ...mobileTerminalSnapshot, ptyId: newPtyId };
+  }
 }
 
 function removeTerm(ptyId: string): void {
@@ -883,6 +931,8 @@ function removeTerm(ptyId: string): void {
   mobileInputDraftByPtyId.delete(ptyId);
   ptyReady.delete(ptyId);
   ptyStateChangedAt.delete(ptyId);
+  subscribed.delete(ptyId);
+  pendingResizeByPtyId.delete(ptyId);
 }
 
 function wsUrl(): string {
@@ -894,6 +944,26 @@ function wsUrl(): string {
 function sendWsMessage(msg: unknown): void {
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   ws.send(JSON.stringify(msg));
+}
+
+function flushPendingResizes(ptyId?: string): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (ptyId) {
+    const resize = pendingResizeByPtyId.get(ptyId);
+    if (!resize) return;
+    sendWsMessage({ type: "resize", ptyId, cols: resize.cols, rows: resize.rows });
+    pendingResizeByPtyId.delete(ptyId);
+    return;
+  }
+  for (const [id, resize] of [...pendingResizeByPtyId.entries()]) {
+    sendWsMessage({ type: "resize", ptyId: id, cols: resize.cols, rows: resize.rows });
+    pendingResizeByPtyId.delete(id);
+  }
+}
+
+function queueResize(ptyId: string, cols: number, rows: number): void {
+  pendingResizeByPtyId.set(ptyId, { cols, rows });
+  flushPendingResizes(ptyId);
 }
 
 function authHeaders(init?: HeadersInit): Headers {
@@ -934,9 +1004,25 @@ function connectWs(): void {
     addEvent(`WS connected`);
     wsConnected = true;
     scheduleMobileRender();
+    if (activePtyId) {
+      fitAndResizeActive();
+      reflowActiveTerm();
+      const st = terms.get(activePtyId);
+      if (st && st.term.cols > 0 && st.term.rows > 0) {
+        queueResize(activePtyId, st.term.cols, st.term.rows);
+      }
+    }
+    flushPendingResizes();
     for (const ptyId of subscribed) {
       sendWsMessage({ type: "subscribe", ptyId });
     }
+    if (activePtyId && !subscribed.has(activePtyId)) {
+      subscribeIfNeeded(activePtyId);
+    }
+    requestAnimationFrame(() => {
+      fitAndResizeActive();
+      reflowActiveTerm();
+    });
     refreshList();
   });
 
@@ -1041,6 +1127,7 @@ function onServerMsg(msg: ServerMsg): void {
     }
     const runningPtys = ptys.filter((p) => p.status === "running");
     if (activePtyId) {
+      const previousActivePtyId = activePtyId;
       const active = ptys.find((p) => p.id === activePtyId);
       if (!active || active.status !== "running") {
         // PTY ID disappeared (e.g. server restart assigned new IDs).
@@ -1057,8 +1144,8 @@ function onServerMsg(msg: ServerMsg): void {
           )
           : null;
         if (fallback) {
-          activePtyId = fallback.id;
-          saveActivePty(fallback.id);
+          remapPtyState(previousActivePtyId, fallback.id);
+          setActive(fallback.id);
         } else {
           activePtyId = null;
           saveActivePty(null);
@@ -1135,12 +1222,13 @@ function onServerMsg(msg: ServerMsg): void {
   }
   if (msg.type === "pty_output") {
     const st = ensureTerm(msg.ptyId);
-    st.term.write(msg.data);
-    if (msg.ptyId === activePtyId) {
-      updateFollowButtonVisibility();
-      scheduleReflow();
-    }
-    if (mobileViewport) scheduleMobileRender();
+    st.term.write(msg.data, () => {
+      if (msg.ptyId === activePtyId) {
+        updateFollowButtonVisibility();
+        scheduleReflow();
+      }
+      if (mobileViewport) scheduleMobileRender();
+    });
     return;
   }
   if (msg.type === "pty_exit") {
@@ -2704,31 +2792,17 @@ function reparentTermToMobile(): void {
   if (!st) return;
 
   st.container.classList.remove("hidden");
-  st.term.options.disableStdin = true;
   mobileTermMountEl.appendChild(st.container);
+  if (!st.opened) {
+    st.term.open(st.container);
+    st.opened = true;
+  }
+  st.term.options.disableStdin = true;
   mobileReparentedPtyId = activePtyId;
 
-  const fitResizeAndReflow = () => {
-    st.fit.fit();
-    const cols = st.term.cols;
-    const rows = st.term.rows;
-    if (cols > 0 && rows > 0) {
-      maybeSubscribeAfterStableMobileResize(st.ptyId, cols, rows);
-    }
-    if (cols > 0 && rows > 0 && (!st.lastResize || st.lastResize.cols !== cols || st.lastResize.rows !== rows)) {
-      st.lastResize = { cols, rows };
-      sendWsMessage({ type: "resize", ptyId: st.ptyId, cols, rows });
-    }
-    // Force xterm to recompute wraps after container move/resizes.
-    scheduleReflow();
-  };
-
   requestAnimationFrame(() => {
-    fitResizeAndReflow();
-    // A second pass on the next frame catches late layout/font settling on mobile refresh.
-    requestAnimationFrame(() => {
-      fitResizeAndReflow();
-    });
+    fitAndResizeActive();
+    reflowActiveTerm();
   });
 }
 
@@ -3374,7 +3448,7 @@ function renderList(): void {
 function focusActiveTerm(): void {
   if (mobileViewport) return;
   const st = activePtyId ? terms.get(activePtyId) : null;
-  if (st) st.term.focus();
+  if (st?.opened) st.term.focus();
 }
 
 function setActive(ptyId: string): void {
@@ -3389,13 +3463,6 @@ function setActive(ptyId: string): void {
   saveActivePty(ptyId);
   ensureTerm(ptyId);
   updateTerminalVisibility();
-  // On mobile we wait until the terminal is mounted and has a stable size
-  // before subscribing, so server-side wrapping uses the right PTY width.
-  if (mobileViewport) {
-    pendingMobileSubscribePtyId = ptyId;
-  } else {
-    subscribeIfNeeded(ptyId);
-  }
   requestAnimationFrame(() => {
     fitAndResizeActive();
     reflowActiveTerm();
@@ -3503,15 +3570,6 @@ function subscribeIfNeeded(ptyId: string): void {
   sendWsMessage({ type: "subscribe", ptyId });
 }
 
-function maybeSubscribeAfterStableMobileResize(ptyId: string, cols: number, rows: number): void {
-  if (!mobileViewport) return;
-  if (cols <= 0 || rows <= 0) return;
-  if (activePtyId !== ptyId) return;
-  if (pendingMobileSubscribePtyId && pendingMobileSubscribePtyId !== ptyId) return;
-  subscribeIfNeeded(ptyId);
-  if (pendingMobileSubscribePtyId === ptyId) pendingMobileSubscribePtyId = null;
-}
-
 function termIsScrolledUp(term: Terminal): boolean {
   const b = term.buffer.active as unknown as { baseY?: unknown; viewportY?: unknown; length: number };
   const baseY = typeof b.baseY === "number" ? b.baseY : Math.max(0, b.length - term.rows);
@@ -3577,22 +3635,28 @@ function updateTerminalVisibility(): void {
 
 function fitAndResizeActive(): void {
   if (!activePtyId) return;
-  if (isMobileKeyboardLikelyOpen()) return;
   // On mobile, reparenting handles fit; skip if term is in hidden desktop container
   if (mobileViewport && mobileReparentedPtyId !== activePtyId) return;
   const st = terms.get(activePtyId);
   if (!st) return;
+  if (!st.opened) {
+    st.term.open(st.container);
+    st.opened = true;
+  }
 
   st.fit.fit();
 
   const cols = st.term.cols;
   const rows = st.term.rows;
   if (cols <= 0 || rows <= 0) return;
-  maybeSubscribeAfterStableMobileResize(activePtyId, cols, rows);
-  if (st.lastResize && st.lastResize.cols === cols && st.lastResize.rows === rows) return;
-
-  st.lastResize = { cols, rows };
-  sendWsMessage({ type: "resize", ptyId: activePtyId, cols, rows });
+  const sizeChanged = !st.lastResize || st.lastResize.cols !== cols || st.lastResize.rows !== rows;
+  if (sizeChanged) {
+    st.lastResize = { cols, rows };
+    queueResize(activePtyId, cols, rows);
+  }
+  // First subscribe only after we have a concrete fitted size. This avoids
+  // tmux snapshot/output replay being wrapped to stale/default dimensions.
+  subscribeIfNeeded(activePtyId);
 }
 
 const ro = new ResizeObserver(() => {

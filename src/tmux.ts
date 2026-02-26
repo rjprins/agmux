@@ -510,11 +510,14 @@ export async function tmuxCapturePaneVisible(
   name: string,
   serverHint?: TmuxServer | null,
   historyLines = 0,
+  opts?: { joinWrapped?: boolean },
 ): Promise<string | null> {
   const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return null;
   try {
-    const args = ["capture-pane", "-p", "-e", "-J", "-t", name];
+    const joinWrapped = opts?.joinWrapped !== false;
+    const args = ["capture-pane", "-p", "-e", "-t", name];
+    if (joinWrapped) args.splice(3, 0, "-J");
     if (historyLines > 0) args.splice(1, 0, "-S", `-${Math.floor(historyLines)}`);
     const { stdout } = await tmuxExec(server, args);
     const lines = stdout.replaceAll("\r", "").split("\n");

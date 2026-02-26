@@ -265,6 +265,23 @@ test("mobile session dropdown switches active session", async ({ page }) => {
 
 test("mobile session view survives refresh and remains interactive", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    const sent: unknown[] = [];
+    (window as any).__agmuxSentWs = sent;
+    const originalSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      try {
+        if (typeof data === "string") {
+          sent.push(JSON.parse(data));
+        } else {
+          sent.push(String(data));
+        }
+      } catch {
+        sent.push(String(data));
+      }
+      return originalSend.call(this, data);
+    };
+  });
   await page.goto("/?nosup=1");
 
   const token = await readSessionToken(page);
@@ -283,6 +300,17 @@ test("mobile session view survives refresh and remains interactive", async ({ pa
 
   await expect(page.locator(".mobile-focus")).toHaveCount(1, { timeout: 30_000 });
   await expect(page.locator(".mobile-composer textarea")).toHaveCount(1, { timeout: 10_000 });
+
+  await expect
+    .poll(
+      async () =>
+        page.evaluate((id) => {
+          const sent = ((window as any).__agmuxSentWs ?? []) as Array<{ type?: unknown; ptyId?: unknown }>;
+          return sent.some((msg) => msg && msg.ptyId === id && msg.type === "resize");
+        }, ptyId),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
 
   const textarea = page.locator(".mobile-composer textarea");
   await textarea.fill("echo mobile-refresh-ok");
