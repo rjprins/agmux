@@ -435,7 +435,7 @@ export function renderMobileView(
                     }}
                     onClick={() => handlers.onOpenTermSnapshot()}
                   >
-                    History
+                    Scrollback
                   </button>
                   <button
                     type="button"
