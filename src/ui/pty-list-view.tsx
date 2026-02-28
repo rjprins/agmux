@@ -34,6 +34,7 @@ export type InactivePtyItem = {
   color: string;
   process: string;
   secondaryText: string;
+  firstInput?: string;
   secondaryTitle: string;
   worktree?: string;
   cwd?: string;

@@ -29,6 +29,25 @@ export type MobileInactiveSession = {
   provider: string;
   worktree?: string;
   elapsed?: string;
+  firstInput?: string;
+};
+
+export type MobileProjectGroup = {
+  key: string;
+  label: string;
+  title?: string;
+  pinned: boolean;
+  inactiveTotal: number;
+  running: MobileRunningSession[];
+};
+
+export type MobileInactiveProjectGroup = {
+  key: string;
+  label: string;
+  title?: string;
+  archived: boolean;
+  pinned: boolean;
+  sessions: MobileInactiveSession[];
 };
 
 export type MobileFocus = {
@@ -70,7 +89,10 @@ export type MobileViewModel = {
   connected: boolean;
   view: MobileView;
   running: MobileRunningSession[];
-  inactive: MobileInactiveSession[];
+  runningProjects: MobileProjectGroup[];
+  inactiveProjects: MobileInactiveProjectGroup[];
+  archivedProjects: MobileInactiveProjectGroup[];
+  inactiveProjectLabel: string | null;
   focus: MobileFocus | null;
   activeTitle: string;
   inputDraft: string;
@@ -91,7 +113,10 @@ export type MobileViewHandlers = {
   onSelectRunning: (ptyId: string) => void;
   onCloseRunning: (ptyId: string) => void;
   onOpenLaunch: () => void;
-  onShowInactive: () => void;
+  onTogglePinProject: (projectKey: string) => void;
+  onArchiveProject: (projectKey: string) => void;
+  onUnarchiveProject: (projectKey: string) => void;
+  onShowInactive: (projectKey: string) => void;
   onBack: () => void;
   onChangeDraft: (value: string) => void;
   onSendDraft: (value?: string) => void;
@@ -116,6 +141,17 @@ export type MobileViewHandlers = {
 let lastSnapshotAutoscrollSeq = 0;
 const ansiUp = new AnsiUp();
 ansiUp.escape_for_html = true;
+const MOBILE_INACTIVE_PAGE_SIZE = 4;
+const mobileInactiveVisiblePages = new Map<string, number>();
+
+function mobileInactiveVisibleCount(projectKey: string, total: number): number {
+  const pages = Math.max(1, mobileInactiveVisiblePages.get(projectKey) ?? 1);
+  return Math.min(total, pages * MOBILE_INACTIVE_PAGE_SIZE);
+}
+
+function mobileInactiveShowMore(projectKey: string): void {
+  mobileInactiveVisiblePages.set(projectKey, (mobileInactiveVisiblePages.get(projectKey) ?? 1) + 1);
+}
 
 function renderEmpty(title: string, hint: string) {
   return (
@@ -182,6 +218,43 @@ function renderRunningSessionCard(
       ) : (
         <div className="session-card-input">No output yet</div>
       )}
+    </li>
+  );
+}
+
+function renderInactiveSessionCard(
+  session: MobileInactiveSession,
+  index: number,
+  handlers: MobileViewHandlers,
+) {
+  return (
+    <li
+      key={session.id}
+      className="mobile-inactive-card"
+      style={{ "--stagger": `${index * 60}ms` } as Record<string, string>}
+    >
+      <div className="inactive-card-header">
+        <div className="inactive-card-main">
+          <div className="inactive-card-title" title={session.title}>{session.title}</div>
+          {session.worktree ? (
+            <div className="inactive-card-worktree">
+              <span className="inactive-card-worktree-label">branch:</span>
+              <span className="inactive-card-worktree-pill">{session.worktree}</span>
+            </div>
+          ) : null}
+        </div>
+        {session.elapsed ? <div className="inactive-card-elapsed">{session.elapsed}</div> : null}
+      </div>
+      <div className="inactive-card-sub" title={session.subtitle}>{session.subtitle}</div>
+      {session.firstInput ? <div className="inactive-card-input" title={session.firstInput}>{session.firstInput}</div> : null}
+      <div className="inactive-card-actions">
+        <button type="button" className="ghost" onClick={() => handlers.onPreviewInactive(session.id)}>
+          Preview
+        </button>
+        <button type="button" className="primary" onClick={() => handlers.onRestoreInactive(session.id)}>
+          Activate
+        </button>
+      </div>
     </li>
   );
 }
@@ -262,16 +335,45 @@ export function renderMobileView(
           <section className="mobile-section">
             <div className="mobile-section-head">
               <div className="mobile-section-title">Active sessions</div>
-              <button type="button" className="mobile-action" onClick={() => handlers.onShowInactive()}>
-                Inactive
-              </button>
             </div>
-            {model.running.length === 0 ? (
+            {model.runningProjects.length === 0 ? (
               renderEmpty("No active sessions", "Start one from the New button.")
             ) : (
-              <ul className="mobile-session-list">
-                {model.running.map((session, index) => renderRunningSessionCard(session, index, handlers))}
-              </ul>
+              <div className="mobile-project-list">
+                {model.runningProjects.map((project, groupIndex) => (
+                  <section key={project.key} className="mobile-project-group">
+                    <div className="mobile-project-head" title={project.title}>
+                      <div className="mobile-project-label">{project.label}</div>
+                      <div className="mobile-project-actions">
+                        <button
+                          type="button"
+                          className="mobile-action mobile-project-action"
+                          onClick={() => handlers.onTogglePinProject(project.key)}
+                        >
+                          {project.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        {project.inactiveTotal > 0 ? (
+                          <button
+                            type="button"
+                            className="mobile-action mobile-project-action"
+                            onClick={() => handlers.onShowInactive(project.key)}
+                          >
+                            Inactive ({project.inactiveTotal})
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    {project.running.length > 0 ? (
+                      <ul className="mobile-session-list">
+                        {project.running.map((session, sessionIndex) =>
+                          renderRunningSessionCard(session, groupIndex * 20 + sessionIndex, handlers))}
+                      </ul>
+                    ) : (
+                      <div className="mobile-project-empty">No active sessions</div>
+                    )}
+                  </section>
+                ))}
+              </div>
             )}
           </section>
         ) : null}
@@ -369,9 +471,6 @@ export function renderMobileView(
                   />
                   <div className="composer-actions">
                     <div className="composer-keys">
-                      <button type="button" className="ghost key-btn" aria-label="Arrow up" onClick={() => handlers.onArrowUp()}>
-                        ↑
-                      </button>
                       <button
                         type="button"
                         className="ghost key-btn"
@@ -379,6 +478,9 @@ export function renderMobileView(
                         onClick={() => handlers.onArrowDown()}
                       >
                         ↓
+                      </button>
+                      <button type="button" className="ghost key-btn" aria-label="Arrow up" onClick={() => handlers.onArrowUp()}>
+                        ↑
                       </button>
                       <button type="button" className="ghost key-btn tab-btn" aria-label="Tab" onClick={() => handlers.onTabKey()}>
                         Tab
@@ -406,33 +508,110 @@ export function renderMobileView(
 
         {model.view === "inactive" ? (
           <section className="mobile-section">
-            <div className="mobile-section-title">Inactive sessions</div>
-            {model.inactive.length === 0 ? (
+            <div className="mobile-section-title">
+              {model.inactiveProjectLabel ? `Inactive · ${model.inactiveProjectLabel}` : "Inactive sessions"}
+            </div>
+            {model.inactiveProjects.length === 0 && model.archivedProjects.length === 0 ? (
               renderEmpty("No inactive sessions", "Inactive sessions appear here after they exit.")
             ) : (
-              <ul className="mobile-inactive-list">
-                {model.inactive.map((session, index) => (
-                  <li
-                    key={session.id}
-                    className="mobile-inactive-card"
-                    style={{ "--stagger": `${index * 60}ms` } as Record<string, string>}
-                  >
-                    <div className="inactive-card-header">
-                      <div className="inactive-card-title" title={session.title}>{session.title}</div>
-                      {session.elapsed ? <div className="inactive-card-elapsed">{session.elapsed}</div> : null}
-                    </div>
-                    <div className="inactive-card-sub" title={session.subtitle}>{session.subtitle}</div>
-                    <div className="inactive-card-actions">
-                      <button type="button" className="ghost" onClick={() => handlers.onPreviewInactive(session.id)}>
-                        Preview
-                      </button>
-                      <button type="button" className="primary" onClick={() => handlers.onRestoreInactive(session.id)}>
-                        Activate
-                      </button>
-                    </div>
-                  </li>
+              <div className="mobile-project-list">
+                {model.inactiveProjects.map((project, groupIndex) => (
+                  <details key={project.key} className="mobile-project-group mobile-inactive-project" open>
+                    <summary className="mobile-project-head mobile-project-summary" title={project.title}>
+                      <div className="mobile-project-label">{project.label}</div>
+                      <div className="mobile-project-summary-right">
+                        <span className="mobile-project-count">{project.sessions.length}</span>
+                        <button
+                          type="button"
+                          className="mobile-action mobile-project-action"
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            handlers.onTogglePinProject(project.key);
+                          }}
+                        >
+                          {project.pinned ? "Unpin" : "Pin"}
+                        </button>
+                        <button
+                          type="button"
+                          className="mobile-action mobile-project-action"
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            handlers.onArchiveProject(project.key);
+                          }}
+                        >
+                          Archive
+                        </button>
+                      </div>
+                    </summary>
+                    <ul className="mobile-inactive-list">
+                      {project.sessions
+                        .slice(0, mobileInactiveVisibleCount(`inactive:${project.key}`, project.sessions.length))
+                        .map((session, sessionIndex) =>
+                          renderInactiveSessionCard(session, groupIndex * 20 + sessionIndex, handlers))}
+                      {mobileInactiveVisibleCount(`inactive:${project.key}`, project.sessions.length) < project.sessions.length ? (
+                        <li className="mobile-inactive-more-row">
+                          <button
+                            type="button"
+                            className="mobile-action mobile-project-action mobile-inactive-more"
+                            onClick={() => {
+                              mobileInactiveShowMore(`inactive:${project.key}`);
+                              renderMobileView(root, model, handlers);
+                            }}
+                          >
+                            More ({project.sessions.length - mobileInactiveVisibleCount(`inactive:${project.key}`, project.sessions.length)} left)
+                          </button>
+                        </li>
+                      ) : null}
+                    </ul>
+                  </details>
                 ))}
-              </ul>
+                {model.archivedProjects.length > 0 ? (
+                  <div className="mobile-section-title mobile-archived-label">Archived</div>
+                ) : null}
+                {model.archivedProjects.map((project, groupIndex) => (
+                  <details key={project.key} className="mobile-project-group mobile-inactive-project archived">
+                    <summary className="mobile-project-head mobile-project-summary" title={project.title}>
+                      <div className="mobile-project-label">{project.label}</div>
+                      <div className="mobile-project-summary-right">
+                        <span className="mobile-project-count">{project.sessions.length}</span>
+                        <button
+                          type="button"
+                          className="mobile-action mobile-project-action"
+                          onClick={(ev) => {
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            handlers.onUnarchiveProject(project.key);
+                          }}
+                        >
+                          Unarchive
+                        </button>
+                      </div>
+                    </summary>
+                    <ul className="mobile-inactive-list">
+                      {project.sessions
+                        .slice(0, mobileInactiveVisibleCount(`archived:${project.key}`, project.sessions.length))
+                        .map((session, sessionIndex) =>
+                          renderInactiveSessionCard(session, (groupIndex + 100) * 20 + sessionIndex, handlers))}
+                      {mobileInactiveVisibleCount(`archived:${project.key}`, project.sessions.length) < project.sessions.length ? (
+                        <li className="mobile-inactive-more-row">
+                          <button
+                            type="button"
+                            className="mobile-action mobile-project-action mobile-inactive-more"
+                            onClick={() => {
+                              mobileInactiveShowMore(`archived:${project.key}`);
+                              renderMobileView(root, model, handlers);
+                            }}
+                          >
+                            More ({project.sessions.length - mobileInactiveVisibleCount(`archived:${project.key}`, project.sessions.length)} left)
+                          </button>
+                        </li>
+                      ) : null}
+                    </ul>
+                  </details>
+                ))}
+              </div>
             )}
           </section>
         ) : null}

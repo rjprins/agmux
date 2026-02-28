@@ -155,11 +155,26 @@ export function renderRestoreSessionModal(
         </label>
 
         <div className="launch-modal-buttons">
-          <button type="button" onClick={() => handlers.onClose()} disabled={model.restoring}>Cancel</button>
-          <button type="button" onClick={() => handlers.onHide()} disabled={model.restoring}>Hide</button>
+          {model.restoring ? <div className="restore-status" role="status">Restoring inactive session...</div> : null}
           <button
             type="button"
-            className="launch-modal-go"
+            className="restore-cancel-btn"
+            onClick={() => handlers.onClose()}
+            disabled={model.restoring}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            className="restore-hide-btn"
+            onClick={() => handlers.onHide()}
+            disabled={model.restoring}
+          >
+            Hide
+          </button>
+          <button
+            type="button"
+            className={`launch-modal-go${model.restoring ? " restoring" : ""}`}
             disabled={disableRestore}
             onClick={() => handlers.onRestore()}
           >

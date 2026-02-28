@@ -13,6 +13,7 @@ import type {
 } from "../shared/protocol.js";
 import {
   renderPtyList,
+  type InactiveGroup,
   type InactivePtyItem,
   type InactiveWorktreeSubgroup,
   type PtyGroup,
@@ -47,7 +48,9 @@ import {
   renderMobileView,
   type MobileFocus,
   type MobileInactivePreview,
+  type MobileInactiveProjectGroup,
   type MobileInactiveSession,
+  type MobileProjectGroup,
   type MobileRunningSession,
   type MobileTerminalSnapshot,
   type MobileView,
@@ -130,6 +133,8 @@ let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
 let mobileReparentedPtyId: string | null = null;
 let mobileSettingsOpen = false;
+let latestPtyListModel: PtyListModel | null = null;
+let mobileInactiveProjectKey: string | null = null;
 
 // Client-side worktree cache, populated from GET /api/worktrees
 let knownWorktrees: Array<{ name: string; path: string; branch: string }> = [];
@@ -827,6 +832,7 @@ function createTermState(ptyId: string): TermState {
 
   term.onData((data) => {
     if (activePtyId !== ptyId) return;
+    if (mobileViewport) return;
     trackUserInput(ptyId, data);
     sendWsMessage({ type: "input", ptyId, data });
   });
@@ -2178,6 +2184,14 @@ async function restoreAgentSession(agentSessionId: string, target?: RestoreAgent
   addEvent(`Restored agent session ${agentSessionId}`);
   await refreshWorktreeCache();
   await refreshList();
+  if (mobileViewport) {
+    mobileView = "session";
+    saveMobileView();
+    mobilePreviewState = null;
+    mobileTerminalSnapshot = null;
+    mobileTerminalSnapshotPendingRequestId = null;
+    saveMobileSnapshotPtyId(null);
+  }
   setActive(json.id);
   return true;
 }
@@ -2236,6 +2250,25 @@ function displaySessionSubtitle(session: AgentSessionSummary): string {
   }
   parts.push(`${session.provider}:${shortSessionId(session.providerSessionId)}`);
   return parts.join(" · ");
+}
+
+function inactiveSessionProject(session: AgentSessionSummary): string | null {
+  const root = session.projectRoot ?? (session.cwd ? normalizeCwdGroupKey(session.cwd) : null);
+  const leaf = lastPathSegment(root);
+  return leaf || null;
+}
+
+function displayInactiveSessionTitle(session: AgentSessionSummary): string {
+  const project = inactiveSessionProject(session);
+  if (project) return project;
+  return `${capitalizeWord(session.provider)} session`;
+}
+
+function displayInactiveSessionSubtitle(session: AgentSessionSummary): string {
+  if (session.worktree) return `branch:${session.worktree}`;
+  const project = inactiveSessionProject(session);
+  if (project) return `project:${project}`;
+  return capitalizeWord(session.provider);
 }
 
 // ---------------------------------------------------------------------------
@@ -2622,13 +2655,14 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
 }
 
 function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePtyItem {
-  const process = displaySessionTitle(session);
+  const process = displayInactiveSessionTitle(session);
   const intent = displaySessionIntent(session);
+  const subtitle = displayInactiveSessionSubtitle(session);
   const elapsed = formatElapsedTime(session.lastSeenAt);
   const worktree = session.worktree ?? worktreeName(session.cwd);
 
   const tooltipParts = [capitalizeWord(session.provider)];
-  if (intent) tooltipParts.push(intent);
+  if (subtitle) tooltipParts.push(subtitle);
   if (elapsed) tooltipParts.push(`${elapsed} ago`);
   if (worktree) tooltipParts.push(`worktree: ${worktree}`);
 
@@ -2636,7 +2670,8 @@ function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePt
     id: session.id,
     color: ptyColor(session.id),
     process,
-    secondaryText: "",
+    secondaryText: subtitle,
+    firstInput: intent ?? undefined,
     secondaryTitle: tooltipParts.join("\n"),
     worktree,
     cwd: session.cwd ?? undefined,
@@ -2757,16 +2792,57 @@ function buildMobileFocus(p: PtySummary): MobileFocus {
   };
 }
 
-function buildMobileInactiveSession(session: AgentSessionSummary): MobileInactiveSession {
-  const elapsed = formatElapsedTime(session.lastSeenAt);
+function mapInactiveItemToMobileSession(item: InactivePtyItem, projectLabel: string): MobileInactiveSession {
+  const provider = item.exitLabel.replace(/\s+session$/i, "").toLowerCase();
+  const providerLabel = capitalizeWord(provider);
+  const projectNorm = projectLabel.trim().toLowerCase();
+  const firstInputRaw = item.firstInput?.trim() ?? "";
+  const firstInput = firstInputRaw && firstInputRaw.toLowerCase() !== projectNorm ? firstInputRaw : "";
+  const subtitleRaw = item.secondaryText.trim();
+  const projectSubtitle = `project:${projectNorm}`;
+  const subtitleNormalized = subtitleRaw.toLowerCase();
+  const isBranchSubtitle = subtitleNormalized.startsWith("branch:");
+  const subtitle = subtitleRaw &&
+    subtitleNormalized !== projectSubtitle &&
+    subtitleNormalized !== projectNorm &&
+    !(item.worktree && isBranchSubtitle)
+    ? subtitleRaw
+    : "";
   return {
-    id: session.id,
-    title: displaySessionTitle(session),
-    subtitle: displaySessionSubtitle(session),
-    provider: session.provider,
-    worktree: session.worktree ?? undefined,
-    elapsed: elapsed || undefined,
+    id: item.id,
+    title: providerLabel || item.process,
+    subtitle,
+    provider,
+    worktree: item.worktree ?? undefined,
+    elapsed: item.elapsed ?? undefined,
+    firstInput: firstInput || undefined,
   };
+}
+
+function flattenInactiveGroupItems(group: InactiveGroup): InactivePtyItem[] {
+  const items = [...group.items];
+  for (const wt of group.worktrees) {
+    items.push(...wt.items);
+  }
+  return items;
+}
+
+function flattenProjectInactiveItems(group: PtyGroup): InactivePtyItem[] {
+  const items = [...group.inactiveSessions];
+  for (const wt of group.inactiveWorktrees) {
+    items.push(...wt.items);
+  }
+  return items;
+}
+
+function stripProjectPrefix(value: string, projectLabel: string): string {
+  const text = value.trim();
+  const label = projectLabel.trim();
+  if (!label) return text;
+  const prefix = `${label} • `;
+  if (text.startsWith(prefix)) return text.slice(prefix.length).trim();
+  if (text === label) return "Session";
+  return text;
 }
 
 let mobileRenderPending = false;
@@ -2925,12 +3001,97 @@ function maybeRestoreMobileSnapshot(): void {
 }
 
 function buildMobileViewModel(): MobileViewModel {
-  const running = ptys.filter((p) => p.status === "running").map((p) => buildMobileRunningSession(p));
+  const runningPtys = ptys.filter((p) => p.status === "running");
+  const running = runningPtys.map((p) => buildMobileRunningSession(p));
   const activeIdx = running.findIndex((r) => r.id === activePtyId);
   if (activeIdx > 0) {
     const [active] = running.splice(activeIdx, 1);
     running.unshift(active);
   }
+  const runningById = new Map(running.map((session) => [session.id, session]));
+
+  const projectModel = latestPtyListModel ?? {
+    groups: [],
+    showHeaders: false,
+    inactive: null,
+    archived: null,
+  } as PtyListModel;
+
+  const runningProjects: MobileProjectGroup[] = projectModel.groups.map((group) => ({
+    key: group.key,
+    label: group.label,
+    title: group.title,
+    pinned: group.pinned,
+    inactiveTotal: group.inactiveTotal,
+    running: group.items
+      .map((item) => runningById.get(item.id))
+      .filter((session): session is MobileRunningSession => Boolean(session))
+      .map((session) => ({
+        ...session,
+        process: stripProjectPrefix(session.process, group.label),
+      })),
+  })).filter((group) => group.running.length > 0);
+  if (runningProjects.length === 0 && running.length > 0) {
+    runningProjects.push({
+      key: "",
+      label: "Sessions",
+      title: undefined,
+      pinned: false,
+      inactiveTotal: 0,
+      running,
+    });
+  }
+
+  const inlineInactiveProjects: MobileInactiveProjectGroup[] = projectModel.groups
+    .filter((group) => group.inactiveTotal > 0)
+    .map((group) => ({
+      key: group.key,
+      label: group.label,
+      title: group.title,
+      archived: false,
+      pinned: group.pinned,
+      sessions: flattenProjectInactiveItems(group).map((item) => mapInactiveItemToMobileSession(item, group.label)),
+    }))
+    .filter((group) => group.sessions.length > 0);
+
+  const orphanInactiveProjects: MobileInactiveProjectGroup[] = (projectModel.inactive?.groups ?? [])
+    .map((group) => ({
+      key: group.key,
+      label: group.label,
+      title: group.title,
+      archived: false,
+      pinned: false,
+      sessions: flattenInactiveGroupItems(group).map((item) => mapInactiveItemToMobileSession(item, group.label)),
+    }))
+    .filter((group) => group.sessions.length > 0);
+
+  const inactiveProjects: MobileInactiveProjectGroup[] = [...inlineInactiveProjects, ...orphanInactiveProjects];
+
+  const archivedProjects: MobileInactiveProjectGroup[] = (projectModel.archived?.groups ?? [])
+    .map((group) => ({
+      key: group.key,
+      label: group.label,
+      title: group.title,
+      archived: true,
+      pinned: false,
+      sessions: flattenInactiveGroupItems(group).map((item) => mapInactiveItemToMobileSession(item, group.label)),
+    }))
+    .filter((group) => group.sessions.length > 0);
+
+  const findProjectLabel = (key: string): string => {
+    const match = [...runningProjects, ...inactiveProjects, ...archivedProjects].find((group) => group.key === key);
+    if (match) return match.label;
+    if (!key) return "Other";
+    return key.split("/").filter(Boolean).at(-1) ?? key;
+  };
+
+  const inactiveProjectLabel = mobileInactiveProjectKey != null ? findProjectLabel(mobileInactiveProjectKey) : null;
+  const visibleInactiveProjects = mobileInactiveProjectKey == null
+    ? inactiveProjects
+    : inactiveProjects.filter((group) => group.key === mobileInactiveProjectKey);
+  const visibleArchivedProjects = mobileInactiveProjectKey == null
+    ? archivedProjects
+    : archivedProjects.filter((group) => group.key === mobileInactiveProjectKey);
 
   const activeSummary = activePtyId ? ptys.find((p) => p.id === activePtyId) ?? null : null;
   const focus = activeSummary ? buildMobileFocus(activeSummary) : null;
@@ -2940,10 +3101,6 @@ function buildMobileViewModel(): MobileViewModel {
     ? (activeProcess && isAgentProcessName(activeProcess) ? QUICK_PROMPTS_AGENT : QUICK_PROMPTS_SHELL)
     : [];
 
-  const inactive = [...agentSessions]
-    .filter((session) => !hiddenAgentSessionIds.has(session.id))
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt)
-    .map((session) => buildMobileInactiveSession(session));
   const mobileTheme = THEMES.get(mobileTerminalThemeKey) ?? activeTheme;
   const terminalTheme = mobileTheme.terminal;
 
@@ -2951,7 +3108,10 @@ function buildMobileViewModel(): MobileViewModel {
     connected: wsConnected,
     view: mobileView,
     running,
-    inactive,
+    runningProjects,
+    inactiveProjects: visibleInactiveProjects,
+    archivedProjects: visibleArchivedProjects,
+    inactiveProjectLabel,
     focus,
     activeTitle,
     inputDraft: activeMobileInputDraft(),
@@ -3004,6 +3164,9 @@ function renderMobileViewState(): void {
       onSelectRunning: () => {},
       onCloseRunning: () => {},
       onOpenLaunch: () => {},
+      onTogglePinProject: () => {},
+      onArchiveProject: () => {},
+      onUnarchiveProject: () => {},
       onShowInactive: () => {},
       onBack: () => {},
       onChangeDraft: () => {},
@@ -3035,6 +3198,7 @@ function renderMobileViewState(): void {
     onSelectRunning: (ptyId) => {
       setActive(ptyId);
       mobileView = "session";
+      mobileInactiveProjectKey = null;
       saveMobileView();
       mobileTerminalSnapshot = null;
       mobileTerminalSnapshotPendingRequestId = null;
@@ -3061,6 +3225,18 @@ function renderMobileViewState(): void {
       const groupCwd = active?.cwd ? normalizeCwdGroupKey(active.cwd) : "";
       openLaunchModal(groupCwd);
     },
+    onTogglePinProject: (projectKey) => {
+      if (pinnedDirectories.has(projectKey)) pinnedDirectories.delete(projectKey);
+      else pinnedDirectories.add(projectKey);
+      savePinnedDirectories();
+      renderList();
+    },
+    onArchiveProject: (projectKey) => {
+      archiveDirectory(projectKey);
+    },
+    onUnarchiveProject: (projectKey) => {
+      unarchiveDirectory(projectKey);
+    },
     onOpenSettings: () => {
       mobileSettingsOpen = true;
       renderMobileViewState();
@@ -3069,7 +3245,8 @@ function renderMobileViewState(): void {
       mobileSettingsOpen = false;
       renderMobileViewState();
     },
-    onShowInactive: () => {
+    onShowInactive: (projectKey) => {
+      mobileInactiveProjectKey = projectKey;
       mobileView = "inactive";
       saveMobileView();
       mobileTerminalSnapshot = null;
@@ -3082,6 +3259,7 @@ function renderMobileViewState(): void {
       mobileTermMountEl = null;
       mobileTerminalSnapshot = null;
       mobileTerminalSnapshotPendingRequestId = null;
+      mobileInactiveProjectKey = null;
       mobileView = "active";
       saveMobileView();
       saveMobileSnapshotPtyId(null);
@@ -3192,6 +3370,11 @@ function buildInactiveWorktreeSubgroups(
 function renderList(): void {
   // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo).
   const runningPtys = ptys.filter((p) => p.status === "running");
+  const activeAgentSessionIds = new Set(
+    runningPtys
+      .map((p) => p.agentSessionId?.trim() ?? "")
+      .filter((id): id is string => id.length > 0),
+  );
   const runningByDir = new Map<string, RunningPtyItem[]>();
   for (const p of runningPtys) {
     const key = p.cwd ? normalizeCwdGroupKey(p.cwd) : "";
@@ -3205,7 +3388,7 @@ function renderList(): void {
 
   // Group inactive agent sessions by project, preferring client-side worktree detection.
   const sortedAgentSessions = [...agentSessions]
-    .filter((s) => !hiddenAgentSessionIds.has(s.id))
+    .filter((s) => !hiddenAgentSessionIds.has(s.id) && !activeAgentSessionIds.has(s.id))
     .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   const inactiveByProject = new Map<string, InactivePtyItem[]>();
   for (const session of sortedAgentSessions) {
@@ -3362,6 +3545,8 @@ function renderList(): void {
       }
       : null,
   };
+
+  latestPtyListModel = model;
 
   renderPtyList(listEl, model, {
     onToggleGroup: (groupKey) => {
