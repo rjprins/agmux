@@ -1456,11 +1456,6 @@ button:disabled {
     position: relative;
   }
 
-  .mobile-shell.mobile-view-active,
-  .mobile-shell.mobile-view-inactive {
-    padding-left: max(16px, env(safe-area-inset-left));
-    padding-right: max(16px, env(safe-area-inset-right));
-  }
 
   .mobile-shell button {
     color: inherit;
