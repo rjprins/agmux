@@ -9,6 +9,7 @@ import type { PtySummary, ServerToClientMessage } from "../types.js";
 import type { SqliteStore } from "../persist/sqlite.js";
 import {
   tmuxCreateLinkedSession,
+  tmuxCreateWindow,
   tmuxKillSession,
   tmuxListWindows,
   tmuxPaneCurrentPath,
@@ -17,6 +18,7 @@ import {
   tmuxEnsureSession,
   type TmuxServer,
 } from "../tmux.js";
+import type { TriggerSpawnShellOptions } from "../triggers/types.js";
 
 export type RuntimeDeps = {
   store: SqliteStore;
@@ -142,6 +144,37 @@ export function createRuntime(deps: RuntimeDeps) {
       .replaceAll("\x1b[?1047l", "");
   }
 
+  async function spawnTriggerShell(opts?: TriggerSpawnShellOptions): Promise<{
+    ptyId: string;
+    cwd: string | null;
+    tmuxSession: string | null;
+  }> {
+    const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
+    const rawCwd = typeof opts?.cwd === "string" ? opts.cwd.trim() : "";
+    const cwd = rawCwd.length > 0 ? path.resolve(rawCwd) : undefined;
+    await tmuxEnsureSession(agmuxSession, shell);
+    const tmuxTarget = await tmuxCreateWindow(agmuxSession, shell, cwd);
+    const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(tmuxTarget);
+    const label = typeof opts?.name === "string" && opts.name.trim().length > 0
+      ? opts.name.trim()
+      : `shell:${path.basename(shell)}`;
+    const summary = ptys.spawn({
+      name: label,
+      backend: "tmux",
+      tmuxSession: tmuxTarget,
+      tmuxServer: "agmux",
+      command: "tmux",
+      args: attachArgs,
+      cols: 120,
+      rows: 30,
+    });
+    linkedSessionsByPty.set(summary.id, { name: linkedSession, server: "agmux" });
+    store.upsertSession(summary);
+    logger.info({ ptyId: summary.id, tmuxSession: tmuxTarget, source: "trigger" }, "spawned shell from trigger hook");
+    await broadcastPtyList();
+    return { ptyId: summary.id, cwd: summary.cwd ?? null, tmuxSession: summary.tmuxSession ?? null };
+  }
+
   // PTY events -> persistence + triggers + WS
   ptys.on("output", (ptyId: string, data: string) => {
     const out = stripAlternateScreenSequences(data);
@@ -161,6 +194,11 @@ export function createRuntime(deps: RuntimeDeps) {
         hub.broadcast(evt as any);
       },
       (id, d) => ptys.write(id, d),
+      {
+        writeTo: (id, d) => ptys.write(id, d),
+        listPtys: () => ptys.list(),
+        spawnShell: spawnTriggerShell,
+      },
     );
   });
 

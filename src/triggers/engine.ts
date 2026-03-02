@@ -1,12 +1,18 @@
 import stripAnsi from "strip-ansi";
 import type { PtyId } from "../types.js";
-import type { Trigger } from "./types.js";
+import type { Trigger, TriggerHooks } from "./types.js";
 
 type EmitFn = (evt: unknown) => void;
 type WriteFn = (ptyId: PtyId, data: string) => void;
 
 type PtyBuffers = {
   partial: string;
+};
+
+const DEFAULT_HOOKS: TriggerHooks = {
+  writeTo: () => {},
+  listPtys: () => [],
+  spawnShell: async () => ({ ptyId: "", cwd: null, tmuxSession: null }),
 };
 
 export class TriggerEngine {
@@ -19,7 +25,7 @@ export class TriggerEngine {
     this.triggers = triggers;
   }
 
-  onOutput(ptyId: PtyId, chunk: string, emit: EmitFn, write: WriteFn): void {
+  onOutput(ptyId: PtyId, chunk: string, emit: EmitFn, write: WriteFn, hooks: TriggerHooks = DEFAULT_HOOKS): void {
     if (this.triggers.length === 0) return;
 
     const buf = this.buffers.get(ptyId) ?? { partial: "" };
@@ -29,7 +35,7 @@ export class TriggerEngine {
     const sanitizedChunk = stripAnsi(chunk);
     for (const t of this.triggers) {
       if ((t.scope ?? "line") !== "chunk") continue;
-      this.runTrigger(t, ptyId, sanitizedChunk, sanitizedChunk, emit, write);
+      this.runTrigger(t, ptyId, sanitizedChunk, sanitizedChunk, emit, write, hooks);
     }
 
     // Line buffer for line-scope triggers.
@@ -45,7 +51,7 @@ export class TriggerEngine {
 
       for (const t of this.triggers) {
         if ((t.scope ?? "line") !== "line") continue;
-        this.runTrigger(t, ptyId, trimmed, trimmed, emit, write);
+        this.runTrigger(t, ptyId, trimmed, trimmed, emit, write, hooks);
       }
     }
   }
@@ -57,6 +63,7 @@ export class TriggerEngine {
     line: string,
     emit: EmitFn,
     write: WriteFn,
+    hooks: TriggerHooks,
   ): void {
     const m = matchTarget.match(t.pattern);
     if (!m) return;
@@ -69,14 +76,26 @@ export class TriggerEngine {
     this.lastFireByKey.set(key, now);
 
     try {
-      t.onMatch({
+      const result = t.onMatch({
         ptyId,
         ts: now,
         match: m,
         line,
         emit,
         write: (data) => write(ptyId, data),
+        hooks,
       });
+      if (result instanceof Promise) {
+        void result.catch((err: unknown) => {
+          emit({
+            type: "trigger_error",
+            ptyId,
+            trigger: t.name,
+            ts: now,
+            message: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }
     } catch (err) {
       emit({
         type: "trigger_error",

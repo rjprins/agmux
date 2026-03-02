@@ -1,0 +1,526 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "agmux API",
+    "version": "current",
+    "description": "Current agmux HTTP API surface used by UI and agents."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:4821"
+    }
+  ],
+  "paths": {
+    "/api/agent-sessions": {
+      "get": {
+        "summary": "List discovered agent sessions",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/agent-sessions/{provider}/{sessionId}/conversation": {
+      "get": {
+        "summary": "Read conversation messages for an agent session",
+        "parameters": [
+          { "$ref": "#/components/parameters/provider" },
+          { "$ref": "#/components/parameters/sessionId" }
+        ],
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/agent-sessions/{provider}/{sessionId}/restore": {
+      "post": {
+        "summary": "Restore a provider session into a new PTY",
+        "parameters": [
+          { "$ref": "#/components/parameters/provider" },
+          { "$ref": "#/components/parameters/sessionId" }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Restored" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Not found" },
+          "409": { "description": "Conflict" },
+          "500": { "description": "Server error" }
+        }
+      }
+    },
+    "/api/default-branch": {
+      "get": {
+        "summary": "Resolve default branch",
+        "parameters": [
+          {
+            "name": "projectRoot",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/directory-exists": {
+      "get": {
+        "summary": "Check if a directory exists",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/input-history": {
+      "get": {
+        "summary": "Load input history",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/launch-preferences": {
+      "get": {
+        "summary": "Load launch preferences",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/ptys": {
+      "get": {
+        "summary": "List PTYs",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/ptys/{id}/input-history": {
+      "put": {
+        "summary": "Save input history for a PTY",
+        "parameters": [
+          { "$ref": "#/components/parameters/ptyId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Saved" }
+        }
+      }
+    },
+    "/api/ptys/{id}/kill": {
+      "post": {
+        "summary": "Kill a PTY",
+        "parameters": [
+          { "$ref": "#/components/parameters/ptyId" }
+        ],
+        "responses": {
+          "200": { "description": "Killed" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/ptys/{id}/resume": {
+      "post": {
+        "summary": "Legacy runtime resume endpoint",
+        "parameters": [
+          { "$ref": "#/components/parameters/ptyId" }
+        ],
+        "responses": {
+          "200": { "description": "Reused" },
+          "410": { "description": "Deprecated resume path" }
+        }
+      }
+    },
+    "/api/ptys/{id}/task": {
+      "post": {
+        "summary": "Assign a task to a PTY",
+        "parameters": [
+          { "$ref": "#/components/parameters/ptyId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Assigned" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Not found" }
+        }
+      },
+      "delete": {
+        "summary": "Clear PTY task assignment",
+        "parameters": [
+          { "$ref": "#/components/parameters/ptyId" }
+        ],
+        "responses": {
+          "200": { "description": "Cleared" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/ptys/attach-tmux": {
+      "post": {
+        "summary": "Attach an existing tmux session",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Attached" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Not found" },
+          "409": { "description": "Conflict" }
+        }
+      }
+    },
+    "/api/ptys/launch": {
+      "post": {
+        "summary": "Launch a PTY from launch dialog options",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Launched" },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/ptys/shell": {
+      "post": {
+        "summary": "Spawn shell PTY",
+        "responses": {
+          "200": { "description": "Spawned" },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/readiness/trace": {
+      "get": {
+        "summary": "Read readiness decision trace",
+        "parameters": [
+          {
+            "name": "ptyId",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "summary": "Load settings",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      },
+      "put": {
+        "summary": "Merge and save settings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Saved" }
+        }
+      }
+    },
+    "/api/tasks": {
+      "get": {
+        "summary": "List tasks",
+        "responses": {
+          "200": { "description": "OK" },
+          "404": { "description": "Provider not configured" }
+        }
+      },
+      "post": {
+        "summary": "Create task",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Created" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Provider not configured" }
+        }
+      }
+    },
+    "/api/tasks/{id}": {
+      "get": {
+        "summary": "Get task",
+        "parameters": [
+          { "$ref": "#/components/parameters/taskId" }
+        ],
+        "responses": {
+          "200": { "description": "OK" },
+          "404": { "description": "Not found or provider missing" }
+        }
+      },
+      "patch": {
+        "summary": "Update task",
+        "parameters": [
+          { "$ref": "#/components/parameters/taskId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Updated" },
+          "404": { "description": "Provider not configured" }
+        }
+      },
+      "delete": {
+        "summary": "Delete task",
+        "parameters": [
+          { "$ref": "#/components/parameters/taskId" }
+        ],
+        "responses": {
+          "200": { "description": "Deleted" },
+          "404": { "description": "Provider not configured" }
+        }
+      }
+    },
+    "/api/tasks/{id}/transition": {
+      "post": {
+        "summary": "Transition task status",
+        "parameters": [
+          { "$ref": "#/components/parameters/taskId" }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Transitioned" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Provider not configured" }
+        }
+      }
+    },
+    "/api/tasks/provider": {
+      "get": {
+        "summary": "Get task provider config",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      },
+      "put": {
+        "summary": "Set task provider config",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Configured" },
+          "400": { "description": "Bad request" }
+        }
+      },
+      "delete": {
+        "summary": "Clear task provider config",
+        "responses": {
+          "200": { "description": "Cleared" }
+        }
+      }
+    },
+    "/api/tasks/provider/verify": {
+      "post": {
+        "summary": "Verify task provider config",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Verified" },
+          "400": { "description": "Bad request" }
+        }
+      }
+    },
+    "/api/tmux/check": {
+      "get": {
+        "summary": "Check tmux session settings",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "server",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": ["agmux", "default"]
+            }
+          }
+        ],
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Not found" }
+        }
+      }
+    },
+    "/api/tmux/sessions": {
+      "get": {
+        "summary": "List tmux sessions",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      }
+    },
+    "/api/triggers/reload": {
+      "post": {
+        "summary": "Reload triggers from trigger module file",
+        "responses": {
+          "200": { "description": "Reloaded" }
+        }
+      }
+    },
+    "/api/worktrees": {
+      "get": {
+        "summary": "List worktrees",
+        "responses": {
+          "200": { "description": "OK" }
+        }
+      },
+      "delete": {
+        "summary": "Remove a worktree",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Removed" },
+          "400": { "description": "Bad request" },
+          "500": { "description": "Server error" }
+        }
+      }
+    },
+    "/api/worktrees/status": {
+      "get": {
+        "summary": "Get worktree status",
+        "parameters": [
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": { "description": "OK" },
+          "400": { "description": "Bad request" },
+          "500": { "description": "Server error" }
+        }
+      }
+    }
+  },
+  "components": {
+    "parameters": {
+      "ptyId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "taskId": {
+        "name": "id",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "provider": {
+        "name": "provider",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      },
+      "sessionId": {
+        "name": "sessionId",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" }
+      }
+    }
+  }
+}

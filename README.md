@@ -57,6 +57,19 @@ Edit `triggers/index.js`. The server watches the `triggers/` folder and hot-relo
 
 An example trigger is included that highlights the PTY in the UI when a `proceed (y)?` prompt is detected.
 
+Trigger `onMatch(ctx)` handlers can also orchestrate other sessions via `ctx.hooks`:
+
+- `ctx.hooks.writeTo(ptyId, data)` — write input to another running PTY
+- `ctx.hooks.listPtys()` — inspect current PTY summaries
+- `ctx.hooks.spawnShell({ cwd?, name? })` — spawn a new tmux-backed shell PTY
+
+## Agent API
+
+Use the current UI API surface directly for agents:
+
+- HTTP + WS reference: [docs/agent-api-reference.md](docs/agent-api-reference.md)
+- OpenAPI spec: [docs/openapi.json](docs/openapi.json)
+
 ## Configuration
 
 Environment variables:

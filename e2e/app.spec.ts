@@ -7,19 +7,99 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const E2E_TOKEN = process.env.E2E_AGMUX_TOKEN ?? "e2e-token";
+const TRIGGERS_FILE = path.resolve("triggers/index.js");
+const SWARM_TRIGGER_MODULE = String.raw`export const triggers = [
+  {
+    name: "proceed_prompt",
+    scope: "chunk",
+    pattern: /proceed \(y\)\?/i,
+    cooldownMs: 1500,
+    onMatch: ({ ptyId, ts, match, line, emit }) => {
+      emit({
+        type: "trigger_fired",
+        ptyId,
+        trigger: "proceed_prompt",
+        match: match[0] ?? "",
+        line,
+        ts,
+      });
+      emit({ type: "pty_highlight", ptyId, reason: "trigger:proceed_prompt", ttlMs: 2000 });
+    },
+  },
+  (() => {
+    const swarm = {
+      controllerPtyId: null,
+      workerPtyId: null,
+      responded: false,
+      launching: false,
+    };
+    return {
+      name: "swarm_spawn_worker",
+      scope: "chunk",
+      pattern: /START-SWARM/,
+      cooldownMs: 2000,
+      onMatch: async ({ ptyId, hooks }) => {
+        if (swarm.launching) return;
+        if (swarm.workerPtyId && !swarm.responded) return;
+        swarm.launching = true;
+        swarm.controllerPtyId = ptyId;
+        swarm.responded = false;
+        try {
+          const worker = await hooks.spawnShell({ name: "worker:spawned-by-hook" });
+          swarm.workerPtyId = worker.ptyId;
+          hooks.writeTo(worker.ptyId, "echo WORKER_READY\n");
+        } finally {
+          swarm.launching = false;
+        }
+      },
+    };
+  })(),
+  (() => {
+    return {
+      name: "swarm_worker_ready",
+      scope: "line",
+      pattern: /^WORKER_READY$/,
+      onMatch: ({ ptyId, hooks }) => {
+        hooks.writeTo(ptyId, "echo WORKER_ACK_FROM_HOOK\n");
+      },
+    };
+  })(),
+];`;
 
 async function readSessionToken(_page: Page): Promise<string> {
   return E2E_TOKEN;
 }
 
-async function listRunningPtys(page: Page, token: string): Promise<string[]> {
+type E2EPty = {
+  id: string;
+  status: string;
+  name: string;
+};
+
+async function listPtys(page: Page, token: string): Promise<E2EPty[]> {
   const res = await page.request.get(`/api/ptys?token=${encodeURIComponent(token)}`, { timeout: 5_000 });
   if (!res.ok()) return [];
-  const json = (await res.json()) as { ptys?: Array<{ id?: unknown; status?: unknown }> };
+  const json = (await res.json()) as { ptys?: Array<{ id?: unknown; status?: unknown; name?: unknown }> };
   return (json.ptys ?? [])
-    .filter((p) => p?.status === "running")
-    .map((p) => p?.id)
-    .filter((id): id is string => typeof id === "string");
+    .filter((p): p is { id: string; status?: unknown; name?: unknown } => typeof p?.id === "string")
+    .map((p) => ({
+      id: p.id,
+      status: typeof p.status === "string" ? p.status : "unknown",
+      name: typeof p.name === "string" ? p.name : "",
+    }));
+}
+
+async function listRunningPtys(page: Page, token: string): Promise<string[]> {
+  const ptys = await listPtys(page, token);
+  return ptys.filter((p) => p.status === "running").map((p) => p.id);
+}
+
+async function writeTriggersAndReload(page: Page, token: string, moduleSource: string): Promise<void> {
+  fs.writeFileSync(TRIGGERS_FILE, moduleSource, "utf8");
+  const res = await page.request.post(`/api/triggers/reload?token=${encodeURIComponent(token)}`, { timeout: 10_000 });
+  if (!res.ok()) {
+    throw new Error(`failed to reload triggers: HTTP ${res.status()} ${await res.text()}`);
+  }
 }
 
 async function killPty(page: Page, token: string, ptyId: string): Promise<void> {
@@ -161,6 +241,63 @@ test("can create a PTY and fires proceed trigger", async ({ page }) => {
   if (ptyId) {
     const token = await readSessionToken(page);
     await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  }
+});
+
+test("trigger hooks can spawn a worker PTY and react to worker output", async ({ page }) => {
+  const token = await readSessionToken(page);
+  const originalTriggers = fs.readFileSync(TRIGGERS_FILE, "utf8");
+
+  let controllerId: string | null = null;
+  let workerId: string | null = null;
+  try {
+    await writeTriggersAndReload(page, token, SWARM_TRIGGER_MODULE);
+
+    await page.goto("/?nosup=1");
+    await page.getByRole("button", { name: "New PTY" }).click();
+    await expect(page.locator(".pty-item.active")).toHaveCount(1);
+
+    controllerId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    expect(controllerId).toBeTruthy();
+    if (!controllerId) throw new Error("controller PTY id not found");
+
+    await page.locator(".term-pane:not(.hidden) .xterm").click();
+    await page.keyboard.type("echo START-SWARM");
+    await page.keyboard.press("Enter");
+
+    await expect
+      .poll(
+        async () => {
+          const ptys = await listPtys(page, token);
+          return ptys.some((p) => p.status === "running" && p.name.includes("worker:spawned-by-hook"));
+        },
+        { timeout: 30_000 },
+      )
+      .toBe(true);
+
+    const ptys = await listPtys(page, token);
+    const workerPty = ptys.find((p) => p.status === "running" && p.name.includes("worker:spawned-by-hook"));
+    expect(workerPty?.name).toContain("worker:spawned-by-hook");
+    workerId = workerPty?.id ?? null;
+    expect(workerId).toBeTruthy();
+    if (!workerId) throw new Error("worker PTY id not found");
+
+    await page.locator(`.pty-item[data-pty-id="${workerId}"]`).click();
+    await expect
+      .poll(
+        async () =>
+          page.evaluate(() => {
+            const d = (window as any).__agmux?.dumpActive;
+            return typeof d === "function" ? String(d()) : "";
+          }),
+        { timeout: 30_000 },
+      )
+      .toContain("WORKER_ACK_FROM_HOOK");
+  } finally {
+    fs.writeFileSync(TRIGGERS_FILE, originalTriggers, "utf8");
+    await page.request.post(`/api/triggers/reload?token=${encodeURIComponent(token)}`).catch(() => {});
+    if (workerId) await killPty(page, token, workerId);
+    if (controllerId) await killPty(page, token, controllerId);
   }
 });
 
