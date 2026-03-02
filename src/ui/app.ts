@@ -128,6 +128,7 @@ let mobilePreviewState: MobileInactivePreview | null = null;
 let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
 let mobileTerminalSnapshotSeq = 0;
 let mobileTerminalSnapshotPendingRequestId: string | null = null;
+let desktopHydrationPending: { requestId: string; ptyId: string } | null = null;
 let mobileSnapshotRestorePtyId: string | null = loadSavedMobileSnapshotPtyId();
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
@@ -519,7 +520,6 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnFollow = $("btn-follow") as HTMLButtonElement;
-const tmuxSessionSelect = $("tmux-session-select") as HTMLSelectElement;
 const btnSidebarToggle = $("btn-sidebar-toggle") as HTMLButtonElement;
 btnNew.disabled = true;
 btnFollow.classList.remove("visible");
@@ -727,7 +727,9 @@ let authToken = "";
 let ws: WebSocket | null = null;
 const TERMINAL_SCROLLBACK_LINES = 50_000;
 const MOBILE_TMUX_SNAPSHOT_LINES = 4_000;
+const DESKTOP_TMUX_HYDRATION_LINES = 4_000;
 let tmuxSessions: TmuxSessionInfo[] = [];
+let selectedTmuxSessionKey = "";
 
 const placeholderEl = document.createElement("div");
 placeholderEl.className = "terminal-placeholder";
@@ -939,6 +941,9 @@ function removeTerm(ptyId: string): void {
   ptyStateChangedAt.delete(ptyId);
   subscribed.delete(ptyId);
   pendingResizeByPtyId.delete(ptyId);
+  if (desktopHydrationPending?.ptyId === ptyId) {
+    desktopHydrationPending = null;
+  }
 }
 
 function wsUrl(): string {
@@ -1006,6 +1011,7 @@ function connectWs(): void {
   ws = new WebSocket(wsUrl());
 
   ws.addEventListener("open", () => {
+    desktopHydrationPending = null;
     wsReconnectDelay = 0;
     addEvent(`WS connected`);
     wsConnected = true;
@@ -1033,6 +1039,7 @@ function connectWs(): void {
   });
 
   ws.addEventListener("close", () => {
+    desktopHydrationPending = null;
     addEvent(`WS disconnected`);
     wsConnected = false;
     scheduleMobileRender();
@@ -1268,33 +1275,54 @@ function onServerMsg(msg: ServerMsg): void {
     return;
   }
   if (msg.type === "mobile_snapshot_response") {
-    if (msg.requestId !== mobileTerminalSnapshotPendingRequestId) return;
-    mobileTerminalSnapshotPendingRequestId = null;
-    if (!mobileTerminalSnapshot || msg.ptyId !== mobileTerminalSnapshot.ptyId) return;
-    if (!msg.ok) {
+    if (msg.requestId === mobileTerminalSnapshotPendingRequestId) {
+      mobileTerminalSnapshotPendingRequestId = null;
+      if (!mobileTerminalSnapshot || msg.ptyId !== mobileTerminalSnapshot.ptyId) return;
+      if (!msg.ok) {
+        mobileTerminalSnapshot = {
+          ...mobileTerminalSnapshot,
+          capturedAt: "",
+          text: "",
+          lineCount: 0,
+          truncated: false,
+          loading: false,
+          error: msg.error,
+        };
+        renderMobileViewState();
+        return;
+      }
       mobileTerminalSnapshot = {
         ...mobileTerminalSnapshot,
-        capturedAt: "",
-        text: "",
-        lineCount: 0,
-        truncated: false,
+        seq: ++mobileTerminalSnapshotSeq,
+        capturedAt: new Date(msg.capturedAt).toLocaleTimeString(),
+        text: msg.text,
+        lineCount: msg.lineCount,
+        truncated: msg.truncated,
         loading: false,
-        error: msg.error,
+        error: null,
       };
       renderMobileViewState();
       return;
     }
-    mobileTerminalSnapshot = {
-      ...mobileTerminalSnapshot,
-      seq: ++mobileTerminalSnapshotSeq,
-      capturedAt: new Date(msg.capturedAt).toLocaleTimeString(),
-      text: msg.text,
-      lineCount: msg.lineCount,
-      truncated: msg.truncated,
-      loading: false,
-      error: null,
-    };
-    renderMobileViewState();
+
+    if (desktopHydrationPending && msg.requestId === desktopHydrationPending.requestId) {
+      const pendingPtyId = desktopHydrationPending.ptyId;
+      desktopHydrationPending = null;
+      if (!msg.ok) return;
+      const st = terms.get(msg.ptyId);
+      if (!st) return;
+      if (msg.ptyId !== pendingPtyId) return;
+      if (termBufferHasRenderableText(st)) return;
+      if (!msg.text) return;
+      st.term.write(msg.text, () => {
+        if (msg.ptyId === activePtyId) {
+          updateFollowButtonVisibility();
+          scheduleReflow();
+          requestAnimationFrame(() => refreshTermViewport(st));
+        }
+        if (mobileViewport) scheduleMobileRender();
+      });
+    }
     return;
   }
 }
@@ -1304,13 +1332,19 @@ function tmuxSessionKey(s: TmuxSessionInfo): string {
 }
 
 function selectedTmuxSession(): TmuxSessionInfo | null {
-  const key = tmuxSessionSelect.value;
+  const key = selectedTmuxSessionKey;
   if (!key) return null;
   return tmuxSessions.find((s) => tmuxSessionKey(s) === key) ?? null;
 }
 
+function tmuxSessionLabel(s: TmuxSessionInfo): string {
+  const stamp = s.createdAt ? new Date(s.createdAt).toLocaleTimeString() : "";
+  const win = s.windows == null ? "" : `, ${s.windows}w`;
+  return `${s.name} [${s.server}${win}]${stamp ? ` @ ${stamp}` : ""}`;
+}
+
 async function refreshTmuxSessions(): Promise<void> {
-  const prev = tmuxSessionSelect.value;
+  const prev = selectedTmuxSessionKey;
   const res = await authFetch("/api/tmux/sessions", { cache: "no-store" });
   if (!res.ok) {
     addEvent(`Failed to list tmux sessions: ${await readApiError(res)}`);
@@ -1323,28 +1357,15 @@ async function refreshTmuxSessions(): Promise<void> {
   }
 
   tmuxSessions = json.sessions as TmuxSessionInfo[];
-  tmuxSessionSelect.textContent = "";
-
   if (tmuxSessions.length === 0) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "(no tmux sessions)";
-    tmuxSessionSelect.appendChild(opt);
-    tmuxSessionSelect.value = "";
+    selectedTmuxSessionKey = "";
+    if (settingsModalState) renderSettingsModalState();
     return;
   }
-
-  for (const s of tmuxSessions) {
-    const opt = document.createElement("option");
-    opt.value = tmuxSessionKey(s);
-    const stamp = s.createdAt ? new Date(s.createdAt).toLocaleTimeString() : "";
-    const win = s.windows == null ? "" : `, ${s.windows}w`;
-    opt.textContent = `${s.name} [${s.server}${win}]${stamp ? ` @ ${stamp}` : ""}`;
-    tmuxSessionSelect.appendChild(opt);
-  }
-  tmuxSessionSelect.value = tmuxSessions.some((s) => tmuxSessionKey(s) === prev)
+  selectedTmuxSessionKey = tmuxSessions.some((s) => tmuxSessionKey(s) === prev)
     ? prev
     : tmuxSessionKey(tmuxSessions[0]);
+  if (settingsModalState) renderSettingsModalState();
 }
 
 async function fetchTmuxSessionWarnings(selected: TmuxSessionInfo): Promise<string[]> {
@@ -3716,22 +3737,6 @@ btnFollow.addEventListener("click", () => {
   scrollActiveTerminalToBottom();
 });
 
-tmuxSessionSelect.addEventListener("change", () => {
-  const selected = selectedTmuxSession();
-  if (!selected) return;
-  checkSelectedTmuxSessionAndMaybeWarn()
-    .then(() => attachTmuxSession(selected))
-    .catch((err) => {
-      addEvent(`Attach tmux failed: ${errorMessage(err)}`);
-    });
-});
-
-tmuxSessionSelect.addEventListener("focus", () => {
-  refreshTmuxSessions().catch((err) => {
-    addEvent(`Failed to refresh tmux sessions: ${errorMessage(err)}`);
-  });
-});
-
 
 function toggleInputHistory(): void {
   if (!activePtyId) return;
@@ -3783,6 +3788,22 @@ function scrollActiveTerminalToBottom(): void {
   if (mobileViewport) scheduleMobileRender();
 }
 
+function termBufferHasRenderableText(st: TermState, maxLines = 400): boolean {
+  const buf = st.term.buffer.active;
+  const start = Math.max(0, buf.length - maxLines);
+  for (let i = start; i < buf.length; i++) {
+    const line = buf.getLine(i);
+    if (!line) continue;
+    if (line.translateToString(true).trim().length > 0) return true;
+  }
+  return false;
+}
+
+function refreshTermViewport(st: TermState): void {
+  if (st.term.rows <= 0) return;
+  st.term.refresh(0, st.term.rows - 1);
+}
+
 // Force xterm.js to reflow the active terminal buffer.  A plain refresh()
 // only re-renders the viewport without recalculating line wrapping, which
 // leaves garbled output after reconnects and resizes.  Scrolling by +1/−1
@@ -3793,6 +3814,7 @@ function reflowActiveTerm(): void {
   if (!st) return;
   st.term.scrollLines(-1);
   st.term.scrollLines(1);
+  refreshTermViewport(st);
 }
 
 // Debounced reflow: coalesces multiple writes within a single frame into one
@@ -3842,6 +3864,27 @@ function fitAndResizeActive(): void {
   // First subscribe only after we have a concrete fitted size. This avoids
   // tmux snapshot/output replay being wrapped to stale/default dimensions.
   subscribeIfNeeded(activePtyId);
+  maybeHydrateActiveDesktopTerm();
+}
+
+function maybeHydrateActiveDesktopTerm(): void {
+  if (mobileViewport || !activePtyId) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const summary = ptys.find((p) => p.id === activePtyId);
+  if (!summary || summary.status !== "running" || summary.backend !== "tmux") return;
+  const st = terms.get(activePtyId);
+  if (!st) return;
+  if (termBufferHasRenderableText(st)) return;
+  if (desktopHydrationPending?.ptyId === activePtyId) return;
+
+  const requestId = `desktop-hydration-${Date.now()}-${activePtyId}`;
+  desktopHydrationPending = { requestId, ptyId: activePtyId };
+  sendWsMessage({
+    type: "mobile_snapshot_request",
+    requestId,
+    ptyId: activePtyId,
+    lines: DESKTOP_TMUX_HYDRATION_LINES,
+  });
 }
 
 const ro = new ResizeObserver(() => {
@@ -3977,6 +4020,13 @@ function settingsPreviewPath(template: string): string {
 function renderSettingsModalState(): void {
   const state = settingsModalState;
   const themeOptions = [...THEMES].map(([key, theme]) => ({ key, name: theme.name }));
+  const tmuxOptions = tmuxSessions.map((session) => ({
+    key: tmuxSessionKey(session),
+    label: tmuxSessionLabel(session),
+  }));
+  if (tmuxOptions.length === 0) {
+    tmuxOptions.push({ key: "", label: "(no tmux sessions)" });
+  }
   const model: SettingsModalViewModel | null = state
     ? {
       worktreePathTemplate: state.worktreePathTemplate,
@@ -3984,6 +4034,8 @@ function renderSettingsModalState(): void {
       saving: state.saving,
       themeKey: activeThemeKey,
       themes: themeOptions,
+      tmuxSessionKey: tmuxOptions.some((opt) => opt.key === selectedTmuxSessionKey) ? selectedTmuxSessionKey : "",
+      tmuxSessions: tmuxOptions,
     }
     : null;
 
@@ -4007,6 +4059,22 @@ function renderSettingsModalState(): void {
     onThemeChange: (key) => {
       setTheme(key);
       renderSettingsModalState();
+    },
+    onTmuxSessionChange: (key) => {
+      selectedTmuxSessionKey = key;
+      renderSettingsModalState();
+      const selected = selectedTmuxSession();
+      if (!selected) return;
+      checkSelectedTmuxSessionAndMaybeWarn()
+        .then(() => attachTmuxSession(selected))
+        .catch((err) => {
+          addEvent(`Attach tmux failed: ${errorMessage(err)}`);
+        });
+    },
+    onTmuxSessionFocus: () => {
+      refreshTmuxSessions().catch((err) => {
+        addEvent(`Failed to refresh tmux sessions: ${errorMessage(err)}`);
+      });
     },
     onSave: () => {
       if (!settingsModalState || settingsModalState.saving) return;
@@ -4041,6 +4109,7 @@ function openSettingsModal(): void {
     dirty: false,
   };
   renderSettingsModalState();
+  void refreshTmuxSessions().catch(() => {});
 
   void authFetch("/api/settings")
     .then(async (res) => {

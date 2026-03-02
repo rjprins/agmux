@@ -182,7 +182,6 @@ body {
   gap: 8px;
 }
 
-#tmux-session-select,
 #theme-select {
   max-width: 180px;
   min-width: 120px;

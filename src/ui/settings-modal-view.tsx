@@ -11,6 +11,8 @@ export type SettingsModalViewModel = {
   saving: boolean;
   themeKey: string;
   themes: ThemeOption[];
+  tmuxSessionKey: string;
+  tmuxSessions: Array<{ key: string; label: string }>;
 };
 
 export type SettingsModalHandlers = {
@@ -19,6 +21,8 @@ export type SettingsModalHandlers = {
   onReset: () => void;
   onSave: () => void;
   onThemeChange: (key: string) => void;
+  onTmuxSessionChange: (key: string) => void;
+  onTmuxSessionFocus: () => void;
 };
 
 export function renderSettingsModal(
@@ -56,13 +60,30 @@ export function renderSettingsModal(
         <label className="launch-modal-label">
           Theme
           <select
-            className="launch-modal-input"
+            className="launch-modal-select"
             value={model.themeKey}
             onChange={(ev) => handlers.onThemeChange((ev.target as HTMLSelectElement).value)}
           >
             {model.themes.map((t) => (
               <option key={t.key} value={t.key}>
                 {t.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="launch-modal-label">
+          Attach tmux session
+          <select
+            id="tmux-session-select"
+            className="launch-modal-select"
+            value={model.tmuxSessionKey}
+            onChange={(ev) => handlers.onTmuxSessionChange((ev.target as HTMLSelectElement).value)}
+            onFocus={() => handlers.onTmuxSessionFocus()}
+          >
+            {model.tmuxSessions.map((session) => (
+              <option key={session.key} value={session.key}>
+                {session.label}
               </option>
             ))}
           </select>

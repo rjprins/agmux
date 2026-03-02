@@ -42,11 +42,22 @@ export const LOG_SESSION_CACHE_MS = Math.max(
   250,
   Number(process.env.AGMUX_LOG_SESSION_CACHE_MS ?? "5000") || 5000,
 );
+function originHostForBindHost(host: string): string | null {
+  const normalized = host.trim().toLowerCase();
+  if (!normalized || normalized === "0.0.0.0" || normalized === "::") return null;
+  if (normalized.includes(":") && !normalized.startsWith("[") && !normalized.endsWith("]")) {
+    return `[${normalized}]`;
+  }
+  return normalized;
+}
+
+const bindOriginHost = originHostForBindHost(HOST);
 export const WS_ALLOWED_ORIGINS = new Set(
   [
     `http://127.0.0.1:${PORT}`,
     `http://localhost:${PORT}`,
     `http://[::1]:${PORT}`,
+    ...(bindOriginHost ? [`http://${bindOriginHost}:${PORT}`] : []),
     ...(process.env.AGMUX_ALLOWED_ORIGINS ?? "")
       .split(",")
       .map((v) => v.trim())
