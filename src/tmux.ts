@@ -23,7 +23,7 @@ function debugActiveProcess(details: Record<string, unknown>): void {
   }
 }
 
-function validateShellExecutable(shell: string): string {
+export function validateShellExecutable(shell: string): string {
   const trimmed = shell.trim();
   if (!trimmed) {
     throw new Error("shell must not be empty");
