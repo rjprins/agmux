@@ -121,7 +121,16 @@ async function killAllRunningPtys(page: Page, token: string): Promise<void> {
 async function ensureNoRunningPtys(page: Page, token: string): Promise<void> {
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const running = await listRunningPtys(page, token);
-    if (running.length === 0) return;
+    if (running.length === 0) {
+      // Wait for any pending reconcile (fires ~250ms after a kill) to settle,
+      // then confirm the count is still zero before declaring success.
+      await page.waitForTimeout(500);
+      const stillRunning = await listRunningPtys(page, token);
+      if (stillRunning.length === 0) return;
+      await killAllRunningPtys(page, token);
+      await page.waitForTimeout(250);
+      continue;
+    }
     await killAllRunningPtys(page, token);
     await page.waitForTimeout(250);
   }

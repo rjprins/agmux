@@ -11,6 +11,7 @@ import {
   tmuxCreateLinkedSession,
   tmuxCreateWindow,
   tmuxKillSession,
+  tmuxKillWindow,
   tmuxListWindows,
   tmuxPaneCurrentPath,
   tmuxPruneDetachedLinkedSessions,
@@ -218,6 +219,12 @@ export function createRuntime(deps: RuntimeDeps) {
     }
 
     if (summary?.tmuxSession && summary.tmuxServer !== "default") {
+      // Kill the tmux window when the PTY owned a specific window (window-level
+      // target, e.g. "agmux:1"). Session-level targets (no ":") belong to
+      // user-managed sessions and must not be destroyed here.
+      if (summary.tmuxSession.includes(":")) {
+        tmuxKillWindow(summary.tmuxSession, summary.tmuxServer ?? "agmux").catch(() => {});
+      }
       void (async () => {
         await new Promise((r) => setTimeout(r, 250));
         await reconcileTmuxAttachments();
