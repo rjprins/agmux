@@ -10,7 +10,7 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_TMUX_SOCKET = process.env.PORT ? `agmux-${process.env.PORT}` : "agmux";
 const TMUX_SOCKET = process.env.AGMUX_TMUX_SOCKET ?? DEFAULT_TMUX_SOCKET;
 const TMUX_BASE_ARGS = ["-L", TMUX_SOCKET, "-f", "/dev/null"];
-const DEBUG_ACTIVE_PROCESS = process.env.AGMUX_DEBUG_ACTIVE_PROCESS !== "0";
+const DEBUG_ACTIVE_PROCESS = process.env.AGMUX_DEBUG_ACTIVE_PROCESS === "1";
 
 export type { TmuxServer, TmuxSessionCheck, TmuxSessionInfo };
 

@@ -3833,6 +3833,10 @@ function scheduleReflow(): void {
 function updateTerminalVisibility(): void {
   const hasActive = Boolean(activePtyId);
   placeholderEl.classList.toggle("hidden", hasActive);
+  if (!hasActive) {
+    const hasAny = ptys.some((p) => p.status === "running");
+    placeholderEl.textContent = hasAny ? "select a PTY" : "No sessions — click New PTY to start";
+  }
   updateFollowButtonVisibility();
   renderInputContextBar();
   for (const [ptyId, st] of terms.entries()) {
@@ -4125,8 +4129,10 @@ const btnSettings = $("btn-settings") as HTMLButtonElement;
 btnSettings.addEventListener("click", () => openSettingsModal());
 
 void (async () => {
+  let authed = false;
   try {
     await ensureAuthToken();
+    authed = true;
     await Promise.all([loadPtyInputMeta(), refreshWorktreeCache()]);
     connectWs();
     btnNew.disabled = false;
@@ -4134,6 +4140,7 @@ void (async () => {
   } catch (err) {
     addEvent(`Failed to initialize session: ${errorMessage(err)}`);
   }
+  if (!authed) return;
   await refreshList();
 
   // Restore previously active PTY for this browser tab.

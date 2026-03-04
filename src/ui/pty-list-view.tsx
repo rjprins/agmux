@@ -265,8 +265,14 @@ function PtyItemRow(
 
 export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyListHandlers): void {
   const hasRunning = (group: PtyGroup) => group.items.length > 0;
+  const isEmpty = model.groups.length === 0 && !model.inactive && !model.archived;
   render(
     <>
+      {isEmpty && (
+        <li className="pty-list-empty">
+          Click <strong>New PTY</strong> to start a session.
+        </li>
+      )}
       {model.groups.map((group) => (
         <Fragment key={`group:${group.key}`}>
           {model.showHeaders ? (

@@ -336,6 +336,13 @@ button:disabled {
   gap: 4px;
 }
 
+.pty-list-empty {
+  padding: 12px 10px;
+  color: var(--muted);
+  font-size: 0.85em;
+  line-height: 1.4;
+}
+
 .pty-item {
   border: 1px solid var(--line);
   border-radius: 6px;
