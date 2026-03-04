@@ -277,6 +277,10 @@ export function renderMobileView(
       nextActiveEl?.blur?.();
     });
   };
+  if (!model) {
+    render(null, root);
+    return;
+  }
   const sendComposerDraft = () => {
     handlers.onSendDraft(composerDraftEl?.value ?? model.inputDraft);
     dismissKeyboard();
@@ -286,10 +290,6 @@ export function renderMobileView(
     color: model.historyButtonText,
     borderColor: model.historyButtonBorder,
   };
-  if (!model) {
-    render(null, root);
-    return;
-  }
   const selectableRunning = model.running.filter((session) => !session.active);
 
   render(

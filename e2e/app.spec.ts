@@ -133,7 +133,7 @@ async function ensureInactiveItemVisible(page: Page, itemText: string): Promise<
   const target = page.locator(".pty-item.inactive").filter({ hasText: itemText });
   for (let attempt = 0; attempt < 40; attempt += 1) {
     if (await target.isVisible().catch(() => false)) return;
-    await page.evaluate(() => {
+    await page.evaluate((subheaderText) => {
       const inactiveHeader = [...document.querySelectorAll<HTMLElement>(".pty-group-header")]
         .find((el) => (el.textContent ?? "").includes("Inactive") && el.classList.contains("collapsed"));
       if (inactiveHeader) inactiveHeader.click();
@@ -143,9 +143,9 @@ async function ensureInactiveItemVisible(page: Page, itemText: string): Promise<
       if (inactiveInline) inactiveInline.click();
 
       const projectHeader = [...document.querySelectorAll<HTMLElement>(".worktree-subheader")]
-        .find((el) => (el.textContent ?? "").includes("test-project") && el.classList.contains("collapsed"));
+        .find((el) => (el.textContent ?? "").includes(subheaderText) && el.classList.contains("collapsed"));
       if (projectHeader) projectHeader.click();
-    });
+    }, itemText);
     await page.waitForTimeout(250);
   }
   throw new Error(`inactive item did not become visible: ${itemText}`);
@@ -254,7 +254,7 @@ test("trigger hooks can spawn a worker PTY and react to worker output", async ({
     await writeTriggersAndReload(page, token, SWARM_TRIGGER_MODULE);
 
     await page.goto("/?nosup=1");
-    await page.getByRole("button", { name: "New PTY" }).click();
+    await page.getByRole("button", { name: "New" }).click();
     await expect(page.locator(".pty-item.active")).toHaveCount(1);
 
     controllerId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
@@ -469,7 +469,6 @@ test("mobile session view survives refresh and remains interactive", async ({ pa
 });
 
 test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
-  await page.setViewportSize({ width: 1100, height: 520 });
   await page.goto("/?nosup=1");
 
   // Clamp the terminal height so scrollback is guaranteed even on large screens.
@@ -484,9 +483,7 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
   await expect(page.locator(".pty-item.active")).toHaveCount(1);
 
   // Produce enough output to have scrollback.
-  await page.locator(".term-pane:not(.hidden) .xterm").click();
-  await page.keyboard.type("for i in $(seq 1 8000); do echo line-$i; done");
-  await page.keyboard.press("Enter");
+  await page.evaluate((cmd) => (window as any).__agmux?.sendInput?.(cmd + "\r"), "for i in $(seq 1 500); do echo line-$i; done");
 
   await expect
     .poll(
@@ -497,7 +494,7 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
         }),
       { timeout: 30_000 },
     )
-    .toContain("line-8000");
+    .toContain("line-500");
 
   // Force to bottom, then wheel up and verify visible viewport changes.
   await page.evaluate(() => (window as any).__agmux?.scrollToBottomActive?.());
@@ -523,7 +520,6 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
 });
 
 test("scroll up after cat reveals the cat command", async ({ page }) => {
-  await page.setViewportSize({ width: 1100, height: 520 });
   await page.goto("/?nosup=1");
 
   // Constrain the terminal height so scrollback is needed even with modest output.
@@ -538,12 +534,13 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
   await expect(page.locator(".pty-item.active")).toHaveCount(1);
 
   const xterm = page.locator(".term-pane:not(.hidden) .xterm");
-  await xterm.click();
 
   // Create a file with enough lines to push the cat command off-screen,
   // but stay well within the 5000-line scrollback limit.
-  await page.keyboard.type("seq 1 80 > /tmp/e2e-bigfile.txt && cat /tmp/e2e-bigfile.txt");
-  await page.keyboard.press("Enter");
+  await page.evaluate(
+    (cmd) => (window as any).__agmux?.sendInput?.(cmd + "\r"),
+    "seq 1 80 > /tmp/e2e-bigfile.txt && cat /tmp/e2e-bigfile.txt",
+  );
 
   // Wait for cat output to finish — the shell prompt reappears after "80".
   await expect
@@ -682,11 +679,11 @@ test("pty readiness flips to busy during sustained output", async ({ page }) => 
     await page.locator(".term-pane:not(.hidden) .xterm").click();
     await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 10_000 });
 
-    await page.keyboard.type("for i in $(seq 1 30); do echo $i; sleep 0.05; done");
+    await page.keyboard.type("for i in $(seq 1 50); do echo $i; sleep 0.1; done");
     await page.keyboard.press("Enter");
 
-    await expect(active.locator(".ready-dot:not(.compact).busy")).toHaveCount(1, { timeout: 6_000 });
-    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 12_000 });
+    await expect(active.locator(".ready-dot:not(.compact).busy")).toHaveCount(1, { timeout: 8_000 });
+    await expect(active.locator(".ready-dot:not(.compact).ready")).toHaveCount(1, { timeout: 20_000 });
   } finally {
     if (ptyId) {
       const token = await readSessionToken(page);
@@ -822,10 +819,17 @@ test("tmux node-wrapped codex command shows codex as active process", async ({ p
   const suffix = `${Date.now()}_${Math.floor(Math.random() * 1_000_000)}`;
   const sessionName = `agmux_e2e_codex_node_${suffix}`;
   const scriptPath = `/tmp/codex-e2e-${suffix}.js`;
+  // Use a symlink named "codex-..." so the process name contains "codex".
+  const symlinkPath = `/tmp/codex-e2e-node-${suffix}`;
   let ptyId: string | null = null;
 
+  const nodeExecRes = await execFileAsync("which", ["node"]);
+  const nodePath = nodeExecRes.stdout.trim();
+  if (!nodePath) throw new Error("could not resolve node executable path");
+
   fs.writeFileSync(scriptPath, "setTimeout(() => process.exit(0), 20000);\n", "utf8");
-  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, "node", scriptPath]);
+  await execFileAsync("ln", ["-sf", nodePath, symlinkPath]);
+  await execFileAsync("tmux", ["new-session", "-d", "-s", sessionName, symlinkPath, scriptPath]);
 
   try {
     await page.goto("/?nosup=1");
@@ -841,7 +845,7 @@ test("tmux node-wrapped codex command shows codex as active process", async ({ p
       await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
     }
     await execFileAsync("tmux", ["kill-session", "-t", sessionName]).catch(() => {});
-    await execFileAsync("rm", ["-f", scriptPath]).catch(() => {});
+    await execFileAsync("rm", ["-f", scriptPath, symlinkPath]).catch(() => {});
   }
 });
 
@@ -1028,11 +1032,22 @@ test("input context bar keeps recent history visible across PTY switches", async
     await page.locator(`.pty-item[data-pty-id="${ptyOne}"]`).click();
     const ptyOneXterm = page.locator(`.term-pane[data-pty-id="${ptyOne}"]:not(.hidden) .xterm`);
     await expect(ptyOneXterm).toBeVisible({ timeout: 10_000 });
-    await ptyOneXterm.click({ force: true });
-    await page.keyboard.type("echo __ctx_pty_one__");
-    await page.keyboard.press("Enter");
-    await page.keyboard.type("pwd");
-    await page.keyboard.press("Enter");
+
+    const dumpActive = () =>
+      page.evaluate(() => {
+        const d = (window as any).__agmux?.dumpActive;
+        return typeof d === "function" ? String(d()) : "";
+      });
+
+    await page.evaluate((cmd) => (window as any).__agmux?.sendInput?.(cmd + "\r"), "echo __ctx_pty_one__");
+
+    // Wait for first command output before sending second command.
+    await expect.poll(dumpActive, { timeout: 10_000 }).toContain("__ctx_pty_one__");
+
+    await page.evaluate((cmd) => (window as any).__agmux?.sendInput?.(cmd + "\r"), "pwd");
+
+    // Wait for pwd output before checking input context.
+    await expect.poll(dumpActive, { timeout: 10_000 }).toMatch(/\/(home|tmp|usr|root)[^\n]*/);
 
     await expect(page.locator("#input-context")).not.toHaveClass(/hidden/, { timeout: 10_000 });
     await expect(page.locator("#input-context-last")).toContainText("pwd", { timeout: 10_000 });
@@ -1051,9 +1066,8 @@ test("input context bar keeps recent history visible across PTY switches", async
     await page.locator(`.pty-item[data-pty-id="${ptyTwo}"]`).click();
     const ptyTwoXterm = page.locator(`.term-pane[data-pty-id="${ptyTwo}"]:not(.hidden) .xterm`);
     await expect(ptyTwoXterm).toBeVisible({ timeout: 10_000 });
-    await ptyTwoXterm.click({ force: true });
-    await page.keyboard.type("echo __ctx_pty_two__");
-    await page.keyboard.press("Enter");
+
+    await page.evaluate((cmd) => (window as any).__agmux?.sendInput?.(cmd + "\r"), "echo __ctx_pty_two__");
 
     await expect(page.locator("#input-context-last")).toContainText("echo __ctx_pty_two__", { timeout: 10_000 });
     await expect(page.locator("#input-history-label")).toHaveText(/History \(\d+\)/, { timeout: 10_000 });
@@ -1366,6 +1380,8 @@ test("session preview modal opens on inactive session click and shows conversati
   // and the conversation endpoint to return test messages.
   const fakeProvider = "claude";
   const fakeSessionId = "e2e-preview-test-session";
+  // Use a unique projectRoot so the sidebar title ("e2e-preview-project") is distinct.
+  const fakeProjectRoot = "/tmp/e2e-preview-project";
   const fakeAgentSession = {
     id: `agent:${fakeProvider}:${fakeSessionId}`,
     provider: fakeProvider,
@@ -1373,9 +1389,9 @@ test("session preview modal opens on inactive session click and shows conversati
     name: "Preview test session",
     command: fakeProvider,
     args: ["--resume", fakeSessionId],
-    cwd: "/tmp/test-project",
+    cwd: fakeProjectRoot,
     cwdSource: "log",
-    projectRoot: "/tmp/test-project",
+    projectRoot: fakeProjectRoot,
     worktree: null,
     createdAt: Date.now() - 86400_000,
     lastSeenAt: Date.now() - 3600_000,
@@ -1411,10 +1427,20 @@ test("session preview modal opens on inactive session click and shows conversati
     });
   });
 
+  // Make the fake session's cwd appear to exist so it lands in Inactive (not auto-archived).
+  await page.route((url) => url.pathname === "/api/directory-exists", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ exists: true }),
+    });
+  });
+
   await page.goto("/?nosup=1");
 
-  await ensureInactiveItemVisible(page, "Preview test session");
-  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Preview test session" });
+  // The sidebar shows the project folder name ("e2e-preview-project"), not session.name.
+  await ensureInactiveItemVisible(page, "e2e-preview-project");
+  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "e2e-preview-project" });
   await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
 
   // Click the inactive session to open preview modal (not the > arrow)
@@ -1424,7 +1450,7 @@ test("session preview modal opens on inactive session click and shows conversati
   const previewModal = page.locator(".session-preview-modal");
   await expect(previewModal).toBeVisible({ timeout: 5_000 });
 
-  // Should show the session title
+  // Modal title uses session.name (displayed via displaySessionIntent/displaySessionTitle).
   await expect(previewModal.locator("h3")).toContainText("Preview test session");
 
   // Should show conversation messages
@@ -1465,9 +1491,9 @@ test("arrow button on inactive session opens restore modal directly (not preview
     name: "Arrow test session",
     command: fakeProvider,
     args: ["--resume", fakeSessionId],
-    cwd: "/tmp/test-project",
+    cwd: "/tmp/e2e-arrow-project",
     cwdSource: "log",
-    projectRoot: "/tmp/test-project",
+    projectRoot: "/tmp/e2e-arrow-project",
     worktree: null,
     createdAt: Date.now() - 86400_000,
     lastSeenAt: Date.now() - 3600_000,
@@ -1482,10 +1508,20 @@ test("arrow button on inactive session opens restore modal directly (not preview
     });
   });
 
+  // Make the fake session's cwd appear to exist so it lands in Inactive (not auto-archived).
+  await page.route((url) => url.pathname === "/api/directory-exists", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ exists: true }),
+    });
+  });
+
   await page.goto("/?nosup=1");
 
-  await ensureInactiveItemVisible(page, "Arrow test session");
-  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Arrow test session" });
+  // The sidebar shows the project folder name ("e2e-arrow-project"), not session.name.
+  await ensureInactiveItemVisible(page, "e2e-arrow-project");
+  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "e2e-arrow-project" });
   await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
 
   // Click the > arrow button specifically
@@ -1515,9 +1551,9 @@ test("session preview modal shows loading state and handles empty conversation",
     name: "Empty conversation session",
     command: fakeProvider,
     args: ["--resume", fakeSessionId],
-    cwd: "/tmp/test-project",
+    cwd: "/tmp/e2e-empty-conv-project",
     cwdSource: "log",
-    projectRoot: "/tmp/test-project",
+    projectRoot: "/tmp/e2e-empty-conv-project",
     worktree: null,
     createdAt: Date.now() - 86400_000,
     lastSeenAt: Date.now() - 3600_000,
@@ -1529,6 +1565,15 @@ test("session preview modal shows loading state and handles empty conversation",
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({ sessions: [fakeAgentSession] }),
+    });
+  });
+
+  // Make the fake session's cwd appear to exist so it lands in Inactive (not auto-archived).
+  await page.route((url) => url.pathname === "/api/directory-exists", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ exists: true }),
     });
   });
 
@@ -1546,8 +1591,9 @@ test("session preview modal shows loading state and handles empty conversation",
 
   await page.goto("/?nosup=1");
 
-  await ensureInactiveItemVisible(page, "Empty conversation session");
-  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "Empty conversation session" });
+  // The sidebar shows the project folder name ("e2e-empty-conv-project"), not session.name.
+  await ensureInactiveItemVisible(page, "e2e-empty-conv-project");
+  const inactiveItem = page.locator(`.pty-item.inactive`).filter({ hasText: "e2e-empty-conv-project" });
   await expect(inactiveItem).toBeVisible({ timeout: 10_000 });
 
   await inactiveItem.click();

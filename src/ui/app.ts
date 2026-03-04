@@ -4246,4 +4246,9 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
   scrollToBottomActive: () => {
     scrollActiveTerminalToBottom();
   },
+  sendInput: (data: string) => {
+    if (!activePtyId) return;
+    trackUserInput(activePtyId, data);
+    sendWsMessage({ type: "input", ptyId: activePtyId, data });
+  },
 };
