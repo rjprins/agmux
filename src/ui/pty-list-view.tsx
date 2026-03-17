@@ -100,6 +100,7 @@ export type PtyListHandlers = {
   onToggleWorktree: (groupKey: string, worktreeName: string) => void;
   onTogglePin: (groupKey: string) => void;
   onToggleInlineInactive: (groupKey: string) => void;
+  onOpenReactivateProject: (groupKey: string) => void;
   onOpenLaunch: (groupKey: string) => void;
   onOpenLaunchInWorktree: (groupKey: string, worktreePath: string) => void;
   onSelectPty: (ptyId: string) => void;
@@ -194,6 +195,10 @@ function TruncatedInactiveList(
   );
 }
 
+function flattenInactiveItems(group: { items: InactivePtyItem[]; worktrees: InactiveWorktreeSubgroup[] }): InactivePtyItem[] {
+  return [...group.items, ...group.worktrees.flatMap((wt) => wt.items)];
+}
+
 function ptyStyle(color: string): Record<string, string> {
   return { "--pty-color": color } as Record<string, string>;
 }
@@ -283,28 +288,43 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
             >
               <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
               <span>{group.label}</span>
-              <button
-                type="button"
-                className="group-action-btn"
-                title={group.pinned ? "Unpin" : "Pin"}
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  handlers.onTogglePin(group.key);
-                }}
-              >
-                {group.pinned ? "\u2605" : "\u2606"}
-              </button>
-              <button
-                type="button"
-                className="group-launch"
-                title="Launch agent"
-                onClick={(ev) => {
-                  ev.stopPropagation();
-                  handlers.onOpenLaunch(group.key);
-                }}
-              >
-                +
-              </button>
+              <span className="group-header-actions">
+                <button
+                  type="button"
+                  className="group-action-btn"
+                  title={group.pinned ? "Unpin" : "Pin"}
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    handlers.onTogglePin(group.key);
+                  }}
+                >
+                  {group.pinned ? "\u2605" : "\u2606"}
+                </button>
+                {group.inactiveTotal > 0 ? (
+                  <button
+                    type="button"
+                    className="group-reactivate-btn"
+                    title={`Reactivate session (${group.inactiveTotal} available)`}
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      handlers.onOpenReactivateProject(group.key);
+                    }}
+                  >
+                    {"\u21ba"}
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  className="group-launch"
+                  title="Launch agent"
+                  onClick={(ev) => {
+                    ev.stopPropagation();
+                    handlers.onOpenLaunch(group.key);
+                  }}
+                >
+                  +
+                </button>
+              </span>
             </li>
           ) : null}
 
@@ -315,72 +335,6 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                 {group.items.map((item) => (
                   <PtyItemRow key={item.id} item={item} handlers={handlers} />
                 ))}
-
-                {group.inactiveTotal > 0 && hasRunning(group) ? (
-                  <>
-                    <li
-                      className={`inline-inactive-divider${group.inlineInactiveExpanded ? "" : " collapsed"}`}
-                      onClick={() => handlers.onToggleInlineInactive(group.key)}
-                    >
-                      <span className="group-chevron">{group.inlineInactiveExpanded ? "\u25bc" : "\u25b6"}</span>
-                      <span>Inactive</span>
-                      <span className="group-count">{group.inactiveTotal}</span>
-                    </li>
-                    {group.inlineInactiveExpanded ? (
-                      <>
-                        <TruncatedInactiveList contextKey={`inline:${group.key}`} items={group.inactiveSessions} inWorktree={false} handlers={handlers} />
-                        {group.inactiveWorktrees.map((wt) => (
-                          <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
-                            <li
-                              className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
-                              title={wt.path}
-                              onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
-                            >
-                              <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
-                              <span>{wt.name}</span>
-                              <button
-                                type="button"
-                                className="worktree-launch"
-                                title="Launch agent in this worktree"
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  handlers.onOpenLaunchInWorktree(group.key, wt.path);
-                                }}
-                              >
-                                +
-                              </button>
-                            </li>
-                            {wt.collapsed
-                              ? null
-                              : <TruncatedInactiveList contextKey={`inline-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
-                          </Fragment>
-                        ))}
-                      </>
-                    ) : null}
-                  </>
-                ) : null}
-
-                {group.inactiveTotal > 0 && !hasRunning(group) ? (
-                  <>
-                    <TruncatedInactiveList contextKey={`norun:${group.key}`} items={group.inactiveSessions} inWorktree={false} handlers={handlers} />
-                    {group.inactiveWorktrees.map((wt) => (
-                      <Fragment key={`inline-iwt:${group.key}::${wt.name}`}>
-                        <li
-                          className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
-                          title={wt.path}
-                          onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
-                        >
-                          <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
-                          <span>{wt.name}</span>
-                          <span className="group-count">{wt.items.length}</span>
-                        </li>
-                        {wt.collapsed
-                          ? null
-                          : <TruncatedInactiveList contextKey={`norun-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
-                      </Fragment>
-                    ))}
-                  </>
-                ) : null}
               </div>
             )}
         </Fragment>
@@ -403,79 +357,59 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                 {model.inactive.groups.map((group) => (
                   <Fragment key={`inactive-group:${group.key}`}>
                     <li
-                      className={`worktree-subheader${group.collapsed ? " collapsed" : ""}`}
+                      className="pty-group-header inactive-project-header"
                       title={group.title}
-                      onClick={() => handlers.onToggleInactiveGroup(group.key)}
                     >
-                      <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{group.label}</span>
-                      <button
-                        type="button"
-                        className="group-action-btn"
-                        title="Pin"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onTogglePin(group.key);
-                        }}
-                      >
-                        {"\u2606"}
-                      </button>
-                      <button
-                        type="button"
-                        className="group-action-btn"
-                        title="Archive"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onArchive(group.key);
-                        }}
-                      >
-                        {"\u2193"}
-                      </button>
-                      <button
-                        type="button"
-                        className="group-launch"
-                        title="Launch agent"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onOpenLaunch(group.key);
-                        }}
-                      >
-                        +
-                      </button>
+                      <span className="group-header-actions">
+                        <button
+                          type="button"
+                          className="group-action-btn"
+                          title="Pin"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            handlers.onTogglePin(group.key);
+                          }}
+                        >
+                          {"\u2606"}
+                        </button>
+                        {group.total > 0 ? (
+                          <button
+                            type="button"
+                            className="group-reactivate-btn"
+                            title={`Reactivate session (${group.total} available)`}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              handlers.onOpenReactivateProject(group.key);
+                            }}
+                          >
+                            {"\u21ba"}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="group-action-btn"
+                          title="Archive"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            handlers.onArchive(group.key);
+                          }}
+                        >
+                          {"\u2193"}
+                        </button>
+                        <button
+                          type="button"
+                          className="group-launch"
+                          title="Launch agent"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            handlers.onOpenLaunch(group.key);
+                          }}
+                        >
+                          +
+                        </button>
+                      </span>
                     </li>
-                    {group.collapsed
-                      ? null
-                      : (
-                        <div className="group-body">
-                          <TruncatedInactiveList contextKey={`orphan:${group.key}`} items={group.items} inWorktree={false} handlers={handlers} />
-                          {group.worktrees.map((wt) => (
-                            <Fragment key={`inactive-wt:${group.key}::${wt.name}`}>
-                              <li
-                                className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
-                                title={wt.path}
-                                onClick={() => handlers.onToggleInactiveWorktree(group.key, wt.name)}
-                              >
-                                <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
-                                <span>{wt.name}</span>
-                                <button
-                                  type="button"
-                                  className="worktree-launch"
-                                  title="Launch agent in this worktree"
-                                  onClick={(ev) => {
-                                    ev.stopPropagation();
-                                    handlers.onOpenLaunchInWorktree(group.key, wt.path);
-                                  }}
-                                >
-                                  +
-                                </button>
-                              </li>
-                              {wt.collapsed
-                                ? null
-                                : <TruncatedInactiveList contextKey={`orphan-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
-                            </Fragment>
-                          ))}
-                        </div>
-                      )}
                   </Fragment>
                 ))}
               </>
@@ -501,57 +435,48 @@ export function renderPtyList(root: Element, model: PtyListModel, handlers: PtyL
                 {model.archived.groups.map((group) => (
                   <Fragment key={`archived-group:${group.key}`}>
                     <li
-                      className={`worktree-subheader${group.collapsed ? " collapsed" : ""}`}
+                      className="pty-group-header inactive-project-header"
                       title={group.title}
-                      onClick={() => handlers.onToggleArchivedGroup(group.key)}
                     >
-                      <span className="group-chevron">{group.collapsed ? "\u25b6" : "\u25bc"}</span>
                       <span>{group.label}</span>
-                      <button
-                        type="button"
-                        className="group-action-btn"
-                        title="Unarchive"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onUnarchive(group.key);
-                        }}
-                      >
-                        {"\u2191"}
-                      </button>
-                      <button
-                        type="button"
-                        className="group-launch"
-                        title="Launch agent (unarchives project)"
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          handlers.onOpenLaunch(group.key);
-                        }}
-                      >
-                        +
-                      </button>
+                      <span className="group-header-actions">
+                        {group.total > 0 ? (
+                          <button
+                            type="button"
+                            className="group-reactivate-btn"
+                            title={`Reactivate session (${group.total} available)`}
+                            onClick={(ev) => {
+                              ev.stopPropagation();
+                              handlers.onOpenReactivateProject(group.key);
+                            }}
+                          >
+                            {"\u21ba"}
+                          </button>
+                        ) : null}
+                        <button
+                          type="button"
+                          className="group-action-btn"
+                          title="Unarchive"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            handlers.onUnarchive(group.key);
+                          }}
+                        >
+                          {"\u2191"}
+                        </button>
+                        <button
+                          type="button"
+                          className="group-launch"
+                          title="Launch agent (unarchives project)"
+                          onClick={(ev) => {
+                            ev.stopPropagation();
+                            handlers.onOpenLaunch(group.key);
+                          }}
+                        >
+                          +
+                        </button>
+                      </span>
                     </li>
-                    {group.collapsed
-                      ? null
-                      : (
-                        <div className="group-body">
-                          <TruncatedInactiveList contextKey={`archived:${group.key}`} items={group.items} inWorktree={false} handlers={handlers} />
-                          {group.worktrees.map((wt) => (
-                            <Fragment key={`archived-wt:${group.key}::${wt.name}`}>
-                              <li
-                                className={`worktree-subheader${wt.collapsed ? " collapsed" : ""}`}
-                                title={wt.path}
-                                onClick={() => handlers.onToggleArchivedWorktree(group.key, wt.name)}
-                              >
-                                <span className="group-chevron">{wt.collapsed ? "\u25b6" : "\u25bc"}</span>
-                                <span>{wt.name}</span>
-                              </li>
-                              {wt.collapsed
-                                ? null
-                                : <TruncatedInactiveList contextKey={`archived-wt:${group.key}::${wt.name}`} items={wt.items} inWorktree={true} handlers={handlers} />}
-                            </Fragment>
-                          ))}
-                        </div>
-                      )}
                   </Fragment>
                 ))}
               </>

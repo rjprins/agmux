@@ -40,6 +40,10 @@ import {
   type SettingsModalViewModel,
 } from "./settings-modal-view";
 import {
+  renderReactivateProjectModal,
+  type ReactivateProjectModalViewModel,
+} from "./reactivate-project-modal-view";
+import {
   renderSessionPreviewModal,
   type SessionPreviewModalViewModel,
   type SessionPreviewMessage,
@@ -2293,6 +2297,237 @@ function displayInactiveSessionSubtitle(session: AgentSessionSummary): string {
 }
 
 // ---------------------------------------------------------------------------
+// Reactivate Project Modal
+// ---------------------------------------------------------------------------
+
+type ReactivateProjectModalState = {
+  groupKey: string;
+  selectedSessionId: string;
+  target: RestoreTargetChoice;
+  selectedWorktreePath: string;
+  customCwdValue: string;
+  newBranchValue: string;
+  worktreeOptions: Array<{ value: string; label: string }>;
+  previewMessages: SessionPreviewMessage[];
+  previewLoading: boolean;
+  restoring: boolean;
+};
+
+const reactivateProjectModalRoot = document.createElement("div");
+document.body.appendChild(reactivateProjectModalRoot);
+let reactivateProjectModalState: ReactivateProjectModalState | null = null;
+let reactivateProjectModalSeq = 0;
+let reactivateProjectPreviewSeq = 0;
+
+function closeReactivateProjectModal(): void {
+  reactivateProjectModalState = null;
+  renderReactivateProjectModal(reactivateProjectModalRoot, null, {
+    onClose: () => {},
+    onSelectSession: () => {},
+    onTargetChange: () => {},
+    onWorktreeChange: () => {},
+    onCustomCwdChange: () => {},
+    onNewBranchChange: () => {},
+    onHideSession: () => {},
+    onRestore: () => {},
+  });
+}
+
+function applyReactivateProjectSessionDefaults(state: ReactivateProjectModalState, session: AgentSessionSummary): void {
+  const matchedWt = session.worktree
+    ? knownWorktrees.find((w) => (w.branch || w.name) === session.worktree)
+    : null;
+  const suggestedWorktreePath = matchedWt?.path ?? "";
+  const worktreeAvailable = state.worktreeOptions.some((wt) => wt.value === suggestedWorktreePath);
+  state.target = worktreeAvailable ? "worktree" : "same_cwd";
+  state.selectedWorktreePath = worktreeAvailable
+    ? suggestedWorktreePath
+    : (state.worktreeOptions[0]?.value ?? "");
+  state.customCwdValue = session.cwd ?? session.projectRoot ?? state.groupKey;
+  state.newBranchValue = session.worktree ?? `restore-${Date.now()}`;
+}
+
+function loadReactivateProjectPreview(agentSessionId: string): void {
+  const session = agentSessions.find((x) => x.id === agentSessionId);
+  if (!session || !reactivateProjectModalState) return;
+  const previewSeq = ++reactivateProjectPreviewSeq;
+  reactivateProjectModalState.previewLoading = true;
+  reactivateProjectModalState.previewMessages = [];
+  renderReactivateProjectModalState();
+  void authFetch(`/api/agent-sessions/${encodeURIComponent(session.provider)}/${encodeURIComponent(session.providerSessionId)}/conversation`)
+    .then(async (res) => (res.ok ? res.json() : Promise.reject(new Error(await readApiError(res)))))
+    .then((data: { messages?: SessionPreviewMessage[] }) => {
+      if (!reactivateProjectModalState || previewSeq !== reactivateProjectPreviewSeq) return;
+      if (reactivateProjectModalState.selectedSessionId !== agentSessionId) return;
+      const messages = Array.isArray(data.messages) ? data.messages : [];
+      reactivateProjectModalState.previewMessages = messages.slice(-6);
+      reactivateProjectModalState.previewLoading = false;
+      renderReactivateProjectModalState();
+    })
+    .catch(() => {
+      if (!reactivateProjectModalState || previewSeq !== reactivateProjectPreviewSeq) return;
+      if (reactivateProjectModalState.selectedSessionId !== agentSessionId) return;
+      reactivateProjectModalState.previewMessages = [];
+      reactivateProjectModalState.previewLoading = false;
+      renderReactivateProjectModalState();
+    });
+}
+
+function renderReactivateProjectModalState(): void {
+  const state = reactivateProjectModalState;
+  if (!state) {
+    closeReactivateProjectModal();
+    return;
+  }
+  const sessions = getInactiveSessionsForProject(state.groupKey);
+  if (sessions.length === 0) {
+    closeReactivateProjectModal();
+    renderList();
+    return;
+  }
+  const selectedSession = sessions.find((session) => session.id === state.selectedSessionId) ?? sessions[0];
+  if (selectedSession.id !== state.selectedSessionId) {
+    state.selectedSessionId = selectedSession.id;
+    applyReactivateProjectSessionDefaults(state, selectedSession);
+    loadReactivateProjectPreview(selectedSession.id);
+  }
+
+  const model: ReactivateProjectModalViewModel = {
+    projectLabel: lastPathSegment(state.groupKey) || "(unknown project)",
+    projectPath: state.groupKey || undefined,
+    sessions: sessions.map((session) => ({
+      id: session.id,
+      title: displaySessionTitle(session),
+      subtitle: displaySessionSubtitle(session),
+      provider: capitalizeWord(session.provider),
+      providerSessionId: session.providerSessionId,
+      elapsed: timeAgo(session.lastSeenAt),
+      worktree: session.worktree ?? undefined,
+      firstInput: displaySessionIntent(session),
+      exitLabel: session.lastRestoredAt ? "restored before" : "available",
+    })),
+    selectedSessionId: state.selectedSessionId,
+    previewMessages: state.previewMessages,
+    previewLoading: state.previewLoading,
+    target: state.target,
+    sameCwdLabel: selectedSession.cwd
+      ? `Use last known location (${selectedSession.cwd})`
+      : "Use last known location",
+    worktreeOptions: state.worktreeOptions,
+    selectedWorktreePath: state.selectedWorktreePath,
+    customCwdValue: state.customCwdValue,
+    newBranchValue: state.newBranchValue,
+    restoring: state.restoring,
+  };
+
+  renderReactivateProjectModal(reactivateProjectModalRoot, model, {
+    onClose: () => {
+      closeReactivateProjectModal();
+    },
+    onSelectSession: (sessionId) => {
+      if (!reactivateProjectModalState || reactivateProjectModalState.restoring) return;
+      const session = sessions.find((item) => item.id === sessionId);
+      if (!session) return;
+      reactivateProjectModalState.selectedSessionId = sessionId;
+      applyReactivateProjectSessionDefaults(reactivateProjectModalState, session);
+      renderReactivateProjectModalState();
+      loadReactivateProjectPreview(sessionId);
+    },
+    onTargetChange: (target) => {
+      if (!reactivateProjectModalState) return;
+      reactivateProjectModalState.target = target;
+      renderReactivateProjectModalState();
+    },
+    onWorktreeChange: (pathValue) => {
+      if (!reactivateProjectModalState) return;
+      reactivateProjectModalState.selectedWorktreePath = pathValue;
+      renderReactivateProjectModalState();
+    },
+    onCustomCwdChange: (cwdValue) => {
+      if (!reactivateProjectModalState) return;
+      reactivateProjectModalState.customCwdValue = cwdValue;
+      renderReactivateProjectModalState();
+    },
+    onNewBranchChange: (branchValue) => {
+      if (!reactivateProjectModalState) return;
+      reactivateProjectModalState.newBranchValue = branchValue;
+      renderReactivateProjectModalState();
+    },
+    onHideSession: () => {
+      if (!reactivateProjectModalState || reactivateProjectModalState.restoring) return;
+      hiddenAgentSessionIds.add(reactivateProjectModalState.selectedSessionId);
+      saveHiddenAgentSessions();
+      reactivateProjectModalState.previewMessages = [];
+      reactivateProjectModalState.previewLoading = false;
+      renderList();
+      renderReactivateProjectModalState();
+    },
+    onRestore: () => {
+      if (!reactivateProjectModalState || reactivateProjectModalState.restoring) return;
+      const stateNow = reactivateProjectModalState;
+      let target: RestoreAgentTarget = { target: "same_cwd" };
+      if (stateNow.target === "worktree") {
+        if (!stateNow.selectedWorktreePath) return;
+        target = { target: "worktree", worktreePath: stateNow.selectedWorktreePath };
+      } else if (stateNow.target === "new_worktree") {
+        target = { target: "new_worktree", branch: stateNow.newBranchValue.trim() || `restore-${Date.now()}` };
+      } else if (stateNow.target === "custom_cwd") {
+        if (!stateNow.customCwdValue.trim()) return;
+        target = { target: "same_cwd", cwd: stateNow.customCwdValue.trim() };
+      }
+
+      stateNow.restoring = true;
+      renderReactivateProjectModalState();
+      void restoreAgentSession(stateNow.selectedSessionId, target).then((ok) => {
+        if (!reactivateProjectModalState || reactivateProjectModalState.selectedSessionId !== stateNow.selectedSessionId) return;
+        if (ok) {
+          closeReactivateProjectModal();
+          return;
+        }
+        reactivateProjectModalState.restoring = false;
+        renderReactivateProjectModalState();
+      });
+    },
+  });
+}
+
+function openReactivateProjectModal(groupKey: string): void {
+  const sessions = getInactiveSessionsForProject(groupKey);
+  if (sessions.length === 0) return;
+  const selectedSession = sessions[0];
+  const seq = ++reactivateProjectModalSeq;
+  reactivateProjectModalState = {
+    groupKey,
+    selectedSessionId: selectedSession.id,
+    target: "same_cwd",
+    selectedWorktreePath: "",
+    customCwdValue: selectedSession.cwd ?? selectedSession.projectRoot ?? groupKey,
+    newBranchValue: selectedSession.worktree ?? `restore-${Date.now()}`,
+    worktreeOptions: [],
+    previewMessages: [],
+    previewLoading: true,
+    restoring: false,
+  };
+  renderReactivateProjectModalState();
+  loadReactivateProjectPreview(selectedSession.id);
+
+  void authFetch("/api/worktrees")
+    .then(async (res) => (res.ok ? res.json() : Promise.reject(new Error(await readApiError(res)))))
+    .then((data: { worktrees?: Array<{ name: string; path: string }> }) => {
+      if (!reactivateProjectModalState || seq !== reactivateProjectModalSeq) return;
+      reactivateProjectModalState.worktreeOptions = buildRestoreWorktreeOptions(selectedSession, data.worktrees);
+      applyReactivateProjectSessionDefaults(reactivateProjectModalState, sessions.find((session) => session.id === reactivateProjectModalState!.selectedSessionId) ?? selectedSession);
+      renderReactivateProjectModalState();
+    })
+    .catch(() => {
+      if (!reactivateProjectModalState || seq !== reactivateProjectModalSeq) return;
+      reactivateProjectModalState.worktreeOptions = [];
+      if (reactivateProjectModalState.target === "worktree") reactivateProjectModalState.target = "same_cwd";
+      renderReactivateProjectModalState();
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Session Preview Modal
 // ---------------------------------------------------------------------------
 
@@ -2558,6 +2793,35 @@ function normalizeCwdGroupKey(cwd: string): string {
   const idx = cwd.indexOf("/.worktrees/");
   if (idx !== -1) return cwd.slice(0, idx);
   return cwd;
+}
+
+function agentSessionProjectKey(session: AgentSessionSummary): string {
+  const clientKey = session.cwd ? normalizeCwdGroupKey(session.cwd) : null;
+  return (clientKey && clientKey !== session.cwd) ? clientKey : (session.projectRoot ?? "");
+}
+
+function buildInactiveAgentSessionMap(activeAgentSessionIds: Set<string>): Map<string, AgentSessionSummary[]> {
+  const inactiveByProject = new Map<string, AgentSessionSummary[]>();
+  const sortedAgentSessions = [...agentSessions]
+    .filter((s) => !hiddenAgentSessionIds.has(s.id) && !activeAgentSessionIds.has(s.id))
+    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  for (const session of sortedAgentSessions) {
+    const key = agentSessionProjectKey(session);
+    const items = inactiveByProject.get(key) ?? [];
+    items.push(session);
+    inactiveByProject.set(key, items);
+  }
+  return inactiveByProject;
+}
+
+function getInactiveSessionsForProject(groupKey: string): AgentSessionSummary[] {
+  const activeAgentSessionIds = new Set(
+    ptys
+      .filter((p) => p.status === "running")
+      .map((p) => p.agentSessionId?.trim() ?? "")
+      .filter((id): id is string => id.length > 0),
+  );
+  return buildInactiveAgentSessionMap(activeAgentSessionIds).get(groupKey) ?? [];
 }
 
 function worktreeName(cwd: string | null): string | null {
@@ -3408,19 +3672,10 @@ function renderList(): void {
   }
 
   // Group inactive agent sessions by project, preferring client-side worktree detection.
-  const sortedAgentSessions = [...agentSessions]
-    .filter((s) => !hiddenAgentSessionIds.has(s.id) && !activeAgentSessionIds.has(s.id))
-    .sort((a, b) => b.lastSeenAt - a.lastSeenAt);
+  const inactiveSessionMap = buildInactiveAgentSessionMap(activeAgentSessionIds);
   const inactiveByProject = new Map<string, InactivePtyItem[]>();
-  for (const session of sortedAgentSessions) {
-    // Prefer client-side worktree detection when it identifies the cwd as belonging
-    // to a known worktree, overriding a potentially stale server-side projectRoot.
-    const clientKey = session.cwd ? normalizeCwdGroupKey(session.cwd) : null;
-    const key = (clientKey && clientKey !== session.cwd) ? clientKey : (session.projectRoot ?? "");
-    const item = buildInactiveAgentSessionItem(session);
-    const items = inactiveByProject.get(key) ?? [];
-    items.push(item);
-    inactiveByProject.set(key, items);
+  for (const [key, sessions] of inactiveSessionMap.entries()) {
+    inactiveByProject.set(key, sessions.map((session) => buildInactiveAgentSessionItem(session)));
   }
 
   // Auto-unarchive directories that have running sessions
@@ -3592,6 +3847,7 @@ function renderList(): void {
       else inlineInactiveExpanded.add(groupKey);
       renderList();
     },
+    onOpenReactivateProject: (groupKey) => openReactivateProjectModal(groupKey),
     onOpenLaunch: (groupKey) => openLaunchModal(groupKey),
     onOpenLaunchInWorktree: (groupKey, worktreePath) => openLaunchModal(groupKey, worktreePath),
     onSelectPty: (ptyId) => setActive(ptyId),

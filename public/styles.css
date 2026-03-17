@@ -109,7 +109,8 @@ body {
 .sidebar.collapsed .group-chevron,
 .sidebar.collapsed .pty-group-header > span:not(.group-chevron):not(.group-count),
 .sidebar.collapsed .group-count,
-.sidebar.collapsed .group-launch {
+.sidebar.collapsed .group-launch,
+.sidebar.collapsed .group-header-actions {
   display: none;
 }
 .sidebar.collapsed .pty-group-header::after {
@@ -530,6 +531,15 @@ button:disabled {
 }
 .pty-group-header:first-child {
   padding-top: 0;
+}
+
+.inactive-project-header {
+  padding-top: 6px;
+  cursor: default;
+}
+
+.inactive-project-header:first-child {
+  padding-top: 6px;
 }
 .group-chevron {
   font-size: 8px;
@@ -1072,6 +1082,154 @@ button:disabled {
   background: color-mix(in srgb, var(--accent) 92%, #fff 8%);
 }
 
+.reactivate-project-modal {
+  max-width: 980px;
+  width: min(980px, calc(100vw - 32px));
+  max-height: min(86vh, 820px);
+}
+
+.reactivate-project-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.reactivate-project-caption {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.reactivate-project-count {
+  font-size: 11px;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+}
+
+.reactivate-project-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 300px) minmax(0, 1fr);
+  gap: 16px;
+  min-height: 0;
+}
+
+.reactivate-project-sessions {
+  display: grid;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.reactivate-session-item {
+  display: grid;
+  gap: 6px;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.reactivate-session-item:hover {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--line));
+  background: color-mix(in srgb, var(--surface) 88%, var(--accent) 12%);
+}
+
+.reactivate-session-item.selected {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--line));
+  background: color-mix(in srgb, var(--surface) 82%, var(--accent) 18%);
+}
+
+.reactivate-session-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.reactivate-session-title {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reactivate-session-age {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.reactivate-session-meta {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reactivate-session-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.reactivate-session-badges span {
+  font-size: 10px;
+  color: var(--muted);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 6px;
+  background: color-mix(in srgb, var(--surface) 72%, var(--panel) 28%);
+}
+
+.reactivate-session-snippet {
+  color: var(--text);
+  opacity: 0.75;
+  font-size: 11px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.reactivate-project-details {
+  min-width: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.reactivate-preview {
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+}
+
+.reactivate-preview-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.reactivate-preview-body {
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-right: 4px;
+}
+
 /* Session Preview Modal */
 .session-preview-modal {
   max-width: 640px;
@@ -1170,6 +1328,10 @@ button:disabled {
   gap: 4px;
 }
 
+.inactive-project-header + .group-body {
+  padding-left: 8px;
+}
+
 .worktree-subgroup {
   padding-left: 14px;
   display: grid;
@@ -1263,7 +1425,6 @@ button:disabled {
 }
 
 .group-launch {
-  margin-left: auto;
   padding: 0 6px;
   font-size: 14px;
   line-height: 1;
@@ -1275,6 +1436,30 @@ button:disabled {
 }
 
 .group-launch:hover {
+  color: var(--text);
+  background: var(--surface);
+}
+
+.group-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.group-reactivate-btn {
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 72%, var(--muted));
+  cursor: pointer;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.group-reactivate-btn:hover {
   color: var(--text);
   background: var(--surface);
 }
@@ -2418,5 +2603,13 @@ button:disabled {
   .launch-modal-go {
     background: #1f1b16;
     color: #f8f5ee;
+  }
+
+  .reactivate-project-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .reactivate-project-sessions {
+    max-height: 220px;
   }
 }
