@@ -3705,13 +3705,7 @@ function renderList(): void {
   const nonPinnedKeys = [...visibleDirKeys].filter((k) => !pinnedDirectories.has(k)).sort(sortByBasename);
   let allVisibleKeys = [...pinnedKeys, ...nonPinnedKeys];
 
-  if (activePtyId) {
-    const active = ptys.find((p) => p.id === activePtyId);
-    const activeKey = active?.cwd ? normalizeCwdGroupKey(active.cwd) : null;
-    if (activeKey && allVisibleKeys.includes(activeKey)) {
-      allVisibleKeys = [activeKey, ...allVisibleKeys.filter((k) => k !== activeKey)];
-    }
-  }
+
 
   const groups: PtyGroup[] = allVisibleKeys.map((key) => {
     const basename = key ? key.split("/").filter(Boolean).at(-1) ?? key : "Other";
