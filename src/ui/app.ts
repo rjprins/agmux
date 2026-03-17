@@ -2401,7 +2401,7 @@ function renderReactivateProjectModalState(): void {
       subtitle: displaySessionSubtitle(session),
       provider: capitalizeWord(session.provider),
       providerSessionId: session.providerSessionId,
-      elapsed: timeAgo(session.lastSeenAt),
+      elapsed: formatElapsedTime(session.lastSeenAt) || undefined,
       worktree: session.worktree ?? undefined,
       firstInput: displaySessionIntent(session),
       exitLabel: session.lastRestoredAt ? "restored before" : "available",
