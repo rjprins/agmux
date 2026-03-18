@@ -533,9 +533,12 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
 
 const btnNew = $("btn-new") as HTMLButtonElement;
 const btnFollow = $("btn-follow") as HTMLButtonElement;
+const btnKickOthers = $("btn-kick-others") as HTMLButtonElement;
 const btnSidebarToggle = $("btn-sidebar-toggle") as HTMLButtonElement;
 btnNew.disabled = true;
 btnFollow.classList.remove("visible");
+
+let viewerCounts: Record<string, number> = {};
 
 let sidebarCollapsed = false;
 function toggleSidebar(): void {
@@ -1407,6 +1410,26 @@ function onServerMsg(msg: ServerMsg): void {
       });
     }
     return;
+  }
+  if (msg.type === "viewer_counts") {
+    viewerCounts = msg.counts;
+    updateKickButtonVisibility();
+    return;
+  }
+}
+
+function updateKickButtonVisibility(): void {
+  if (!activePtyId || mobileViewport) {
+    btnKickOthers.classList.add("hidden");
+    return;
+  }
+  const count = viewerCounts[activePtyId] ?? 0;
+  const others = count - 1; // exclude ourselves
+  if (others > 0) {
+    btnKickOthers.textContent = others === 1 ? "1 other viewer \u00d7" : `${others} other viewers \u00d7`;
+    btnKickOthers.classList.remove("hidden");
+  } else {
+    btnKickOthers.classList.add("hidden");
   }
 }
 
@@ -4004,6 +4027,7 @@ function setActive(ptyId: string): void {
   saveActivePty(ptyId);
   ensureTerm(ptyId);
   updateTerminalVisibility();
+  updateKickButtonVisibility();
   requestAnimationFrame(() => {
     fitAndResizeActive();
     reflowActiveTerm();
@@ -4070,6 +4094,13 @@ btnNew.addEventListener("click", () => {
 
 btnFollow.addEventListener("click", () => {
   scrollActiveTerminalToBottom();
+});
+
+btnKickOthers.addEventListener("click", () => {
+  if (!activePtyId) return;
+  sendWsMessage({ type: "kick_other_subscribers", ptyId: activePtyId });
+  // Re-assert our terminal size after kicking others
+  requestAnimationFrame(() => fitAndResizeActive());
 });
 
 

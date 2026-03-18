@@ -46,10 +46,12 @@ export type ClientToServerMessage =
   | { type: "resize"; ptyId: PtyId; cols: number; rows: number }
   | { type: "tmux_control"; ptyId: PtyId; direction: "up" | "down"; lines: number }
   | { type: "mobile_submit"; ptyId: PtyId; body: string }
-  | { type: "mobile_snapshot_request"; requestId: string; ptyId: PtyId; lines: number };
+  | { type: "mobile_snapshot_request"; requestId: string; ptyId: PtyId; lines: number }
+  | { type: "kick_other_subscribers"; ptyId: PtyId };
 
 export type ServerToClientMessage =
   | { type: "pty_list"; ptys: PtySummary[] }
+  | { type: "viewer_counts"; counts: Record<PtyId, number> }
   | { type: "pty_output"; ptyId: PtyId; data: string }
   | { type: "pty_exit"; ptyId: PtyId; code: number | null; signal: string | null }
   | {

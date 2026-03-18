@@ -67,6 +67,10 @@ function parseWsMessage(raw: unknown): ClientToServerMessage | null {
   }
   if (!isRecord(parsed)) return null;
 
+  if (parsed.type === "kick_other_subscribers") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    return { type: "kick_other_subscribers", ptyId: parsed.ptyId };
+  }
   if (parsed.type === "subscribe") {
     if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
     return { type: "subscribe", ptyId: parsed.ptyId };
@@ -151,19 +155,28 @@ export function registerWs(deps: WsDeps): void {
   const { fastify, hub, ptys, readinessEngine, listPtys } = deps;
   const wss = new WebSocketServer({ noServer: true });
 
+  hub.onSubscriberChange = () => {
+    hub.broadcast({ type: "viewer_counts", counts: hub.subscriberCounts() });
+  };
+
   wss.on("connection", (ws) => {
     const client = hub.add(ws);
 
     void listPtys()
       .then((items) => send(ws, { type: "pty_list", ptys: items as any }))
       .catch(() => send(ws, { type: "pty_list", ptys: ptys.list() as any }));
+    send(ws, { type: "viewer_counts", counts: hub.subscriberCounts() });
 
     ws.on("message", (raw) => {
       const msg = parseWsMessage(raw);
       if (!msg) return;
 
       if (msg.type === "subscribe") {
-        client.subscribed.add(msg.ptyId);
+        hub.markSubscribed(client, msg.ptyId);
+        return;
+      }
+      if (msg.type === "kick_other_subscribers") {
+        hub.kickOthers(msg.ptyId, client);
         return;
       }
       if (msg.type === "input") {

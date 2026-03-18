@@ -15,6 +15,7 @@ export class WsHub {
   private readonly flushEveryMs: number;
   private readonly maxBufferedAmount: number;
   private readonly maxQueuedOutputBytes: number;
+  onSubscriberChange?: () => void;
 
   constructor(opts?: {
     flushEveryMs?: number;
@@ -29,9 +30,40 @@ export class WsHub {
   add(ws: WebSocket): Client {
     const client: Client = { ws, subscribed: new Set(), outByPty: new Map(), queuedBytes: 0 };
     this.clients.add(client);
-    ws.on("close", () => this.clients.delete(client));
-    ws.on("error", () => this.clients.delete(client));
+    const onClose = () => {
+      this.clients.delete(client);
+      this.onSubscriberChange?.();
+    };
+    ws.on("close", onClose);
+    ws.on("error", onClose);
     return client;
+  }
+
+  markSubscribed(client: Client, ptyId: PtyId): void {
+    client.subscribed.add(ptyId);
+    this.onSubscriberChange?.();
+  }
+
+  subscriberCounts(): Record<PtyId, number> {
+    const counts: Record<PtyId, number> = {};
+    for (const c of this.clients) {
+      for (const ptyId of c.subscribed) {
+        counts[ptyId] = (counts[ptyId] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }
+
+  kickOthers(ptyId: PtyId, exceptClient: Client): void {
+    for (const c of this.clients) {
+      if (c === exceptClient) continue;
+      if (!c.subscribed.has(ptyId)) continue;
+      try {
+        c.ws.close(1000, "Kicked by another viewer");
+      } catch {
+        // ignore
+      }
+    }
   }
 
   broadcast(evt: ServerToClientMessage): void {
