@@ -1955,11 +1955,17 @@ function openCloseWorktreeModal(ptyId: string): void {
 
 const shellProcessNames = new Set(["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "csh", "nu"]);
 const runtimeProcessNames = new Set(["node", "python", "python3", "bun", "deno"]);
+const normalizedThreadBaseNames = new Set([...shellProcessNames, ...runtimeProcessNames]);
 
 function normalizeProcessName(s: string): string {
   const v = s.trim();
   if (!v) return "";
-  return (v.split("/").filter(Boolean).at(-1) ?? v).toLowerCase();
+  const base = (v.split("/").filter(Boolean).at(-1) ?? v).toLowerCase();
+  if (base.endsWith("-mainthread")) {
+    const candidate = base.slice(0, -"-mainthread".length);
+    if (normalizedThreadBaseNames.has(candidate)) return candidate;
+  }
+  return base;
 }
 
 function isShellProcess(s: string): boolean {

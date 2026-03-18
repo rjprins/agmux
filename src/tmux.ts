@@ -541,10 +541,17 @@ const SHELL_COMMANDS = new Set([
   "csh",
   "nu",
 ]);
+const RUNTIME_WRAPPER_COMMANDS = new Set(["node", "python", "python3", "bun", "deno", "npm", "npx", "pnpm", "yarn"]);
+const MATCHABLE_THREAD_BASES = new Set([...SHELL_COMMANDS, ...RUNTIME_WRAPPER_COMMANDS]);
 
-function normalizeCommandName(cmd: string): string {
+export function normalizeCommandName(cmd: string): string {
   const base = cmd.trim().split("/").filter(Boolean).at(-1) ?? cmd.trim();
-  return base.toLowerCase();
+  const lower = base.toLowerCase();
+  if (lower.endsWith("-mainthread")) {
+    const candidate = lower.slice(0, -"-mainthread".length);
+    if (MATCHABLE_THREAD_BASES.has(candidate)) return candidate;
+  }
+  return lower;
 }
 
 function isShellCommand(cmd: string): boolean {
@@ -606,8 +613,6 @@ async function ttyForegroundProcess(tty: string, panePid: number | null): Promis
     return null;
   }
 }
-
-const RUNTIME_WRAPPER_COMMANDS = new Set(["node", "python", "python3", "bun", "deno", "npm", "npx", "pnpm", "yarn"]);
 
 function isRuntimeWrapperCommand(cmd: string): boolean {
   return RUNTIME_WRAPPER_COMMANDS.has(normalizeCommandName(cmd));

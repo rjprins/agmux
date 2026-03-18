@@ -1,5 +1,11 @@
 import { describe, expect, test } from "vitest";
-import { inferAgentFromProcessArgs, validateShellExecutable } from "../src/tmux.js";
+import { inferAgentFromProcessArgs, normalizeCommandName, validateShellExecutable } from "../src/tmux.js";
+
+describe("normalizeCommandName", () => {
+  test("canonicalizes node MainThread labels for wrapper matching", () => {
+    expect(normalizeCommandName("node-MainThread")).toBe("node");
+  });
+});
 
 describe("inferAgentFromProcessArgs", () => {
   test("detects codex when wrapped by node", () => {
@@ -52,4 +58,3 @@ describe("validateShellExecutable", () => {
     expect(() => validateShellExecutable("/bin/bas\u0000h")).toThrow("NUL byte");
   });
 });
-
