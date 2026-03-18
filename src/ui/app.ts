@@ -1296,6 +1296,7 @@ function onServerMsg(msg: ServerMsg): void {
     }
 
     updateTerminalVisibility();
+    updateKickButtonVisibility();
     reflowActiveTerm();
     renderList();
 
@@ -1418,15 +1419,34 @@ function onServerMsg(msg: ServerMsg): void {
   }
 }
 
+/** Other running PTYs on the same tmux session group as the active PTY. */
+function sameSessionPtys(): PtySummary[] {
+  const active = activePtyId ? ptys.find((p) => p.id === activePtyId) : null;
+  if (!active?.tmuxSession) return [];
+  const marker = "_view_";
+  const idx = active.tmuxSession.lastIndexOf(marker);
+  if (idx <= 0) return [];
+  const base = active.tmuxSession.slice(0, idx);
+  return ptys.filter(
+    (p) =>
+      p.id !== activePtyId &&
+      p.status === "running" &&
+      p.tmuxServer === active.tmuxServer &&
+      typeof p.tmuxSession === "string" &&
+      p.tmuxSession.startsWith(`${base}${marker}`),
+  );
+}
+
 function updateKickButtonVisibility(): void {
   if (!activePtyId || mobileViewport) {
     btnKickOthers.classList.add("hidden");
     return;
   }
-  const count = viewerCounts[activePtyId] ?? 0;
-  const others = count - 1; // exclude ourselves
-  if (others > 0) {
-    btnKickOthers.textContent = others === 1 ? "1 other viewer \u00d7" : `${others} other viewers \u00d7`;
+  const wsOthers = Math.max(0, (viewerCounts[activePtyId] ?? 0) - 1);
+  const sessionOthers = sameSessionPtys().length;
+  const total = wsOthers + sessionOthers;
+  if (total > 0) {
+    btnKickOthers.textContent = total === 1 ? "1 other view \u00d7" : `${total} other views \u00d7`;
     btnKickOthers.classList.remove("hidden");
   } else {
     btnKickOthers.classList.add("hidden");
@@ -4115,8 +4135,13 @@ btnFollow.addEventListener("click", () => {
 
 btnKickOthers.addEventListener("click", () => {
   if (!activePtyId) return;
+  // Disconnect other WS subscribers viewing the same PTY
   sendWsMessage({ type: "kick_other_subscribers", ptyId: activePtyId });
-  // Re-assert our terminal size after kicking others
+  // Kill other PTYs sharing the same tmux session (the cross-device case)
+  for (const p of sameSessionPtys()) {
+    void killPtyDirect(p.id);
+  }
+  // Re-assert our terminal size
   requestAnimationFrame(() => fitAndResizeActive());
 });
 
