@@ -10,8 +10,25 @@ type SettingsRoutesDeps = {
 export function registerSettingsRoutes(deps: SettingsRoutesDeps): void {
   const { fastify, store } = deps;
 
-  fastify.get("/api/launch-preferences", async () => {
-    return store.getPreference("launch") ?? {};
+  fastify.get("/api/launch-preferences", async (req) => {
+    const query = req.query as Record<string, unknown>;
+    const projectRoot = typeof query.projectRoot === "string" ? query.projectRoot.trim() : null;
+    const global = store.getPreference<Record<string, unknown>>("launch") ?? {};
+    if (!projectRoot) return global;
+    const perProject = store.getPreference<Record<string, unknown>>(`launch:${projectRoot}`) ?? {};
+    return { ...global, ...perProject };
+  });
+
+  fastify.put("/api/launch-preferences", async (req) => {
+    const body = parseJsonBody(req.body) as Record<string, unknown>;
+    const { projectRoot, ...prefs } = body;
+    const key = typeof projectRoot === "string" && projectRoot.trim()
+      ? `launch:${projectRoot.trim()}`
+      : "launch";
+    const prev = store.getPreference<Record<string, unknown>>(key) ?? {};
+    const merged = { ...prev, ...prefs };
+    store.setPreference(key, merged);
+    return merged;
   });
 
   fastify.get("/api/settings", async () => {

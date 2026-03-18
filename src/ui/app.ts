@@ -1842,6 +1842,17 @@ function renderLaunchModalState(): void {
         .then(async (res) => {
           if (res.ok) {
             const { id } = await res.json() as { id: string };
+            const projectRoot = effectiveProjectRoot;
+            void authFetch("/api/launch-preferences", {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                projectRoot: projectRoot || undefined,
+                agent: stateNow.selectedAgent,
+                worktree: stateNow.selectedWorktree,
+                flags: stateNow.savedFlags,
+              }),
+            }).catch(() => {});
             closeLaunchModal();
             void refreshWorktreeCache().then(() => renderList());
             setActive(id);
@@ -1916,9 +1927,12 @@ function openLaunchModal(groupCwd: string, preselectedWorktree?: string): void {
   };
   renderLaunchModalState();
 
-  void authFetch("/api/launch-preferences")
+  const prefsUrl = groupCwd
+    ? `/api/launch-preferences?projectRoot=${encodeURIComponent(groupCwd)}`
+    : "/api/launch-preferences";
+  void authFetch(prefsUrl)
     .then((r) => (r.ok ? r.json() : {}))
-    .then((prefs: { agent?: string; flags?: Record<string, Record<string, string | boolean>> }) => {
+    .then((prefs: { agent?: string; flags?: Record<string, Record<string, string | boolean>>; worktree?: string }) => {
       if (seq !== launchModalSeq || !launchModalState) return;
       if (prefs.flags && typeof prefs.flags === "object") {
         for (const [agent, flags] of Object.entries(prefs.flags)) {
@@ -1929,6 +1943,9 @@ function openLaunchModal(groupCwd: string, preselectedWorktree?: string): void {
       }
       if (prefs.agent && AGENT_CHOICES.includes(prefs.agent)) {
         launchModalState.selectedAgent = prefs.agent;
+      }
+      if (typeof prefs.worktree === "string" && !preselectedWorktree) {
+        launchModalState.selectedWorktree = prefs.worktree;
       }
       renderLaunchModalState();
     })
