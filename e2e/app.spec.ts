@@ -138,6 +138,10 @@ async function ensureNoRunningPtys(page: Page, token: string): Promise<void> {
   throw new Error(`timed out waiting for PTY cleanup: ${remaining.join(", ")}`);
 }
 
+async function readRootCssVar(page: Page, name: string): Promise<string> {
+  return page.evaluate((cssVar) => document.documentElement.style.getPropertyValue(cssVar).trim(), name);
+}
+
 async function ensureInactiveItemVisible(page: Page, itemText: string): Promise<void> {
   const target = page.locator(".pty-item.inactive").filter({ hasText: itemText });
   for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -1318,6 +1322,39 @@ test("settings modal opens, saves worktree template, and persists", async ({ pag
   await page.request.put(`/api/settings?token=${encodeURIComponent(token)}`, {
     data: { worktreePathTemplate: null },
   });
+});
+
+test("settings modal can follow the system theme", async ({ page }) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.goto("/?nosup=1");
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(page.locator(".launch-modal h3")).toContainText("Settings");
+
+  const themeSelect = page.locator(".launch-modal-select").first();
+  await themeSelect.selectOption("dracula");
+  await expect.poll(() => readRootCssVar(page, "--bg")).toBe("#0b0e14");
+
+  const systemThemeCheckbox = page.getByRole("checkbox", { name: "Use system theme" });
+  await systemThemeCheckbox.check();
+  await expect(systemThemeCheckbox).toBeChecked();
+  await expect(page.getByText("System theme is light, using Light.")).toBeVisible();
+  await expect.poll(() => readRootCssVar(page, "--bg")).toBe("#ffffff");
+
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.getByText("System theme is dark, using Dracula.")).toBeVisible();
+  await expect.poll(() => readRootCssVar(page, "--bg")).toBe("#0b0e14");
+
+  await page.reload();
+  await expect.poll(() => readRootCssVar(page, "--bg")).toBe("#0b0e14");
+
+  await page.getByRole("button", { name: "Settings" }).click();
+  await expect(themeSelect).toHaveValue("dracula");
+  await expect(systemThemeCheckbox).toBeChecked();
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await expect(page.getByText("System theme is light, using Light.")).toBeVisible();
+  await expect.poll(() => readRootCssVar(page, "--bg")).toBe("#ffffff");
 });
 
 test("GET /api/worktrees returns git worktree list entries", async ({ page }) => {

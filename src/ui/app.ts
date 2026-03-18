@@ -1,7 +1,16 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
-import { THEMES, DEFAULT_THEME_KEY, applyTheme, type Theme } from "./themes";
+import {
+  THEMES,
+  DEFAULT_THEME_KEY,
+  SYSTEM_THEME_DARK_TO_LIGHT,
+  applyTheme,
+  getSystemThemeDarkFallbackKey,
+  isSystemThemeDarkKey,
+  resolveSystemThemeKey,
+  type Theme,
+} from "./themes";
 import type {
   AgentSessionSummary,
   PtyReadinessIndicator,
@@ -556,13 +565,20 @@ document.querySelector(".sidebar")!.addEventListener("mousedown", (ev) => {
 // --- Theme ---
 
 const THEME_KEY = "agmux:theme";
+const SYSTEM_THEME_DARK_KEY = "agmux:systemThemeDark";
+const USE_SYSTEM_THEME_KEY = "agmux:useSystemTheme";
 const MOBILE_TERMINAL_THEME_KEY = "agmux:mobileTerminalTheme";
 const MOBILE_TERMINAL_FONT_SIZE_KEY = "agmux:mobileTerminalFontSize";
 const MOBILE_TERMINAL_DEFAULT_THEME_KEY = "neutral-light";
 const DESKTOP_TERMINAL_FONT_SIZE = 13;
 const MOBILE_TERMINAL_FONT_SIZE_MIN = 8;
 const MOBILE_TERMINAL_FONT_SIZE_MAX = 22;
-let activeThemeKey = localStorage.getItem(THEME_KEY) ?? DEFAULT_THEME_KEY;
+const systemThemeMedia = window.matchMedia("(prefers-color-scheme: dark)");
+let lastSystemThemePrefersDark = systemThemeMedia.matches;
+let selectedThemeKey = normalizeThemeKey(localStorage.getItem(THEME_KEY));
+let useSystemTheme = loadStoredBoolean(USE_SYSTEM_THEME_KEY);
+let systemThemeDarkKey = normalizeSystemThemeDarkKey(localStorage.getItem(SYSTEM_THEME_DARK_KEY), selectedThemeKey);
+let activeThemeKey = resolveActiveThemeKey();
 let activeTheme: Theme = THEMES.get(activeThemeKey) ?? THEMES.get(DEFAULT_THEME_KEY)!;
 let mobileTerminalThemeKey = localStorage.getItem(MOBILE_TERMINAL_THEME_KEY) ?? MOBILE_TERMINAL_DEFAULT_THEME_KEY;
 if (!THEMES.has(mobileTerminalThemeKey)) mobileTerminalThemeKey = activeThemeKey;
@@ -573,6 +589,49 @@ let mobileTerminalFontSize = Number.isFinite(storedMobileTerminalFontSize)
 
 // Apply theme to CSS vars immediately (before any terminal creation).
 applyTheme(activeTheme, []);
+
+function normalizeThemeKey(key: string | null): string {
+  return key && THEMES.has(key) ? key : DEFAULT_THEME_KEY;
+}
+
+function loadStoredBoolean(key: string): boolean {
+  const raw = localStorage.getItem(key);
+  return raw === "1" || raw === "true";
+}
+
+function normalizeSystemThemeDarkKey(key: string | null, fallbackThemeKey: string): string {
+  if (key && isSystemThemeDarkKey(key)) return key;
+  return getSystemThemeDarkFallbackKey(fallbackThemeKey) ?? DEFAULT_THEME_KEY;
+}
+
+function resolveActiveThemeKey(): string {
+  if (!useSystemTheme) return selectedThemeKey;
+  return resolveSystemThemeKey(systemThemeDarkKey, systemThemeMedia.matches);
+}
+
+function refreshActiveTheme(options: { focus?: boolean } = {}): void {
+  const nextThemeKey = resolveActiveThemeKey();
+  const nextTheme = THEMES.get(nextThemeKey) ?? THEMES.get(DEFAULT_THEME_KEY)!;
+  activeThemeKey = nextThemeKey;
+  activeTheme = nextTheme;
+  applyTheme(activeTheme, []);
+  applyTerminalAppearanceToAll();
+  renderList();
+  scheduleMobileRender();
+  if (settingsModalState) renderSettingsModalState();
+  if (options.focus) focusActiveTerm();
+}
+
+function syncSystemThemePreference(): void {
+  const prefersDark = systemThemeMedia.matches;
+  if (prefersDark === lastSystemThemePrefersDark) return;
+  lastSystemThemePrefersDark = prefersDark;
+  if (useSystemTheme) {
+    refreshActiveTheme();
+  } else if (settingsModalState) {
+    renderSettingsModalState();
+  }
+}
 
 const MOBILE_MEDIA_QUERY = "(max-width: 920px)";
 const mobileMedia = window.matchMedia(MOBILE_MEDIA_QUERY);
@@ -658,6 +717,10 @@ window.visualViewport?.addEventListener("scroll", () => {
   scheduleMobileViewportSync(!isMobileKeyboardLikelyOpen());
 });
 scheduleMobileViewportSync(true);
+systemThemeMedia.addEventListener("change", syncSystemThemePreference);
+window.addEventListener("focus", syncSystemThemePreference);
+document.addEventListener("visibilitychange", syncSystemThemePreference);
+window.setInterval(syncSystemThemePreference, 1000);
 
 function effectiveTerminalTheme(): Theme {
   if (!mobileViewport) return activeTheme;
@@ -684,16 +747,32 @@ function applyTerminalAppearanceToAll(): void {
 }
 
 function setTheme(key: string): void {
-  const next = THEMES.get(key);
-  if (!next) return;
-  activeThemeKey = key;
-  activeTheme = next;
-  localStorage.setItem(THEME_KEY, activeThemeKey);
-  applyTheme(activeTheme, []);
-  applyTerminalAppearanceToAll();
-  renderList();
-  scheduleMobileRender();
-  focusActiveTerm();
+  if (useSystemTheme) {
+    if (!isSystemThemeDarkKey(key)) return;
+    systemThemeDarkKey = key;
+    localStorage.setItem(SYSTEM_THEME_DARK_KEY, key);
+    refreshActiveTheme({ focus: true });
+    return;
+  }
+  if (!THEMES.has(key)) return;
+  selectedThemeKey = key;
+  localStorage.setItem(THEME_KEY, key);
+  const fallbackSystemThemeKey = getSystemThemeDarkFallbackKey(key);
+  if (fallbackSystemThemeKey) {
+    systemThemeDarkKey = fallbackSystemThemeKey;
+    localStorage.setItem(SYSTEM_THEME_DARK_KEY, fallbackSystemThemeKey);
+  }
+  refreshActiveTheme({ focus: true });
+}
+
+function setUseSystemTheme(enabled: boolean): void {
+  useSystemTheme = enabled;
+  localStorage.setItem(USE_SYSTEM_THEME_KEY, enabled ? "1" : "0");
+  if (enabled) {
+    systemThemeDarkKey = normalizeSystemThemeDarkKey(localStorage.getItem(SYSTEM_THEME_DARK_KEY), selectedThemeKey);
+    localStorage.setItem(SYSTEM_THEME_DARK_KEY, systemThemeDarkKey);
+  }
+  refreshActiveTheme({ focus: true });
 }
 
 function setMobileTerminalTheme(key: string): void {
@@ -4277,9 +4356,20 @@ function settingsPreviewPath(template: string): string {
     .replace(/\{branch\}/g, "feature-example");
 }
 
+function systemThemeDescription(): string {
+  if (!useSystemTheme) return "";
+  const resolvedThemeName = THEMES.get(activeThemeKey)?.name ?? activeTheme.name;
+  return `System theme is ${systemThemeMedia.matches ? "dark" : "light"}, using ${resolvedThemeName}.`;
+}
+
 function renderSettingsModalState(): void {
   const state = settingsModalState;
-  const themeOptions = [...THEMES].map(([key, theme]) => ({ key, name: theme.name }));
+  const themeOptions = useSystemTheme
+    ? [...SYSTEM_THEME_DARK_TO_LIGHT.keys()].map((key) => ({
+      key,
+      name: THEMES.get(key)?.name ?? key,
+    }))
+    : [...THEMES].map(([key, theme]) => ({ key, name: theme.name }));
   const tmuxOptions = tmuxSessions.map((session) => ({
     key: tmuxSessionKey(session),
     label: tmuxSessionLabel(session),
@@ -4292,8 +4382,10 @@ function renderSettingsModalState(): void {
       worktreePathTemplate: state.worktreePathTemplate,
       previewPath: settingsPreviewPath(state.worktreePathTemplate),
       saving: state.saving,
-      themeKey: activeThemeKey,
+      themeKey: useSystemTheme ? systemThemeDarkKey : selectedThemeKey,
       themes: themeOptions,
+      useSystemTheme,
+      systemThemeDescription: systemThemeDescription(),
       tmuxSessionKey: tmuxOptions.some((opt) => opt.key === selectedTmuxSessionKey) ? selectedTmuxSessionKey : "",
       tmuxSessions: tmuxOptions,
     }
@@ -4318,7 +4410,9 @@ function renderSettingsModalState(): void {
     },
     onThemeChange: (key) => {
       setTheme(key);
-      renderSettingsModalState();
+    },
+    onUseSystemThemeChange: (enabled) => {
+      setUseSystemTheme(enabled);
     },
     onTmuxSessionChange: (key) => {
       selectedTmuxSessionKey = key;

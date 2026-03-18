@@ -397,6 +397,32 @@ export const THEMES: ReadonlyMap<string, Theme> = new Map<string, Theme>([
 
 export const DEFAULT_THEME_KEY = "neutral";
 
+export const SYSTEM_THEME_DARK_TO_LIGHT: ReadonlyMap<string, string> = new Map<string, string>([
+  ["neutral", "neutral-light"],
+  ["dracula", "light"],
+  ["tokyo-night", "light"],
+  ["solarized-dark", "solarized-light"],
+]);
+
+const SYSTEM_THEME_LIGHT_TO_DARK: ReadonlyMap<string, string> = new Map<string, string>([
+  ["neutral-light", "neutral"],
+  ["solarized-light", "solarized-dark"],
+]);
+
+export function isSystemThemeDarkKey(key: string): boolean {
+  return SYSTEM_THEME_DARK_TO_LIGHT.has(key);
+}
+
+export function getSystemThemeDarkFallbackKey(key: string): string | null {
+  if (SYSTEM_THEME_DARK_TO_LIGHT.has(key)) return key;
+  return SYSTEM_THEME_LIGHT_TO_DARK.get(key) ?? null;
+}
+
+export function resolveSystemThemeKey(key: string, prefersDark: boolean): string {
+  if (prefersDark) return key;
+  return SYSTEM_THEME_DARK_TO_LIGHT.get(key) ?? key;
+}
+
 // ---------------------------------------------------------------------------
 // Apply
 // ---------------------------------------------------------------------------

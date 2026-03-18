@@ -11,6 +11,8 @@ export type SettingsModalViewModel = {
   saving: boolean;
   themeKey: string;
   themes: ThemeOption[];
+  useSystemTheme: boolean;
+  systemThemeDescription: string;
   tmuxSessionKey: string;
   tmuxSessions: Array<{ key: string; label: string }>;
 };
@@ -21,6 +23,7 @@ export type SettingsModalHandlers = {
   onReset: () => void;
   onSave: () => void;
   onThemeChange: (key: string) => void;
+  onUseSystemThemeChange: (enabled: boolean) => void;
   onTmuxSessionChange: (key: string) => void;
   onTmuxSessionFocus: () => void;
 };
@@ -71,6 +74,17 @@ export function renderSettingsModal(
             ))}
           </select>
         </label>
+
+        <label className="launch-modal-label launch-modal-checkbox-label">
+          <input
+            type="checkbox"
+            checked={model.useSystemTheme}
+            onChange={(ev) => handlers.onUseSystemThemeChange((ev.target as HTMLInputElement).checked)}
+          />
+          <span>Use system theme</span>
+        </label>
+
+        {model.systemThemeDescription ? <div className="settings-help">{model.systemThemeDescription}</div> : null}
 
         <label className="launch-modal-label">
           Attach tmux session
