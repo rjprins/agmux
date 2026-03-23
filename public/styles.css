@@ -1596,7 +1596,7 @@ button:disabled {
   display: none;
 }
 
-@media (max-width: 920px) {
+@media (max-width: 750px) {
   #app {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
@@ -1633,7 +1633,7 @@ button:disabled {
   }
 }
 
-@media (max-width: 920px) {
+@media (max-width: 750px) {
   body {
     background: radial-gradient(120% 90% at 20% 10%, #ffdca6 0%, transparent 55%),
       radial-gradient(120% 90% at 90% 0%, #b6f4f4 0%, transparent 50%),

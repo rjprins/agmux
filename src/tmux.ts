@@ -585,6 +585,27 @@ type ForegroundProcess = {
   comm: string;
 };
 
+type ForegroundProcessRow = {
+  pid: number;
+  pgid: number;
+  tpgid: number;
+  comm: string;
+};
+
+export function pickForegroundProcess(
+  rows: ForegroundProcessRow[],
+  panePid: number | null,
+): ForegroundProcess | null {
+  const foregroundGroup = rows.filter((r) => r.pgid === r.tpgid && !isShellCommand(r.comm));
+  const directForeground = foregroundGroup.find((r) => !isRuntimeWrapperCommand(r.comm));
+  if (directForeground) return { pid: directForeground.pid, comm: directForeground.comm };
+  if (foregroundGroup.length > 0) {
+    const fallback = foregroundGroup.find((r) => panePid == null || r.pid !== panePid) ?? foregroundGroup[0];
+    return { pid: fallback.pid, comm: fallback.comm };
+  }
+  return null;
+}
+
 async function ttyForegroundProcess(tty: string, panePid: number | null): Promise<ForegroundProcess | null> {
   try {
     const ttyArg = tty.startsWith("/dev/") ? tty.slice("/dev/".length) : tty;
@@ -598,17 +619,9 @@ async function ttyForegroundProcess(tty: string, panePid: number | null): Promis
         if (!m) return null;
         return { pid: Number(m[1]), pgid: Number(m[2]), tpgid: Number(m[3]), comm: m[4].trim() };
       })
-      .filter((r): r is { pid: number; pgid: number; tpgid: number; comm: string } => r != null);
+      .filter((r): r is ForegroundProcessRow => r != null);
 
-    for (const r of rows) {
-      if (r.pid === r.tpgid && !isShellCommand(r.comm)) return { pid: r.pid, comm: r.comm };
-    }
-    for (const r of rows) {
-      if (panePid != null && r.pid === panePid) continue;
-      if (r.pgid !== r.tpgid) continue;
-      if (!isShellCommand(r.comm)) return { pid: r.pid, comm: r.comm };
-    }
-    return null;
+    return pickForegroundProcess(rows, panePid);
   } catch {
     return null;
   }

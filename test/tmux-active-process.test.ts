@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { inferAgentFromProcessArgs, normalizeCommandName, validateShellExecutable } from "../src/tmux.js";
+import {
+  inferAgentFromProcessArgs,
+  normalizeCommandName,
+  pickForegroundProcess,
+  validateShellExecutable,
+} from "../src/tmux.js";
 
 describe("normalizeCommandName", () => {
   test("canonicalizes node MainThread labels for wrapper matching", () => {
@@ -26,6 +31,32 @@ describe("inferAgentFromProcessArgs", () => {
   test("returns null for unrelated runtime command lines", () => {
     const args = "node /srv/app/server.js --port 3000";
     expect(inferAgentFromProcessArgs(args)).toBeNull();
+  });
+});
+
+describe("pickForegroundProcess", () => {
+  test("prefers direct agent child over runtime wrapper group leader", () => {
+    const selected = pickForegroundProcess([
+      { pid: 101, pgid: 101, tpgid: 101, comm: "node-MainThread" },
+      { pid: 102, pgid: 101, tpgid: 101, comm: "codex" },
+    ], null);
+    expect(selected).toEqual({ pid: 102, comm: "codex" });
+  });
+
+  test("falls back to wrapper when no direct foreground child exists", () => {
+    const selected = pickForegroundProcess([
+      { pid: 101, pgid: 101, tpgid: 101, comm: "node-MainThread" },
+    ], null);
+    expect(selected).toEqual({ pid: 101, comm: "node-MainThread" });
+  });
+
+  test("ignores shell processes", () => {
+    const selected = pickForegroundProcess([
+      { pid: 200, pgid: 200, tpgid: 200, comm: "zsh" },
+      { pid: 201, pgid: 200, tpgid: 200, comm: "node-MainThread" },
+      { pid: 202, pgid: 200, tpgid: 200, comm: "codex" },
+    ], 200);
+    expect(selected).toEqual({ pid: 202, comm: "codex" });
   });
 });
 

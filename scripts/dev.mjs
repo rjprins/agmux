@@ -1,5 +1,6 @@
 import { execFile, execSync, spawn } from "node:child_process";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import process from "node:process";
 
@@ -7,22 +8,58 @@ const repo = process.cwd();
 const binExt = process.platform === "win32" ? ".cmd" : "";
 const tscPath = path.join(repo, "node_modules", ".bin", `tsc${binExt}`);
 
+const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 4821;
+const host = process.env.HOST ?? DEFAULT_HOST;
 const requestedPort = Number(process.env.PORT ?? process.env.APP_PORT ?? String(DEFAULT_PORT));
 const port = Number.isInteger(requestedPort) && requestedPort > 0 ? requestedPort : DEFAULT_PORT;
 
-function checkPortAvailable(p) {
+function getPortListeners(p) {
   try {
-    const out = execSync("ss -ltnp", { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
-    const re = new RegExp(`:${p}(\\s|$)`);
-    const lines = out.split("\n").filter((l) => re.test(l));
-    if (lines.length === 0) return;
-
-    console.error(`Port ${p} is already in use:\n${lines.join("\n")}\n`);
-    console.error(`Stop the process using it, or pick a different port:\n  PORT=${p + 2} npm run dev\n`);
-    process.exit(2);
+    const out = execSync(`ss -H -ltnp 'sport = :${p}'`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return out
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0);
   } catch {
-    // If ss isn't available, we won't block startup.
+    return [];
+  }
+}
+
+async function checkPortAvailable(bindHost, p) {
+  const probe = net.createServer();
+  try {
+    await new Promise((resolve, reject) => {
+      probe.once("error", reject);
+      probe.listen({ host: bindHost, port: p }, () => {
+        probe.removeListener("error", reject);
+        resolve();
+      });
+    });
+  } catch (err) {
+    if (err && typeof err === "object" && "code" in err && err.code === "EADDRINUSE") {
+      const lines = getPortListeners(p);
+      if (lines.length > 0) {
+        console.error(`Port ${p} on host ${bindHost} is already in use:\n${lines.join("\n")}\n`);
+      } else {
+        console.error(`Port ${p} on host ${bindHost} is already in use.\n`);
+      }
+      console.error(`Stop the process using it, or pick a different port:\n  PORT=${p + 2} npm run dev\n`);
+      process.exit(2);
+    }
+    throw err;
+  } finally {
+    if (probe.listening) {
+      await new Promise((resolve, reject) => {
+        probe.close((closeErr) => {
+          if (closeErr) reject(closeErr);
+          else resolve();
+        });
+      });
+    }
   }
 }
 
@@ -42,7 +79,7 @@ function spawnChild(cmd, args, label, extraEnv = {}) {
   return child;
 }
 
-checkPortAvailable(port);
+await checkPortAvailable(host, port);
 
 // Build UI once before starting the server.
 console.log("[dev] Building UI...");
