@@ -45,6 +45,10 @@ import {
   type KnownWorktreeSummary,
 } from "./worktree-match";
 import {
+  compareSidebarGroupKeys,
+  orderRunningPtysForSidebar,
+} from "./pty-order";
+import {
   renderRestoreSessionModal,
   type RestoreSessionModalViewModel,
   type RestoreTargetChoice,
@@ -3089,6 +3093,10 @@ function normalizeCwdGroupKey(cwd: string): string {
   return cwd;
 }
 
+function runningPtyGroupKey(pty: PtySummary): string {
+  return pty.cwd ? normalizeCwdGroupKey(pty.cwd) : "";
+}
+
 function agentSessionProjectKey(session: AgentSessionSummary): string {
   const clientKey = session.cwd ? normalizeCwdGroupKey(session.cwd) : null;
   return (clientKey && clientKey !== session.cwd) ? clientKey : (session.projectRoot ?? "");
@@ -3948,7 +3956,10 @@ function buildInactiveWorktreeSubgroups(
 
 function renderList(): void {
   // Group running PTYs by CWD (normalize .worktrees/ paths to parent repo).
-  const runningPtys = ptys.filter((p) => p.status === "running");
+  const runningPtys = orderRunningPtysForSidebar(ptys, {
+    pinnedDirectories,
+    getGroupKey: runningPtyGroupKey,
+  });
   const activeAgentSessionIds = new Set(
     runningPtys
       .map((p) => p.agentSessionId?.trim() ?? "")
@@ -3956,7 +3967,7 @@ function renderList(): void {
   );
   const runningByDir = new Map<string, RunningPtyItem[]>();
   for (const p of runningPtys) {
-    const key = p.cwd ? normalizeCwdGroupKey(p.cwd) : "";
+    const key = runningPtyGroupKey(p);
     let arr = runningByDir.get(key);
     if (!arr) {
       arr = [];
@@ -3985,18 +3996,9 @@ function renderList(): void {
     [...pinnedDirectories, ...runningByDir.keys()].filter((k) => !archivedDirectories.has(k)),
   );
 
-  // Helper to sort directory keys: non-empty alphabetically by basename, empty last.
-  const sortByBasename = (a: string, b: string) => {
-    if (!a) return 1;
-    if (!b) return -1;
-    const ba = a.split("/").filter(Boolean).at(-1) ?? a;
-    const bb = b.split("/").filter(Boolean).at(-1) ?? b;
-    return ba.localeCompare(bb);
-  };
-
   // Build unified directory groups: pinned first, then non-pinned, both alphabetical.
-  const pinnedKeys = [...visibleDirKeys].filter((k) => pinnedDirectories.has(k)).sort(sortByBasename);
-  const nonPinnedKeys = [...visibleDirKeys].filter((k) => !pinnedDirectories.has(k)).sort(sortByBasename);
+  const pinnedKeys = [...visibleDirKeys].filter((k) => pinnedDirectories.has(k)).sort(compareSidebarGroupKeys);
+  const nonPinnedKeys = [...visibleDirKeys].filter((k) => !pinnedDirectories.has(k)).sort(compareSidebarGroupKeys);
   let allVisibleKeys = [...pinnedKeys, ...nonPinnedKeys];
 
 
@@ -4031,7 +4033,7 @@ function renderList(): void {
   // Directories confirmed to not exist on disk are treated as archived.
   const orphanInactiveKeys: string[] = [];
   const autoArchivedKeys: string[] = [];
-  for (const k of [...inactiveByProject.keys()].sort(sortByBasename)) {
+  for (const k of [...inactiveByProject.keys()].sort(compareSidebarGroupKeys)) {
     if (visibleDirKeys.has(k) || archivedDirectories.has(k)) continue;
     const exists = directoryExistsCache.get(k);
     if (exists === false) {
@@ -4064,7 +4066,7 @@ function renderList(): void {
   const archivedKeys = [
     ...[...archivedDirectories].filter((k) => inactiveByProject.has(k)),
     ...autoArchivedKeys,
-  ].sort(sortByBasename);
+  ].sort(compareSidebarGroupKeys);
 
   const archivedGroups = archivedKeys.map((key) => {
     const allItems = inactiveByProject.get(key) ?? [];
@@ -4459,7 +4461,10 @@ window.addEventListener("resize", () => { fitAndResizeActive(); reflowActiveTerm
 // --- Keybindings ---
 
 function runningPtys(): PtySummary[] {
-  return ptys.filter((p) => p.status === "running");
+  return orderRunningPtysForSidebar(ptys, {
+    pinnedDirectories,
+    getGroupKey: runningPtyGroupKey,
+  });
 }
 
 function switchPtyByOffset(offset: number): void {
