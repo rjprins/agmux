@@ -1,6 +1,6 @@
 # agmux
 
-Local web UI for managing agent terminal sessions. Streams PTY output to the browser over WebSockets, with customizable triggers and agent readiness detection.
+Local web UI for managing agent terminal sessions. Streams PTY output to the browser over WebSockets, with customizable triggers and explicit Claude/Codex readiness callbacks.
 
 Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and other CLI-based coding agents — but works with any terminal program.
 
@@ -9,7 +9,7 @@ Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Web-based terminal viewer** — real-time PTY output streamed via WebSockets
 - **tmux-backed sessions** — agent sessions survive server restarts
 - **Trigger system** — pattern-match on terminal output and run custom actions
-- **Readiness detection** — detect when sessions are actively working vs waiting for input
+- **Explicit agent readiness** — Claude hooks and Codex notify callbacks mark sessions ready
 - **Inactive session discovery** — include recent Claude/Codex/Pi JSONL sessions in the inactive list
 - **Themeable UI** — 5 built-in themes
 - **Multi-worktree support** — manage multiple git worktrees from one interface
@@ -69,6 +69,58 @@ Use the current UI API surface directly for agents:
 
 - HTTP + WS reference: [docs/agent-api-reference.md](docs/agent-api-reference.md)
 - OpenAPI spec: [docs/openapi.json](docs/openapi.json)
+
+## Claude / Codex readiness
+
+agmux no longer infers readiness from pane output. A PTY becomes `ready` only when:
+
+- Claude Code fires a `Notification` hook such as `idle_prompt` or `permission_prompt`
+- Codex runs its `notify` callback after a turn completes
+
+Every agmux-created shell exports these variables:
+
+- `AGMUX_PTY_ID`
+- `AGMUX_TMUX_SESSION`
+- `AGMUX_API_BASE`
+- `AGMUX_READY_HELPER`
+- `AGMUX_TOKEN` when token auth is enabled
+
+Example Claude hooks:
+
+```json
+{
+  "hooks": {
+    "Notification": [
+      {
+        "matcher": "idle_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$AGMUX_READY_HELPER\" claude idle_prompt"
+          }
+        ]
+      },
+      {
+        "matcher": "permission_prompt",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$AGMUX_READY_HELPER\" claude permission_prompt"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+Example Codex config:
+
+```toml
+notify = ["node", "/absolute/path/to/agmux/scripts/agent-ready.mjs", "codex", "turn_complete"]
+```
+
+Using the exported helper is preferred inside agmux-created shells because it already knows the current PTY and auth token.
 
 ## Configuration
 

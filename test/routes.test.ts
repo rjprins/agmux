@@ -13,7 +13,7 @@ describe("route wiring", () => {
     const fastify = Fastify();
     const runtime = {
       ptys: { spawn: () => {}, list: () => [], getSummary: () => null, kill: () => {}, write: () => {}, resize: () => {} },
-      readinessEngine: { markExited: () => {} },
+      readinessEngine: { registerAgent: () => {}, markBusy: () => {}, markExited: () => {}, markReady: () => {} },
       listPtys: async () => [
         { id: "pty-1", name: "shell", backend: "tmux", command: "tmux", args: [], cwd: null, createdAt: 0, status: "running" },
       ],
@@ -54,6 +54,60 @@ describe("route wiring", () => {
     const json = res.json() as { ptys: Array<{ id: string }> };
     expect(json.ptys).toHaveLength(1);
     expect(json.ptys[0]?.id).toBe("pty-1");
+    await fastify.close();
+  });
+
+  it("accepts explicit readiness reports", async () => {
+    const fastify = Fastify();
+    const runtime = {
+      ptys: {
+        spawn: () => {},
+        list: () => [{ id: "pty-1", status: "running", tmuxSession: "agmux:@1" }],
+        getSummary: (id: string) => (
+          id === "pty-1"
+            ? { id: "pty-1", status: "running", tmuxSession: "agmux:@1", backend: "tmux", command: "tmux", args: [], cwd: null, createdAt: 0 }
+            : null
+        ),
+        kill: () => {},
+        write: () => {},
+        resize: () => {},
+      },
+      readinessEngine: { registerAgent: () => {}, markBusy: () => {}, markExited: () => {}, markReady: () => {} },
+      listPtys: async () => [],
+      broadcastPtyList: async () => {},
+      trackLinkedSession: () => {},
+      getReadinessTrace: () => [],
+    } as any;
+    const store = {
+      upsertSession: () => {},
+      getPreference: () => ({}),
+      setPreference: () => {},
+      loadAllInputHistory: () => ({}),
+      saveInputHistory: () => {},
+    } as any;
+    const worktrees = {
+      resolveProjectRoot: async () => null,
+      createWorktreeFromBase: async () => "",
+      directoryExists: async () => true,
+      isKnownWorktreePath: () => true,
+    } as any;
+
+    registerPtyRoutes({
+      fastify,
+      store,
+      runtime,
+      worktrees,
+      defaultBaseBranch: "main",
+      agmuxSession: "agmux",
+    });
+
+    const res = await fastify.inject({
+      method: "POST",
+      url: "/api/readiness/report",
+      payload: { provider: "claude", tmuxSession: "agmux:@1", reason: "idle_prompt" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true, id: "pty-1" });
     await fastify.close();
   });
 

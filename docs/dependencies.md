@@ -14,9 +14,9 @@
 
 | Agent | Readiness detection |
 |---|---|
-| **Claude Code** | Yes — pane activity + prompt/permission inference |
-| **Codex CLI** | Yes — pane activity + prompt/permission inference |
-| Any other CLI | Yes — pane activity + prompt/permission inference |
+| **Claude Code** | Yes — explicit Claude `Notification` hooks |
+| **Codex CLI** | Yes — explicit Codex `notify` callback |
+| Any other CLI | No built-in readiness signaling |
 
 ## Dev only
 

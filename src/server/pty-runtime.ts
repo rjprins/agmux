@@ -109,7 +109,7 @@ export function createRuntime(deps: RuntimeDeps) {
   }, cwdPollIntervalMs);
 
   async function listPtys(): Promise<PtySummary[]> {
-    const base = await readinessEngine.withActiveProcesses(ptys.list());
+    const base = readinessEngine.withReadiness(ptys.list());
     if (base.length === 0) return base;
 
     const assignments = store.listActiveTaskAssignments(base.map((p) => p.id));
@@ -190,7 +190,6 @@ export function createRuntime(deps: RuntimeDeps) {
   // PTY events -> persistence + triggers + WS
   ptys.on("output", (ptyId: string, data: string) => {
     const out = stripAlternateScreenSequences(data);
-    readinessEngine.markOutput(ptyId, out);
 
     hub.queuePtyOutput(ptyId, out);
     triggerEngine.onOutput(

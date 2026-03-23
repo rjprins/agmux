@@ -5,6 +5,7 @@ import type { FastifyInstance } from "fastify";
 import { findRecentLogSessionByCwd } from "../../logSessions.js";
 import type { SqliteStore } from "../../persist/sqlite.js";
 import type { AgentProvider, SessionTaskRef } from "../../types.js";
+import { buildAgentReadyEnvExports, isAgentReadyProvider } from "../agent-ready.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxCreateLinkedSession,
@@ -31,7 +32,7 @@ type PtyRoutesDeps = {
   agentSessions: AgentSessionService;
   runtime: {
     ptys: { spawn: Function; list: Function; getSummary: Function; kill: Function; write: Function; resize: Function };
-    readinessEngine: { markExited: Function };
+    readinessEngine: { registerAgent: Function; markBusy: Function; markExited: Function; markReady: Function };
     listPtys: () => Promise<unknown>;
     broadcastPtyList: () => Promise<void>;
     trackLinkedSession: (ptyId: string, linkedSession: string, server: TmuxServer) => void;
@@ -187,6 +188,50 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     return { events };
   });
 
+  fastify.post("/api/readiness/report", async (req, reply) => {
+    const body = parseJsonBody(req.body);
+    const provider = typeof body.provider === "string" ? body.provider.trim() : "";
+    const state = body.state === "busy" ? "busy" : "ready";
+    const reason = typeof body.reason === "string" && body.reason.trim().length > 0
+      ? body.reason.trim()
+      : (state === "ready" ? "callback:ready" : "callback:busy");
+    const ptyId = typeof body.ptyId === "string" ? body.ptyId.trim() : "";
+    const tmuxSession = typeof body.tmuxSession === "string" ? body.tmuxSession.trim() : "";
+
+    if (!isAgentReadyProvider(provider)) {
+      reply.code(400);
+      return { error: "provider must be claude or codex" };
+    }
+    if (!ptyId && !tmuxSession) {
+      reply.code(400);
+      return { error: "ptyId or tmuxSession is required" };
+    }
+
+    const summaries = runtime.ptys.list() as Array<{
+      id: string;
+      status?: string;
+      tmuxSession?: string | null;
+    }>;
+    const summary = (
+      (ptyId ? runtime.ptys.getSummary(ptyId) : null) ??
+      summaries.find((item) => item.status === "running" && item.tmuxSession === tmuxSession) ??
+      null
+    ) as { id: string; status?: string; tmuxSession?: string | null } | null;
+
+    if (!summary || summary.status !== "running") {
+      reply.code(404);
+      return { error: "running PTY not found" };
+    }
+
+    runtime.readinessEngine.registerAgent(summary.id, provider);
+    if (state === "ready") {
+      runtime.readinessEngine.markReady(summary.id, provider, `callback:${provider}:${reason}`);
+    } else {
+      runtime.readinessEngine.markBusy(summary.id, `callback:${provider}:${reason}`, provider);
+    }
+    return { ok: true, id: summary.id };
+  });
+
   fastify.post("/api/ptys/launch", async (req, reply) => {
     const body = parseJsonBody(req.body);
     const agent = typeof body.agent === "string" ? body.agent.trim() : "";
@@ -257,7 +302,7 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     const tmuxTarget = await tmuxCreateWindow(SESSION_NAME, shell, cwd);
     const { linkedSession, attachArgs } = await tmuxCreateLinkedSession(tmuxTarget);
 
-    const name = `shell:${path.basename(shell)}`;
+    const name = agent !== "shell" ? agent : `shell:${path.basename(shell)}`;
     const summary = runtime.ptys.spawn({
       name,
       backend: "tmux",
@@ -290,17 +335,26 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     fastify.log.info({ ptyId: summary.id, agent, cwd, tmuxSession: tmuxTarget }, "launch: shell spawned");
     await runtime.broadcastPtyList();
 
+    const shellExports = buildAgentReadyEnvExports(summary.id, summary.tmuxSession);
     if (agent !== "shell") {
       const flags = typeof body.flags === "object" && body.flags ? body.flags as Record<string, string | boolean> : {};
+      if (isAgentReadyProvider(agent)) {
+        runtime.readinessEngine.registerAgent(summary.id, agent);
+        runtime.readinessEngine.markBusy(summary.id, "agent:launch", agent);
+      }
       setTimeout(() => {
         const cmd = launchProvider === "claude" && launchProviderSessionId
           ? `${agentCommand(agent, flags)} --session-id ${launchProviderSessionId}`
           : agentCommand(agent, flags);
-        runtime.ptys.write(summary.id, `unset CLAUDECODE; ${cmd}\n`);
+        runtime.ptys.write(summary.id, `${shellExports}; unset CLAUDECODE; ${cmd}\n`);
       }, 300);
       if (agent === "codex") {
         scheduleCodexSessionAttach(summary.id, cwd, launchedAt);
       }
+    } else {
+      setTimeout(() => {
+        runtime.ptys.write(summary.id, `${shellExports}\n`);
+      }, 300);
     }
 
     const agentFlags = typeof body.flags === "object" && body.flags ? body.flags : {};
@@ -404,6 +458,9 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     store.upsertSession(summary);
     fastify.log.info({ ptyId: summary.id, shell, tmuxSession: tmuxTarget }, "shell spawned");
     await runtime.broadcastPtyList();
+    setTimeout(() => {
+      runtime.ptys.write(summary.id, `${buildAgentReadyEnvExports(summary.id, summary.tmuxSession)}\n`);
+    }, 300);
     return { id: summary.id };
   });
 

@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import type { AgentProvider, AgentSessionCwdSource } from "../../types.js";
 import { findLogFileForSession, readConversationMessages } from "../../logSessions.js";
 import type { SqliteStore } from "../../persist/sqlite.js";
+import { buildAgentReadyEnvExports, isAgentReadyProvider } from "../agent-ready.js";
 import { tmuxCreateLinkedSession, tmuxCreateWindow, tmuxEnsureSession } from "../../tmux.js";
 import { parseJsonBody } from "../auth.js";
 import {
@@ -24,6 +25,7 @@ type AgentRoutesDeps = {
   };
   runtime: {
     ptys: { spawn: Function; list: Function; write: Function };
+    readinessEngine: { registerAgent: Function; markBusy: Function };
     broadcastPtyList: () => Promise<void>;
     trackLinkedSession: (ptyId: string, linkedSession: string, server: "agmux" | "default") => void;
   };
@@ -137,8 +139,13 @@ export function registerAgentRoutes(deps: AgentRoutesDeps): void {
       agentSessions.attachPtyToAgentSession(summary.id, provider, providerSessionId);
 
       const resumeArgs = resumeArgsForProvider(provider, providerSessionId);
+      if (isAgentReadyProvider(provider)) {
+        runtime.readinessEngine.registerAgent(summary.id, provider);
+        runtime.readinessEngine.markBusy(summary.id, "agent:restore", provider);
+      }
       setTimeout(() => {
-        const cmd = `unset CLAUDECODE; ${provider} ${resumeArgs.join(" ")}`;
+        const exports = buildAgentReadyEnvExports(summary.id, summary.tmuxSession);
+        const cmd = `${exports}; unset CLAUDECODE; ${provider} ${resumeArgs.join(" ")}`;
         runtime.ptys.write(summary.id, `${cmd}\n`);
       }, 300);
 

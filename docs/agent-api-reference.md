@@ -67,6 +67,26 @@ Response:
 { "events": [/* readiness trace events */] }
 ```
 
+### `POST /api/readiness/report`
+
+Explicitly marks a PTY `ready` or `busy` from a Claude hook or Codex notify callback.
+
+Body:
+
+- `provider` (required: `claude` or `codex`)
+- `state` (optional: `ready` or `busy`, default `ready`)
+- `reason` (optional string)
+- `ptyId` (optional string)
+- `tmuxSession` (optional string, used when `ptyId` is not available)
+
+At least one of `ptyId` or `tmuxSession` is required.
+
+Success:
+
+```json
+{ "ok": true, "id": "pty_123" }
+```
+
 ### `POST /api/ptys/launch`
 
 Launches a tmux-backed PTY, optionally creates a new worktree and starts an agent command.

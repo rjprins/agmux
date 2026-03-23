@@ -269,6 +269,24 @@
         }
       }
     },
+    "/api/readiness/report": {
+      "post": {
+        "summary": "Report explicit agent readiness from Claude/Codex callbacks",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Reported" },
+          "400": { "description": "Bad request" },
+          "404": { "description": "Running PTY not found" }
+        }
+      }
+    },
     "/api/settings": {
       "get": {
         "summary": "Load settings",
