@@ -461,6 +461,16 @@ export type ConversationMessage = {
   text: string;
 };
 
+export type RecentLogSessionMatch = {
+  source: LogSource;
+  sessionId: string;
+  logPath: string;
+  cwd: string | null;
+  createdAt: number;
+  lastSeenAt: number;
+  prompt: string | null;
+};
+
 const MSG_TEXT_LIMIT = 2000;
 const SKIP_ENTRY_TYPES = new Set([
   "file-history-snapshot",
@@ -533,4 +543,114 @@ export function readConversationMessages(logPath: string): ConversationMessage[]
   }
 
   return messages;
+}
+
+function parseTimestampMs(value: unknown): number | null {
+  if (typeof value !== "string" || value.trim().length === 0) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+function entryTimestampMs(entry: Record<string, unknown>): number | null {
+  const direct =
+    parseTimestampMs(entry.timestamp) ??
+    parseTimestampMs(entry.created_at) ??
+    parseTimestampMs(entry.createdAt);
+  if (direct != null) return direct;
+  if (!entry.payload || typeof entry.payload !== "object") return null;
+  const payload = entry.payload as Record<string, unknown>;
+  return (
+    parseTimestampMs(payload.timestamp) ??
+    parseTimestampMs(payload.created_at) ??
+    parseTimestampMs(payload.createdAt)
+  );
+}
+
+function extractSessionTimestampMs(entries: Array<Record<string, unknown>>): number | null {
+  for (const entry of entries) {
+    const ts = entryTimestampMs(entry);
+    if (ts != null) return ts;
+  }
+  return null;
+}
+
+export function findRecentLogSessionByCwd(
+  source: LogSource,
+  cwd: string,
+  launchedAtMs: number,
+  options: DiscoveryOptions & {
+    windowMs?: number;
+    leewayMs?: number;
+    scanLimit?: number;
+  } = {},
+): RecentLogSessionMatch | null {
+  const normalizedCwd = path.resolve(cwd);
+  const windowMs = Math.max(1_000, Math.floor(options.windowMs ?? 45_000));
+  const leewayMs = Math.max(0, Math.floor(options.leewayMs ?? 5_000));
+  const scanLimit = Math.max(1, Math.floor(options.scanLimit ?? 200));
+  const roots = getSearchRoots(options).filter((root) => root.source === source);
+  const candidates: Array<RecentLogSessionMatch & { score: number; startedAt: number }> = [];
+
+  for (const root of roots) {
+    const paths = scanDirForJsonl(root.dir, root.maxDepth);
+    const rankedPaths = paths
+      .map((logPath) => {
+        try {
+          const stats = fs.statSync(logPath);
+          return {
+            logPath,
+            stats,
+            roughRecentAt: Math.max(stats.birthtimeMs || 0, stats.mtimeMs || 0),
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter((entry): entry is { logPath: string; stats: fs.Stats; roughRecentAt: number } => entry != null)
+      .sort((a, b) => b.roughRecentAt - a.roughRecentAt)
+      .slice(0, scanLimit);
+
+    for (const candidate of rankedPaths) {
+      const { logPath, stats, roughRecentAt } = candidate;
+      if (roughRecentAt < (launchedAtMs - leewayMs)) continue;
+
+      const entries = parseLogHeadEntries(logPath);
+      if (entries.length === 0) continue;
+      if (source === "codex" && isCodexSubagent(entries)) continue;
+      if (source === "claude" && isClaudeAncillaryLog(entries)) continue;
+
+      const entryCwd = extractProjectPath(entries);
+      if (!entryCwd || path.resolve(entryCwd) !== normalizedCwd) continue;
+      const sessionId = extractSessionId(entries);
+      if (!sessionId) continue;
+
+      const startedAt = extractSessionTimestampMs(entries) ?? roughRecentAt;
+      if (startedAt < (launchedAtMs - leewayMs) || startedAt > (launchedAtMs + windowMs)) continue;
+
+      candidates.push({
+        source,
+        sessionId,
+        logPath,
+        cwd: entryCwd,
+        createdAt: Math.floor(stats.birthtimeMs || startedAt || Date.now()),
+        lastSeenAt: Math.floor(stats.mtimeMs || startedAt || Date.now()),
+        prompt: extractFirstUserPrompt(entries),
+        startedAt,
+        score: Math.abs(startedAt - launchedAtMs),
+      });
+    }
+  }
+
+  candidates.sort((a, b) => a.score - b.score || b.startedAt - a.startedAt || b.lastSeenAt - a.lastSeenAt);
+  const match = candidates[0];
+  if (!match) return null;
+  return {
+    source: match.source,
+    sessionId: match.sessionId,
+    logPath: match.logPath,
+    cwd: match.cwd,
+    createdAt: match.createdAt,
+    lastSeenAt: match.lastSeenAt,
+    prompt: match.prompt,
+  };
 }

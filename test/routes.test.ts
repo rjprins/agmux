@@ -28,6 +28,10 @@ describe("route wiring", () => {
       loadAllInputHistory: () => ({}),
       saveInputHistory: () => {},
     } as any;
+    const agentSessions = {
+      attachPtyToAgentSession: () => {},
+      upsertAgentSessionSummary: () => {},
+    } as any;
     const worktrees = {
       resolveProjectRoot: async () => null,
       createWorktreeFromBase: async () => "",
@@ -38,6 +42,7 @@ describe("route wiring", () => {
     registerPtyRoutes({
       fastify,
       store,
+      agentSessions,
       runtime,
       worktrees,
       defaultBaseBranch: "main",
@@ -166,7 +171,8 @@ describe("ws wiring", () => {
     const msg = await new Promise<any>((resolve, reject) => {
       ws.on("message", (data) => {
         try {
-          resolve(JSON.parse(String(data)));
+          const parsed = JSON.parse(String(data));
+          if (parsed?.type === "pty_list") resolve(parsed);
         } catch (err) {
           reject(err);
         }

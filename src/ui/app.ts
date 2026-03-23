@@ -300,6 +300,10 @@ type InputHistoryRecord = {
 const ptyTitles = new Map<string, string>();
 const ptyLastInput = new Map<string, string>();
 const ptyInputHistory = new Map<string, HistoryEntry[]>();
+const ptyProviderInputHistory = new Map<string, HistoryEntry[]>();
+const ptyProviderHistoryKeys = new Map<string, string>();
+const ptyProviderHistoryLoading = new Set<string>();
+const ptyProviderHistoryRefreshTimers = new Map<string, number>();
 const ptyInputLineBuffers = new Map<string, string>();
 const ptyInputProcessHints = new Map<string, string>();
 type PtyReadyInfo = { state: PtyReadinessState; indicator: PtyReadinessIndicator; reason: string };
@@ -531,6 +535,23 @@ function prunePtyInputMeta(ptyIds: Set<string>): void {
     if (ptyIds.has(ptyId)) continue;
     ptyInputHistory.delete(ptyId);
   }
+  for (const ptyId of [...ptyProviderInputHistory.keys()]) {
+    if (ptyIds.has(ptyId)) continue;
+    ptyProviderInputHistory.delete(ptyId);
+  }
+  for (const ptyId of [...ptyProviderHistoryKeys.keys()]) {
+    if (ptyIds.has(ptyId)) continue;
+    ptyProviderHistoryKeys.delete(ptyId);
+  }
+  for (const ptyId of [...ptyProviderHistoryLoading]) {
+    if (ptyIds.has(ptyId)) continue;
+    ptyProviderHistoryLoading.delete(ptyId);
+  }
+  for (const [ptyId, timer] of [...ptyProviderHistoryRefreshTimers.entries()]) {
+    if (ptyIds.has(ptyId)) continue;
+    clearTimeout(timer);
+    ptyProviderHistoryRefreshTimers.delete(ptyId);
+  }
   saveInputHistoryToStorage();
 }
 
@@ -641,7 +662,7 @@ function syncSystemThemePreference(): void {
   }
 }
 
-const MOBILE_MEDIA_QUERY = "(max-width: 920px)";
+const MOBILE_MEDIA_QUERY = "(max-width: 750px)";
 const mobileMedia = window.matchMedia(MOBILE_MEDIA_QUERY);
 let mobileViewport = mobileMedia.matches;
 let mobileViewportSyncRaf = 0;
@@ -997,6 +1018,8 @@ function remapPtyState(oldPtyId: string, newPtyId: string): void {
   moveMapValue(ptyTitles);
   moveMapValue(ptyLastInput);
   moveMapValue(ptyInputHistory);
+  moveMapValue(ptyProviderInputHistory);
+  moveMapValue(ptyProviderHistoryKeys);
   moveMapValue(ptyInputLineBuffers);
   moveMapValue(ptyInputProcessHints);
   moveMapValue(mobileInputDraftByPtyId);
@@ -1006,12 +1029,18 @@ function remapPtyState(oldPtyId: string, newPtyId: string): void {
 
   moveSetValue(subscribed);
   moveSetValue(pendingHistorySaves);
+  moveSetValue(ptyProviderHistoryLoading);
 
   if (pendingActivePtyId === oldPtyId) pendingActivePtyId = newPtyId;
   if (mobileReparentedPtyId === oldPtyId) mobileReparentedPtyId = newPtyId;
   if (mobileSnapshotRestorePtyId === oldPtyId) mobileSnapshotRestorePtyId = newPtyId;
   if (mobileTerminalSnapshot && mobileTerminalSnapshot.ptyId === oldPtyId) {
     mobileTerminalSnapshot = { ...mobileTerminalSnapshot, ptyId: newPtyId };
+  }
+  const refreshTimer = ptyProviderHistoryRefreshTimers.get(oldPtyId);
+  if (refreshTimer != null && !ptyProviderHistoryRefreshTimers.has(newPtyId)) {
+    ptyProviderHistoryRefreshTimers.set(newPtyId, refreshTimer);
+    ptyProviderHistoryRefreshTimers.delete(oldPtyId);
   }
 }
 
@@ -1026,6 +1055,10 @@ function removeTerm(ptyId: string): void {
   st.container.remove();
   terms.delete(ptyId);
   ptyTitles.delete(ptyId);
+  ptyProviderInputHistory.delete(ptyId);
+  ptyProviderHistoryKeys.delete(ptyId);
+  ptyProviderHistoryLoading.delete(ptyId);
+  clearProviderHistoryRefreshTimer(ptyId);
   ptyInputLineBuffers.delete(ptyId);
   mobileInputDraftByPtyId.delete(ptyId);
   ptyReady.delete(ptyId);
@@ -1225,6 +1258,7 @@ startAssetReloadPoller();
 function onServerMsg(msg: ServerMsg): void {
   if (msg.type === "pty_list") {
     ptys = msg.ptys;
+    syncProviderHistoryStateWithPtys();
     if (mobileSnapshotRestorePtyId && !ptys.some((p) => p.id === mobileSnapshotRestorePtyId && p.status === "running")) {
       mobileSnapshotRestorePtyId = null;
       saveMobileSnapshotPtyId(null);
@@ -1563,6 +1597,7 @@ async function refreshList(): Promise<void> {
       addEvent(`Failed to refresh agent sessions: ${await readApiError(sessionsRes)}`);
     }
 
+    syncProviderHistoryStateWithPtys();
     updateTerminalVisibility();
     renderList();
   } catch (err) {
@@ -2143,6 +2178,106 @@ function appendPtyInputHistory(ptyId: string, input: string, bufferLine: number)
   ptyInputHistory.set(ptyId, next);
 }
 
+function ptySummaryById(ptyId: string): PtySummary | null {
+  return ptys.find((p) => p.id === ptyId) ?? null;
+}
+
+function attachedAgentSessionForPty(ptyId: string): { provider: string; providerSessionId: string } | null {
+  const summary = ptySummaryById(ptyId);
+  const provider = summary?.agentProvider?.trim() ?? "";
+  const providerSessionId = summary?.agentProviderSessionId?.trim() ?? "";
+  if (!provider || !providerSessionId) return null;
+  return { provider, providerSessionId };
+}
+
+function clearProviderHistoryRefreshTimer(ptyId: string): void {
+  const timer = ptyProviderHistoryRefreshTimers.get(ptyId);
+  if (timer == null) return;
+  clearTimeout(timer);
+  ptyProviderHistoryRefreshTimers.delete(ptyId);
+}
+
+async function loadProviderHistoryForPty(ptyId: string, force = false): Promise<void> {
+  const sessionRef = attachedAgentSessionForPty(ptyId);
+  if (!sessionRef) {
+    ptyProviderInputHistory.delete(ptyId);
+    ptyProviderHistoryKeys.delete(ptyId);
+    ptyProviderHistoryLoading.delete(ptyId);
+    if (activePtyId === ptyId) renderInputContextBar();
+    return;
+  }
+
+  const key = `${sessionRef.provider}:${sessionRef.providerSessionId}`;
+  if (!force && ptyProviderHistoryKeys.get(ptyId) === key && (ptyProviderHistoryLoading.has(ptyId) || ptyProviderInputHistory.has(ptyId))) {
+    return;
+  }
+
+  ptyProviderHistoryKeys.set(ptyId, key);
+  ptyProviderHistoryLoading.add(ptyId);
+  try {
+    const res = await authFetch(
+      `/api/agent-sessions/${encodeURIComponent(sessionRef.provider)}/${encodeURIComponent(sessionRef.providerSessionId)}/conversation`,
+      { cache: "no-store" },
+    );
+    if (!res.ok) {
+      if (ptyProviderHistoryKeys.get(ptyId) === key) {
+        ptyProviderInputHistory.delete(ptyId);
+      }
+      return;
+    }
+    const json = (await res.json()) as { messages?: Array<{ role?: string; text?: string }> };
+    if (ptyProviderHistoryKeys.get(ptyId) !== key) return;
+    const messages = Array.isArray(json.messages) ? json.messages : [];
+    const history = messages
+      .filter((message) => message?.role === "user" && typeof message.text === "string" && message.text.trim().length > 0)
+      .map((message) => ({ text: truncateText(message.text!.trim(), 220), bufferLine: 0 }))
+      .slice(-MAX_INPUT_HISTORY);
+    ptyProviderInputHistory.set(ptyId, history);
+  } catch {
+    if (ptyProviderHistoryKeys.get(ptyId) === key) {
+      ptyProviderInputHistory.delete(ptyId);
+    }
+  } finally {
+    if (ptyProviderHistoryKeys.get(ptyId) === key) {
+      ptyProviderHistoryLoading.delete(ptyId);
+      if (activePtyId === ptyId) renderInputContextBar();
+    }
+  }
+}
+
+function scheduleProviderHistoryRefresh(ptyId: string, delayMs = 1200, force = true): void {
+  if (!attachedAgentSessionForPty(ptyId)) return;
+  clearProviderHistoryRefreshTimer(ptyId);
+  const timer = window.setTimeout(() => {
+    ptyProviderHistoryRefreshTimers.delete(ptyId);
+    void loadProviderHistoryForPty(ptyId, force);
+  }, delayMs);
+  ptyProviderHistoryRefreshTimers.set(ptyId, timer);
+}
+
+function syncProviderHistoryStateWithPtys(): void {
+  const activeSessionRef = activePtyId ? attachedAgentSessionForPty(activePtyId) : null;
+  for (const ptyId of [...ptyProviderHistoryKeys.keys()]) {
+    if (ptySummaryById(ptyId)) continue;
+    ptyProviderHistoryKeys.delete(ptyId);
+    ptyProviderInputHistory.delete(ptyId);
+    ptyProviderHistoryLoading.delete(ptyId);
+    clearProviderHistoryRefreshTimer(ptyId);
+  }
+  if (!activePtyId) return;
+  if (!activeSessionRef) {
+    ptyProviderInputHistory.delete(activePtyId);
+    ptyProviderHistoryKeys.delete(activePtyId);
+    ptyProviderHistoryLoading.delete(activePtyId);
+    clearProviderHistoryRefreshTimer(activePtyId);
+    return;
+  }
+  const key = `${activeSessionRef.provider}:${activeSessionRef.providerSessionId}`;
+  if (ptyProviderHistoryKeys.get(activePtyId) === key && ptyProviderInputHistory.has(activePtyId)) return;
+  ptyProviderInputHistory.delete(activePtyId);
+  void loadProviderHistoryForPty(activePtyId);
+}
+
 function renderInputContextBar(): void {
   if (!activePtyId) {
     inputContextEl.classList.add("hidden");
@@ -2156,9 +2291,12 @@ function renderInputContextBar(): void {
 
   inputContextEl.classList.remove("hidden");
 
-  const history = ptyInputHistory.get(activePtyId) ?? [];
+  const providerHistory = ptyProviderInputHistory.get(activePtyId) ?? [];
+  const history = providerHistory.length > 0 ? providerHistory : (ptyInputHistory.get(activePtyId) ?? []);
   const lastEntry = history.length > 0 ? history[history.length - 1] : null;
-  const latest = ptyLastInput.get(activePtyId) ?? lastEntry?.text ?? "(none yet)";
+  const latest = providerHistory.length > 0
+    ? (lastEntry?.text ?? "(none yet)")
+    : (ptyLastInput.get(activePtyId) ?? lastEntry?.text ?? "(none yet)");
   inputContextLastEl.textContent = latest;
   inputContextLastEl.title = latest;
 
@@ -2176,7 +2314,7 @@ function renderInputContextBar(): void {
   inputHistoryListEl.textContent = "";
   if (history.length === 0) {
     const li = document.createElement("li");
-    li.textContent = "No inputs yet";
+    li.textContent = ptyProviderHistoryLoading.has(activePtyId) ? "Loading session history..." : "No inputs yet";
     inputHistoryListEl.appendChild(li);
   } else {
     for (let i = 0; i < history.length; i++) {
@@ -2281,6 +2419,7 @@ function trackUserInput(ptyId: string, data: string): void {
   }
   ptyInputLineBuffers.set(ptyId, line);
   if (changed) {
+    scheduleProviderHistoryRefresh(ptyId);
     savePtyInputMeta(ptyId);
     renderList();
     renderInputContextBar();
@@ -3340,6 +3479,7 @@ function sendMobileInput(text: string): void {
   const body = normalized.replace(/[\r\n]+/g, "");
   sendWsMessage({ type: "mobile_submit", ptyId: targetPtyId, body });
   trackUserInput(targetPtyId, `${body}\r`);
+  scheduleProviderHistoryRefresh(targetPtyId);
   mobileInputDraftByPtyId.delete(targetPtyId);
   renderMobileViewState();
 }
@@ -4079,6 +4219,7 @@ function setActive(ptyId: string): void {
     reflowActiveTerm();
     focusActiveTerm();
   });
+  syncProviderHistoryStateWithPtys();
   renderList();
   renderInputContextBar();
 }
@@ -4254,6 +4395,7 @@ function updateTerminalVisibility(): void {
     const hasAny = ptys.some((p) => p.status === "running");
     placeholderEl.textContent = hasAny ? "select a PTY" : "No sessions — click New PTY to start";
   }
+  syncProviderHistoryStateWithPtys();
   updateFollowButtonVisibility();
   renderInputContextBar();
   for (const [ptyId, st] of terms.entries()) {

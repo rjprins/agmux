@@ -225,6 +225,10 @@ export function createAgentSessionService(deps: AgentSessionServiceDeps) {
     agentSessionRefByPty.set(ptyId, { provider, providerSessionId });
   }
 
+  function attachedAgentSessionForPty(ptyId: string): { provider: AgentProvider; providerSessionId: string } | null {
+    return agentSessionRefByPty.get(ptyId) ?? null;
+  }
+
   function detachPty(ptyId: string): void {
     agentSessionRefByPty.delete(ptyId);
   }
@@ -235,6 +239,7 @@ export function createAgentSessionService(deps: AgentSessionServiceDeps) {
     upsertAgentSessionSummary,
     persistRuntimeCwdForAgentPty,
     attachPtyToAgentSession,
+    attachedAgentSessionForPty,
     detachPty,
   };
 }

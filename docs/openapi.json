@@ -104,6 +104,20 @@
         "responses": {
           "200": { "description": "OK" }
         }
+      },
+      "put": {
+        "summary": "Save launch preferences",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "type": "object" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Saved" }
+        }
       }
     },
     "/api/ptys": {

@@ -453,6 +453,22 @@ Success:
 
 Returns stored launch preferences object.
 
+### `PUT /api/launch-preferences`
+
+Merges provided launch preference keys into the stored preference object.
+
+Body:
+
+```json
+{ "agent": "codex", "flags": { "codex": { "--sandbox": "workspace-write" } } }
+```
+
+Optional:
+
+- `projectRoot` (string): when present, saves preferences scoped to that project root instead of global launch preferences
+
+Response: merged launch preferences object.
+
 ### `GET /api/settings`
 
 Returns stored settings object.

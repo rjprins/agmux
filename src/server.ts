@@ -94,6 +94,7 @@ registerTaskRoutes({ fastify, store });
 registerPtyRoutes({
   fastify,
   store,
+  agentSessions,
   runtime,
   worktrees,
   defaultBaseBranch: DEFAULT_BASE_BRANCH,

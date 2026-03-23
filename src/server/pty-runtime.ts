@@ -5,7 +5,7 @@ import { ReadinessEngine, type PtyReadyEvent } from "../readiness/engine.js";
 import { TriggerEngine } from "../triggers/engine.js";
 import { TriggerLoader } from "../triggers/loader.js";
 import { WsHub } from "../ws/hub.js";
-import type { PtySummary, ServerToClientMessage } from "../types.js";
+import type { AgentProvider, PtySummary, ServerToClientMessage } from "../types.js";
 import type { SqliteStore } from "../persist/sqlite.js";
 import {
   tmuxCreateLinkedSession,
@@ -26,6 +26,7 @@ export type RuntimeDeps = {
   logger: FastifyBaseLogger;
   agentSessions: {
     persistRuntimeCwdForAgentPty: (ptyId: string, cwd: string | null | undefined, ts: number) => void;
+    attachedAgentSessionForPty: (ptyId: string) => { provider: AgentProvider; providerSessionId: string } | null;
     detachPty: (ptyId: string) => void;
   };
   readinessTraceMax: number;
@@ -116,9 +117,19 @@ export function createRuntime(deps: RuntimeDeps) {
 
     return base.map((summary) => {
       const assignment = bySessionId.get(summary.id);
-      if (!assignment) return summary;
-      return {
+      const agentRef = agentSessions.attachedAgentSessionForPty(summary.id);
+      const next = {
         ...summary,
+        ...(agentRef
+          ? {
+              agentProvider: agentRef.provider,
+              agentProviderSessionId: agentRef.providerSessionId,
+            }
+          : {}),
+      };
+      if (!assignment) return next;
+      return {
+        ...next,
         task: {
           projectRoot: assignment.projectRoot,
           provider: assignment.provider,

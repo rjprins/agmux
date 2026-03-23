@@ -23,6 +23,8 @@ export type PtySummary = {
   backend: "tmux";
   tmuxSession?: string | null;
   tmuxServer?: TmuxServer | null;
+  agentProvider?: AgentProvider | null;
+  agentProviderSessionId?: string | null;
   activeProcess?: string | null;
   ready?: boolean;
   readyState?: PtyReadinessState;

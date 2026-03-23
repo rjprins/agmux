@@ -6,6 +6,7 @@ import {
   LogSessionDiscovery,
   discoverInactiveLogSessions,
   extractFirstUserPrompt,
+  findRecentLogSessionByCwd,
   findLogFileForSession,
   readConversationMessages,
 } from "../src/logSessions.js";
@@ -159,6 +160,60 @@ describe("LogSessionDiscovery cache", () => {
 
     const at1501 = discovery.list(11_501);
     expect(at1501.some((s) => s.id === "log:claude:two")).toBe(true);
+  });
+});
+
+describe("findRecentLogSessionByCwd", () => {
+  let tmpRoot: string | null = null;
+
+  afterEach(async () => {
+    if (tmpRoot) {
+      await fs.rm(tmpRoot, { recursive: true, force: true });
+      tmpRoot = null;
+    }
+  });
+
+  test("matches the most recent codex session for a cwd near launch time", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-recent-logs-"));
+    const codexDir = path.join(tmpRoot, "codex");
+    const cwd = "/tmp/project-beta";
+    const older = path.join(codexDir, "sessions", "2026", "03", "older.jsonl");
+    const newer = path.join(codexDir, "sessions", "2026", "03", "newer.jsonl");
+
+    await writeJsonl(older, [
+      { type: "session_meta", payload: { id: "codex-old", source: "cli", cwd, timestamp: "2026-03-23T14:00:00.000Z" } },
+    ]);
+    await writeJsonl(newer, [
+      { type: "session_meta", payload: { id: "codex-new", source: "cli", cwd, timestamp: "2026-03-23T14:35:03.742Z" } },
+      { type: "response_item", payload: { role: "user", content: [{ type: "input_text", text: "Implement transcript-backed history" }] } },
+    ]);
+
+    const match = findRecentLogSessionByCwd("codex", cwd, Date.parse("2026-03-23T14:35:00.000Z"), {
+      codexHomeDir: codexDir,
+      windowMs: 20_000,
+    });
+
+    expect(match?.sessionId).toBe("codex-new");
+    expect(match?.cwd).toBe(cwd);
+    expect(match?.prompt).toBe("transcript-backed history");
+  });
+
+  test("returns null when only older codex sessions exist for that cwd", async () => {
+    tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "agmux-recent-logs-"));
+    const codexDir = path.join(tmpRoot, "codex");
+    const cwd = "/tmp/project-beta";
+    const logPath = path.join(codexDir, "sessions", "2026", "03", "older.jsonl");
+
+    await writeJsonl(logPath, [
+      { type: "session_meta", payload: { id: "codex-old", source: "cli", cwd, timestamp: "2026-03-23T13:00:00.000Z" } },
+    ]);
+
+    const match = findRecentLogSessionByCwd("codex", cwd, Date.parse("2026-03-23T14:35:00.000Z"), {
+      codexHomeDir: codexDir,
+      windowMs: 20_000,
+    });
+
+    expect(match).toBeNull();
   });
 });
 

@@ -1,8 +1,10 @@
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 
+import { findRecentLogSessionByCwd } from "../../logSessions.js";
 import type { SqliteStore } from "../../persist/sqlite.js";
-import type { SessionTaskRef } from "../../types.js";
+import type { AgentProvider, SessionTaskRef } from "../../types.js";
 import {
   tmuxApplySessionUiOptions,
   tmuxCreateLinkedSession,
@@ -17,10 +19,16 @@ import {
   type TmuxServer,
 } from "../../tmux.js";
 import { parseJsonBody } from "../auth.js";
+import {
+  defaultAgentSessionName,
+  resumeArgsForProvider,
+  type AgentSessionService,
+} from "../agent-sessions.js";
 
 type PtyRoutesDeps = {
   fastify: FastifyInstance;
   store: SqliteStore;
+  agentSessions: AgentSessionService;
   runtime: {
     ptys: { spawn: Function; list: Function; getSummary: Function; kill: Function; write: Function; resize: Function };
     readinessEngine: { markExited: Function };
@@ -71,7 +79,64 @@ export function agentCommand(agent: string, flags: Record<string, string | boole
 }
 
 export function registerPtyRoutes(deps: PtyRoutesDeps): void {
-  const { fastify, store, runtime, worktrees, defaultBaseBranch, agmuxSession } = deps;
+  const { fastify, store, agentSessions, runtime, worktrees, defaultBaseBranch, agmuxSession } = deps;
+  const CODEX_ATTACH_POLL_MS = 750;
+  const CODEX_ATTACH_TIMEOUT_MS = 30_000;
+
+  function attachLiveAgentSession(
+    ptyId: string,
+    provider: AgentProvider,
+    providerSessionId: string,
+    cwd: string,
+    createdAt: number,
+    name?: string | null,
+    cwdSource: "log" | "user" = "user",
+  ): void {
+    agentSessions.attachPtyToAgentSession(ptyId, provider, providerSessionId);
+    agentSessions.upsertAgentSessionSummary({
+      id: `agent:${provider}:${providerSessionId}`,
+      provider,
+      providerSessionId,
+      name: name?.trim() || defaultAgentSessionName(provider, providerSessionId, cwd),
+      command: provider,
+      args: resumeArgsForProvider(provider, providerSessionId),
+      cwd,
+      cwdSource,
+      projectRoot: null,
+      worktree: null,
+      createdAt,
+      lastSeenAt: createdAt,
+      lastRestoredAt: null,
+    });
+  }
+
+  function scheduleCodexSessionAttach(ptyId: string, cwd: string, launchedAt: number): void {
+    const startedAt = Date.now();
+    const attempt = (): void => {
+      const summary = runtime.ptys.getSummary(ptyId) as { status?: string } | null;
+      if (!summary || summary.status !== "running") return;
+
+      const match = findRecentLogSessionByCwd("codex", cwd, launchedAt);
+      if (match) {
+        attachLiveAgentSession(
+          ptyId,
+          "codex",
+          match.sessionId,
+          match.cwd ?? cwd,
+          match.createdAt || launchedAt,
+          match.prompt ?? null,
+          "log",
+        );
+        void runtime.broadcastPtyList();
+        return;
+      }
+
+      if ((Date.now() - startedAt) >= CODEX_ATTACH_TIMEOUT_MS) return;
+      setTimeout(attempt, CODEX_ATTACH_POLL_MS);
+    };
+
+    setTimeout(attempt, CODEX_ATTACH_POLL_MS);
+  }
 
   async function parseTaskRef(raw: unknown): Promise<{ taskRef: SessionTaskRef; worktreePath: string | null }> {
     if (typeof raw !== "object" || !raw || Array.isArray(raw)) {
@@ -177,6 +242,7 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
 
     const shell = process.env.AGMUX_SHELL ?? process.env.SHELL ?? "bash";
     const SESSION_NAME = agmuxSession;
+    const launchedAt = Date.now();
     try {
       await tmuxEnsureSession(SESSION_NAME, shell);
     } catch (err) {
@@ -204,6 +270,13 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     });
     runtime.trackLinkedSession(summary.id, linkedSession, "agmux");
     store.upsertSession(summary);
+    let launchProvider: AgentProvider | null = null;
+    let launchProviderSessionId: string | null = null;
+    if (agent === "claude") {
+      launchProvider = "claude";
+      launchProviderSessionId = randomUUID();
+      attachLiveAgentSession(summary.id, launchProvider, launchProviderSessionId, cwd, launchedAt);
+    }
     if (launchTaskRef) {
       store.assignTaskToSession({
         sessionId: summary.id,
@@ -220,9 +293,14 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     if (agent !== "shell") {
       const flags = typeof body.flags === "object" && body.flags ? body.flags as Record<string, string | boolean> : {};
       setTimeout(() => {
-        const cmd = agentCommand(agent, flags);
+        const cmd = launchProvider === "claude" && launchProviderSessionId
+          ? `${agentCommand(agent, flags)} --session-id ${launchProviderSessionId}`
+          : agentCommand(agent, flags);
         runtime.ptys.write(summary.id, `unset CLAUDECODE; ${cmd}\n`);
       }, 300);
+      if (agent === "codex") {
+        scheduleCodexSessionAttach(summary.id, cwd, launchedAt);
+      }
     }
 
     const agentFlags = typeof body.flags === "object" && body.flags ? body.flags : {};
