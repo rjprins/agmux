@@ -1,6 +1,6 @@
 # agmux
 
-Local web UI for managing agent terminal sessions. Streams PTY output to the browser over WebSockets, with customizable triggers and explicit Claude/Codex readiness callbacks.
+Local web UI for managing agent terminal sessions. Streams PTY output to the browser over WebSockets, with customizable triggers and Claude/Codex readiness callbacks backed by tmux pane inference fallback.
 
 Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [Codex](https://github.com/openai/codex), and other CLI-based coding agents — but works with any terminal program.
 
@@ -9,7 +9,7 @@ Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Web-based terminal viewer** — real-time PTY output streamed via WebSockets
 - **tmux-backed sessions** — agent sessions survive server restarts
 - **Trigger system** — pattern-match on terminal output and run custom actions
-- **Explicit agent readiness** — Claude hooks and Codex notify callbacks mark sessions ready
+- **Agent readiness** — Claude hooks and Codex notify callbacks mark sessions ready, with tmux pane inference as fallback
 - **Inactive session discovery** — include recent Claude/Codex/Pi JSONL sessions in the inactive list
 - **Themeable UI** — 5 built-in themes
 - **Multi-worktree support** — manage multiple git worktrees from one interface
@@ -72,10 +72,18 @@ Use the current UI API surface directly for agents:
 
 ## Claude / Codex readiness
 
-agmux no longer infers readiness from pane output. A PTY becomes `ready` only when:
+Claude and Codex callbacks are the preferred readiness signal. If those callbacks are not configured or do not fire, agmux falls back to the original tmux pane-based readiness inference.
+
+A PTY becomes `ready` immediately when:
 
 - Claude Code fires a `Notification` hook such as `idle_prompt` or `permission_prompt`
 - Codex runs its `notify` callback after a turn completes
+
+Without an explicit callback, agmux still infers readiness from visible tmux pane state:
+
+- changing pane content keeps the PTY `busy`
+- a stable prompt long enough marks the PTY `ready`
+- visible permission prompts also count as `ready`
 
 Every agmux-created shell exports these variables:
 

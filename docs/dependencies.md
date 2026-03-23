@@ -16,7 +16,7 @@
 |---|---|
 | **Claude Code** | Yes — explicit Claude `Notification` hooks |
 | **Codex CLI** | Yes — explicit Codex `notify` callback |
-| Any other CLI | No built-in readiness signaling |
+| Any other CLI | Heuristic tmux pane fallback only |
 
 ## Dev only
 

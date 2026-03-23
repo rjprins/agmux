@@ -271,7 +271,7 @@
     },
     "/api/readiness/report": {
       "post": {
-        "summary": "Report explicit agent readiness from Claude/Codex callbacks",
+        "summary": "Report explicit agent readiness from Claude/Codex callbacks, overriding fallback inference",
         "requestBody": {
           "required": true,
           "content": {
