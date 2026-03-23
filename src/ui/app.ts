@@ -40,6 +40,11 @@ import {
   type CloseWorktreeModalViewModel,
 } from "./close-worktree-modal-view";
 import {
+  findContainingWorktree,
+  isMainWorktreeForCwd,
+  type KnownWorktreeSummary,
+} from "./worktree-match";
+import {
   renderRestoreSessionModal,
   type RestoreSessionModalViewModel,
   type RestoreTargetChoice,
@@ -151,7 +156,7 @@ let latestPtyListModel: PtyListModel | null = null;
 let mobileInactiveProjectKey: string | null = null;
 
 // Client-side worktree cache, populated from GET /api/worktrees
-let knownWorktrees: Array<{ name: string; path: string; branch: string }> = [];
+let knownWorktrees: KnownWorktreeSummary[] = [];
 let serverRepoRoot = "";
 
 const ACTIVE_PTY_KEY = "agmux:activePty";
@@ -1984,6 +1989,7 @@ type CloseWorktreeModalState = {
   ptyProcess: string;
   worktreeName: string;
   worktreePath: string;
+  canRemoveWorktree: boolean;
   dirty: boolean | null;
   changes: string[];
   closing: boolean;
@@ -2003,6 +2009,7 @@ function renderCloseWorktreeModalState(): void {
     ? {
       ptyProcess: state.ptyProcess,
       worktreeName: state.worktreeName,
+      canRemoveWorktree: state.canRemoveWorktree,
       dirty: state.dirty,
       changes: state.changes,
       closing: state.closing,
@@ -2056,16 +2063,16 @@ function openCloseWorktreeModal(ptyId: string): void {
     (activeProcess && !isShellProcess(activeProcess) ? activeProcess : "") || activeProcess || p.name;
 
   // Determine the full worktree path from the cwd
-  const matchedWt = knownWorktrees.find(
-    (w) => p.cwd === w.path || p.cwd!.startsWith(w.path + "/"),
-  );
+  const matchedWt = findContainingWorktree(p.cwd, knownWorktrees);
   const worktreePath = matchedWt ? matchedWt.path : p.cwd;
+  const canRemoveWorktree = !isMainWorktreeForCwd(p.cwd, knownWorktrees, serverRepoRoot);
 
   closeWorktreeModalState = {
     ptyId,
     ptyProcess: process,
     worktreeName: wt,
     worktreePath,
+    canRemoveWorktree,
     dirty: null,
     changes: [],
     closing: false,
@@ -2307,6 +2314,11 @@ function killPty(ptyId: string): void {
 
   const wt = worktreeName(p.cwd);
   if (!wt) {
+    void killPtyDirect(ptyId);
+    return;
+  }
+
+  if (isMainWorktreeForCwd(p.cwd, knownWorktrees, serverRepoRoot)) {
     void killPtyDirect(ptyId);
     return;
   }
@@ -2929,10 +2941,8 @@ function openAgentSessionActions(agentSessionId: string): void {
 
 function normalizeCwdGroupKey(cwd: string): string {
   // If cwd matches a known worktree path, group under the main repo root
-  for (const wt of knownWorktrees) {
-    if (cwd === wt.path || cwd.startsWith(wt.path + "/")) {
-      return serverRepoRoot || cwd;
-    }
+  if (findContainingWorktree(cwd, knownWorktrees)) {
+    return serverRepoRoot || cwd;
   }
   // Fallback: also handle legacy .worktrees/ paths for backwards compat
   const idx = cwd.indexOf("/.worktrees/");
@@ -2971,10 +2981,9 @@ function getInactiveSessionsForProject(groupKey: string): AgentSessionSummary[] 
 
 function worktreeName(cwd: string | null): string | null {
   if (!cwd) return null;
-  for (const wt of knownWorktrees) {
-    if (cwd === wt.path || cwd.startsWith(wt.path + "/")) {
-      return wt.branch || wt.name;
-    }
+  const matchedWorktree = findContainingWorktree(cwd, knownWorktrees);
+  if (matchedWorktree) {
+    return matchedWorktree.branch || matchedWorktree.name;
   }
   // Fallback: legacy .worktrees/ pattern
   const m = cwd.match(/\/\.worktrees\/([^/]+)/);

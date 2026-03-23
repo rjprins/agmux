@@ -3,6 +3,7 @@ import { render } from "preact";
 export type CloseWorktreeModalViewModel = {
   ptyProcess: string;
   worktreeName: string;
+  canRemoveWorktree: boolean;
   dirty: boolean | null; // null = still loading
   changes: string[];
   closing: boolean;
@@ -54,14 +55,26 @@ export function renderCloseWorktreeModal(
           <strong>{model.worktreeName}</strong>.
         </p>
 
-        <p className={`close-wt-status${isDirty ? " close-wt-status-dirty" : dirtyLoading ? " close-wt-status-loading" : " close-wt-status-clean"}`}>
-          {dirtyLoading
-            ? "Checking worktree status..."
-            : isDirty
-              ? "Worktree has uncommitted changes. Removing it will discard them."
-              : "Worktree is clean."}
+        <p
+          className={`close-wt-status${
+            !model.canRemoveWorktree
+              ? " close-wt-status-clean"
+              : isDirty
+                ? " close-wt-status-dirty"
+                : dirtyLoading
+                  ? " close-wt-status-loading"
+                  : " close-wt-status-clean"
+          }`}
+        >
+          {!model.canRemoveWorktree
+            ? "This is the main worktree and will not be removed."
+            : dirtyLoading
+              ? "Checking worktree status..."
+              : isDirty
+                ? "Worktree has uncommitted changes. Removing it will discard them."
+                : "Worktree is clean."}
         </p>
-        {isDirty && model.changes.length > 0 && (
+        {model.canRemoveWorktree && isDirty && model.changes.length > 0 && (
           <pre className="close-wt-changes">{model.changes.slice(0, 10).join("\n")}{model.changes.length > 10 ? `\n... and ${model.changes.length - 10} more` : ""}</pre>
         )}
 
@@ -76,21 +89,23 @@ export function renderCloseWorktreeModal(
           >
             Close session
           </button>
-          <button
-            type="button"
-            className={`launch-modal-go${isDirty ? " close-wt-danger" : ""}`}
-            disabled={model.closing || dirtyLoading}
-            title={isDirty ? "Worktree has uncommitted changes" : "Close session and remove worktree from disk"}
-            onClick={() => handlers.onCloseAndRemove()}
-          >
-            {model.closing
-              ? "Closing..."
-              : dirtyLoading
-                ? "Checking..."
-                : isDirty
-                  ? "Close + remove (dirty!)"
-                  : "Close + remove worktree"}
-          </button>
+          {model.canRemoveWorktree && (
+            <button
+              type="button"
+              className={`launch-modal-go${isDirty ? " close-wt-danger" : ""}`}
+              disabled={model.closing || dirtyLoading}
+              title={isDirty ? "Worktree has uncommitted changes" : "Close session and remove worktree from disk"}
+              onClick={() => handlers.onCloseAndRemove()}
+            >
+              {model.closing
+                ? "Closing..."
+                : dirtyLoading
+                  ? "Checking..."
+                  : isDirty
+                    ? "Close + remove (dirty!)"
+                    : "Close + remove worktree"}
+            </button>
+          )}
         </div>
       </div>
     </div>,
