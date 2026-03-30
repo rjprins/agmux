@@ -4,7 +4,10 @@ import { parseJsonBody } from "../auth.js";
 type WorktreeRoutesDeps = {
   fastify: FastifyInstance;
   worktrees: {
-    listWorktrees: () => { worktrees: Array<{ name: string; path: string; branch: string }>; repoRoot: string };
+    listWorktrees: (projectRoot?: string | null) => {
+      worktrees: Array<{ name: string; path: string; branch: string }>;
+      repoRoot: string;
+    };
     defaultBranch: (projectRoot: string | null) => Promise<string>;
     resolveProjectRoot: (raw: unknown) => Promise<string | null>;
     worktreeStatus: (path: string) => Promise<{ dirty: boolean; branch: string; changes: string[] }>;
@@ -28,8 +31,10 @@ export function registerWorktreeRoutes(deps: WorktreeRoutesDeps): void {
     return { exists };
   });
 
-  fastify.get("/api/worktrees", async () => {
-    return worktrees.listWorktrees();
+  fastify.get("/api/worktrees", async (req) => {
+    const q = req.query as Record<string, unknown>;
+    const projectRoot = await worktrees.resolveProjectRoot(q.projectRoot);
+    return worktrees.listWorktrees(projectRoot);
   });
 
   fastify.get("/api/default-branch", async (req) => {

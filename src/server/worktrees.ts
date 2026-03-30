@@ -74,9 +74,10 @@ export function createWorktreeService(deps: WorktreeServiceDeps) {
     return true;
   }
 
-  function listWorktrees(): { worktrees: WorktreeSummary[]; repoRoot: string } {
-    refreshWorktreeCacheSync(repoRoot);
-    const cache = getWorktreeCache(repoRoot);
+  function listWorktrees(projectRoot?: string | null): { worktrees: WorktreeSummary[]; repoRoot: string } {
+    const effectiveRepoRoot = path.resolve(projectRoot ?? repoRoot);
+    refreshWorktreeCacheSync(effectiveRepoRoot);
+    const cache = getWorktreeCache(effectiveRepoRoot);
     const worktrees: WorktreeSummary[] = [];
     for (const entry of cache) {
       worktrees.push({
@@ -85,7 +86,7 @@ export function createWorktreeService(deps: WorktreeServiceDeps) {
         branch: entry.branch,
       });
     }
-    return { worktrees, repoRoot };
+    return { worktrees, repoRoot: effectiveRepoRoot };
   }
 
   async function worktreeStatus(wtPath: string): Promise<WorktreeStatus> {

@@ -1,12 +1,13 @@
 import path from "node:path";
+import process from "node:process";
 import { execFileSync } from "node:child_process";
 
 export const DEFAULT_WORKTREE_TEMPLATE = "../{repo-name}-{branch}";
 
 export type WorktreeEntry = { path: string; branch: string };
 
-let worktreeCache: WorktreeEntry[] = [];
-let worktreeCacheTime = 0;
+const worktreeCache = new Map<string, WorktreeEntry[]>();
+const worktreeCacheTime = new Map<string, number>();
 const WORKTREE_CACHE_TTL_MS = 30_000;
 
 /**
@@ -51,26 +52,29 @@ export function resolveWorktreePath(repoRoot: string, branch: string, template: 
  * Refresh the worktree cache synchronously by running `git worktree list --porcelain`.
  */
 export function refreshWorktreeCacheSync(repoRoot: string): void {
+  const cacheKey = path.resolve(repoRoot);
   try {
     const output = execFileSync("git", ["worktree", "list", "--porcelain"], {
-      cwd: repoRoot,
+      cwd: cacheKey,
       encoding: "utf8",
     });
-    worktreeCache = parseWorktreeListPorcelain(output);
+    worktreeCache.set(cacheKey, parseWorktreeListPorcelain(output));
   } catch {
-    worktreeCache = [];
+    worktreeCache.set(cacheKey, []);
   }
-  worktreeCacheTime = Date.now();
+  worktreeCacheTime.set(cacheKey, Date.now());
 }
 
 /**
  * Get cached worktree list, refreshing if stale (>30s).
  */
 export function getWorktreeCache(repoRoot: string): WorktreeEntry[] {
-  if (Date.now() - worktreeCacheTime > WORKTREE_CACHE_TTL_MS) {
-    refreshWorktreeCacheSync(repoRoot);
+  const cacheKey = path.resolve(repoRoot);
+  const updatedAt = worktreeCacheTime.get(cacheKey) ?? 0;
+  if (Date.now() - updatedAt > WORKTREE_CACHE_TTL_MS) {
+    refreshWorktreeCacheSync(cacheKey);
   }
-  return worktreeCache;
+  return worktreeCache.get(cacheKey) ?? [];
 }
 
 /**
@@ -123,14 +127,15 @@ export function isKnownWorktree(checkPath: string, repoRoot: string): boolean {
  * Reset the cache (for testing).
  */
 export function _resetCacheForTesting(): void {
-  worktreeCache = [];
-  worktreeCacheTime = 0;
+  worktreeCache.clear();
+  worktreeCacheTime.clear();
 }
 
 /**
  * Set the cache directly (for testing).
  */
-export function _setCacheForTesting(entries: WorktreeEntry[]): void {
-  worktreeCache = entries;
-  worktreeCacheTime = Date.now();
+export function _setCacheForTesting(entries: WorktreeEntry[], repoRoot?: string): void {
+  const cacheKey = path.resolve(repoRoot ?? entries[0]?.path ?? process.cwd());
+  worktreeCache.set(cacheKey, entries);
+  worktreeCacheTime.set(cacheKey, Date.now());
 }

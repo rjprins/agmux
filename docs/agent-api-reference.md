@@ -315,7 +315,7 @@ Errors:
 
 - `400` missing `path`
 
-### `GET /api/worktrees`
+### `GET /api/worktrees[?projectRoot=<path>]`
 
 Success:
 

@@ -163,3 +163,25 @@ describe("projectRootFromCwd", () => {
     expect(projectRootFromCwd(null, repoRoot)).toBeNull();
   });
 });
+
+describe("worktree cache", () => {
+  test("keeps separate entries per repo root", () => {
+    _setCacheForTesting(
+      [
+        { path: "/home/user/repo-a", branch: "main" },
+        { path: "/home/user/repo-a-feature", branch: "feature-a" },
+      ],
+      "/home/user/repo-a",
+    );
+    _setCacheForTesting(
+      [
+        { path: "/home/user/repo-b", branch: "main" },
+        { path: "/home/user/repo-b-feature", branch: "feature-b" },
+      ],
+      "/home/user/repo-b",
+    );
+
+    expect(worktreeFromCwd("/home/user/repo-a-feature/src", "/home/user/repo-a")).toBe("feature-a");
+    expect(worktreeFromCwd("/home/user/repo-b-feature/src", "/home/user/repo-b")).toBe("feature-b");
+  });
+});

@@ -432,6 +432,23 @@ describe("listWorktrees: main worktree should be selectable", () => {
     const svc = makeService(repo.repoRoot);
     expect(await svc.directoryExists(repo.repoRoot)).toBe(true);
   });
+
+  test("listWorktrees can target a different resolved project root", async () => {
+    const repoA = await createTempRepo("main");
+    const repoB = await createTempRepo("main");
+    cleanup = async () => {
+      await repoA.cleanup();
+      await repoB.cleanup();
+    };
+    const svc = makeService(repoA.repoRoot);
+    await svc.createWorktreeFromBase({ projectRoot: repoB.repoRoot, branch: "feature-b", baseBranch: "main" });
+
+    const { worktrees, repoRoot } = svc.listWorktrees(repoB.repoRoot);
+    expect(repoRoot).toBe(repoB.repoRoot);
+    expect(worktrees.some((w) => w.path === repoB.repoRoot)).toBe(true);
+    expect(worktrees.some((w) => w.branch === "feature-b")).toBe(true);
+    expect(worktrees.some((w) => w.path === repoA.repoRoot)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

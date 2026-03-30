@@ -184,6 +184,30 @@ describe("route wiring", () => {
     expect(json.worktrees[0]?.name).toBe("wt");
     await fastify.close();
   });
+
+  it("passes projectRoot through to /api/worktrees when provided", async () => {
+    const fastify = Fastify();
+    const calls: Array<string | null | undefined> = [];
+    const worktrees = {
+      listWorktrees: (projectRoot?: string | null) => {
+        calls.push(projectRoot);
+        return { worktrees: [{ name: "wt", path: projectRoot ?? "/tmp/wt", branch: "wt" }], repoRoot: projectRoot ?? "/tmp" };
+      },
+      defaultBranch: async () => "main",
+      resolveProjectRoot: async (raw: unknown) => typeof raw === "string" ? `/resolved${raw}` : null,
+      worktreeStatus: async () => ({ dirty: false, branch: "wt" }),
+      removeWorktree: async () => {},
+      directoryExists: async () => true,
+      isKnownWorktreePath: () => true,
+    } as any;
+
+    registerWorktreeRoutes({ fastify, worktrees });
+
+    const res = await fastify.inject({ method: "GET", url: "/api/worktrees?projectRoot=/repo" });
+    expect(res.statusCode).toBe(200);
+    expect(calls).toEqual(["/resolved/repo"]);
+    await fastify.close();
+  });
 });
 
 describe("ws wiring", () => {

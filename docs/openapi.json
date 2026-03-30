@@ -487,6 +487,14 @@
     "/api/worktrees": {
       "get": {
         "summary": "List worktrees",
+        "parameters": [
+          {
+            "name": "projectRoot",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" }
+          }
+        ],
         "responses": {
           "200": { "description": "OK" }
         }
