@@ -78,15 +78,19 @@ export function renderLaunchModal(
 
         <label className="launch-modal-label">
           Agent
-          <select
-            className="launch-modal-select"
-            value={model.selectedAgent}
-            onChange={(ev) => handlers.onAgentChange((ev.currentTarget as HTMLSelectElement).value)}
-          >
+          <div className="launch-modal-agent-buttons" role="group" aria-label="Agent">
             {model.agentChoices.map((agent) => (
-              <option key={agent} value={agent}>{agent}</option>
+              <button
+                key={agent}
+                type="button"
+                className={`launch-modal-agent-button${model.selectedAgent === agent ? " active" : ""}`}
+                aria-pressed={model.selectedAgent === agent}
+                onClick={() => handlers.onAgentChange(agent)}
+              >
+                {agent}
+              </button>
             ))}
-          </select>
+          </div>
         </label>
 
         <div className="launch-modal-options">

@@ -438,7 +438,7 @@ function autoArchiveMissingDirectories(): void {
     if (exists === false) {
       // Only auto-archive if no running PTYs use this directory
       const hasRunning = ptys.some(
-        (p) => p.status === "running" && p.cwd && normalizeCwdGroupKey(p.cwd) === dir,
+        (p) => p.status === "running" && ptyProjectKey(p) === dir,
       );
       if (!hasRunning) {
         pinnedDirectories.delete(dir);
@@ -1163,7 +1163,12 @@ function connectWs(): void {
       fitAndResizeActive();
       reflowActiveTerm();
     });
+    if (listRefreshTimer) {
+      clearTimeout(listRefreshTimer);
+      listRefreshTimer = null;
+    }
     refreshList();
+    scheduleListRefresh();
   });
 
   ws.addEventListener("close", () => {
@@ -1171,6 +1176,11 @@ function connectWs(): void {
     addEvent(`WS disconnected`);
     wsConnected = false;
     scheduleMobileRender();
+    if (listRefreshTimer) {
+      clearTimeout(listRefreshTimer);
+      listRefreshTimer = null;
+    }
+    scheduleListRefresh();
     scheduleWsReconnect();
   });
 
@@ -1352,7 +1362,7 @@ function onServerMsg(msg: ServerMsg): void {
     const dirsToCheck = [...allSessionDirs].filter((d) => {
       if (!d) return false;
       if (directoryExistsCache.has(d)) return false;
-      return !ptys.some((p) => p.status === "running" && p.cwd && normalizeCwdGroupKey(p.cwd) === d);
+      return !ptys.some((p) => p.status === "running" && ptyProjectKey(p) === d);
     });
     if (dirsToCheck.length > 0) {
       void checkDirectoryExistence(dirsToCheck).then(() => {
@@ -1570,14 +1580,75 @@ function addEvent(text: string): void {
   while (eventsEl.children.length > 50) eventsEl.removeChild(eventsEl.lastElementChild!);
 }
 
+type RefreshListOptions = {
+  forceAgentSessions?: boolean;
+};
+
+const AGENT_SESSIONS_REFRESH_ACTIVE_MS = 300_000;
+const AGENT_SESSIONS_REFRESH_IDLE_MS = 300_000;
+const AGENT_SESSIONS_REFRESH_HIDDEN_MS = 300_000;
+
 let listRefreshInFlight = false;
-async function refreshList(): Promise<void> {
+let lastAgentSessionsRefreshAt = 0;
+
+function agentSessionsRefreshInterval(): number {
+  if (document.hidden) return AGENT_SESSIONS_REFRESH_HIDDEN_MS;
+  const running = ptys.some((p) => p.status === "running");
+  return running ? AGENT_SESSIONS_REFRESH_ACTIVE_MS : AGENT_SESSIONS_REFRESH_IDLE_MS;
+}
+
+function shouldRefreshAgentSessions(force = false, now = Date.now()): boolean {
+  if (force || lastAgentSessionsRefreshAt === 0 || agentSessions.length === 0) return true;
+  return now - lastAgentSessionsRefreshAt >= agentSessionsRefreshInterval();
+}
+
+function samePtys(a: PtySummary[], b: PtySummary[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (!left || !right) return false;
+    if (left.id !== right.id) return false;
+    if (left.status !== right.status) return false;
+    if ((left.cwd ?? null) !== (right.cwd ?? null)) return false;
+    if ((left.tmuxSession ?? null) !== (right.tmuxSession ?? null)) return false;
+    if ((left.tmuxServer ?? null) !== (right.tmuxServer ?? null)) return false;
+    if ((left.activeProcess ?? null) !== (right.activeProcess ?? null)) return false;
+    if ((left.readyState ?? null) !== (right.readyState ?? null)) return false;
+    if ((left.readyIndicator ?? null) !== (right.readyIndicator ?? null)) return false;
+    if ((left.readyReason ?? null) !== (right.readyReason ?? null)) return false;
+    if ((left.readyStateChangedAt ?? null) !== (right.readyStateChangedAt ?? null)) return false;
+    if ((left.agentSessionId ?? null) !== (right.agentSessionId ?? null)) return false;
+  }
+  return true;
+}
+
+function sameAgentSessions(a: AgentSessionSummary[], b: AgentSessionSummary[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    const left = a[i];
+    const right = b[i];
+    if (!left || !right) return false;
+    if (left.id !== right.id) return false;
+    if (left.lastSeenAt !== right.lastSeenAt) return false;
+    if ((left.lastRestoredAt ?? null) !== (right.lastRestoredAt ?? null)) return false;
+    if ((left.cwd ?? null) !== (right.cwd ?? null)) return false;
+    if ((left.cwdSource ?? null) !== (right.cwdSource ?? null)) return false;
+    if ((left.name ?? "") !== (right.name ?? "")) return false;
+    if ((left.projectRoot ?? null) !== (right.projectRoot ?? null)) return false;
+    if ((left.worktree ?? null) !== (right.worktree ?? null)) return false;
+  }
+  return true;
+}
+
+async function refreshList(options: RefreshListOptions = {}): Promise<void> {
   if (listRefreshInFlight) return;
   listRefreshInFlight = true;
   try {
+    const refreshAgentSessions = shouldRefreshAgentSessions(options.forceAgentSessions);
     const [ptysRes, sessionsRes] = await Promise.all([
       authFetch("/api/ptys", { cache: "no-store" }),
-      authFetch("/api/agent-sessions", { cache: "no-store" }),
+      refreshAgentSessions ? authFetch("/api/agent-sessions", { cache: "no-store" }) : Promise.resolve(null),
     ]);
 
     if (!ptysRes.ok) {
@@ -1587,19 +1658,31 @@ async function refreshList(): Promise<void> {
     if (!Array.isArray(ptysJson.ptys)) {
       throw new Error("invalid PTY list response");
     }
-    ptys = ptysJson.ptys as PtySummary[];
+    const nextPtys = ptysJson.ptys as PtySummary[];
+    let nextAgentSessions = agentSessions;
 
-    if (sessionsRes.ok) {
-      const sessionsJson = (await sessionsRes.json()) as { sessions?: unknown };
-      if (Array.isArray(sessionsJson.sessions)) {
-        agentSessions = sessionsJson.sessions as AgentSessionSummary[];
+    if (sessionsRes) {
+      if (sessionsRes.ok) {
+        const sessionsJson = (await sessionsRes.json()) as { sessions?: unknown };
+        if (Array.isArray(sessionsJson.sessions)) {
+          nextAgentSessions = sessionsJson.sessions as AgentSessionSummary[];
+        } else {
+          nextAgentSessions = [];
+        }
+        lastAgentSessionsRefreshAt = Date.now();
       } else {
-        agentSessions = [];
+        nextAgentSessions = [];
+        lastAgentSessionsRefreshAt = Date.now();
+        addEvent(`Failed to refresh agent sessions: ${await readApiError(sessionsRes)}`);
       }
-    } else {
-      agentSessions = [];
-      addEvent(`Failed to refresh agent sessions: ${await readApiError(sessionsRes)}`);
     }
+
+    const ptysChanged = !samePtys(ptys, nextPtys);
+    const sessionsChanged = !sameAgentSessions(agentSessions, nextAgentSessions);
+    if (!ptysChanged && !sessionsChanged) return;
+
+    ptys = nextPtys;
+    agentSessions = nextAgentSessions;
 
     syncProviderHistoryStateWithPtys();
     updateTerminalVisibility();
@@ -1631,7 +1714,7 @@ function compactWhitespace(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-const AGENT_CHOICES = ["claude", "codex", "aider", "goose", "opencode", "cursor-agent", "shell"];
+const AGENT_CHOICES = ["claude", "codex", "shell"];
 
 type OptionDef =
   | { type: "select"; flag: string; label: string; choices: { value: string; label: string }[]; defaultValue: string }
@@ -1754,7 +1837,7 @@ function buildDirectoryOptions(): { value: string; label: string }[] {
   }
   for (const p of ptys) {
     if (p.status === "running" && p.cwd) {
-      const key = normalizeCwdGroupKey(p.cwd);
+      const key = ptyProjectKey(p);
       if (key && !archivedDirectories.has(key)) dirs.add(key);
     }
   }
@@ -2093,7 +2176,7 @@ function renderCloseWorktreeModalState(): void {
 function openCloseWorktreeModal(ptyId: string): void {
   const p = ptys.find((x) => x.id === ptyId);
   if (!p) return;
-  const wt = worktreeName(p.cwd);
+  const wt = ptyWorktreeLabel(p);
   if (!wt || !p.cwd) return;
 
   const readyInfo = ptyReady.get(p.id) ?? readinessFromSummary(p);
@@ -2445,7 +2528,7 @@ async function killPtyDirect(ptyId: string): Promise<void> {
   removeTerm(ptyId);
   updateTerminalVisibility();
 
-  await refreshList();
+  await refreshList({ forceAgentSessions: true });
 }
 
 function killPty(ptyId: string): void {
@@ -2455,7 +2538,7 @@ function killPty(ptyId: string): void {
     return;
   }
 
-  const wt = worktreeName(p.cwd);
+  const wt = ptyWorktreeLabel(p);
   if (!wt) {
     void killPtyDirect(ptyId);
     return;
@@ -2468,7 +2551,7 @@ function killPty(ptyId: string): void {
 
   // Check if there are other running PTYs in the same worktree
   const sameWorktree = ptys.filter(
-    (x) => x.id !== ptyId && x.status === "running" && worktreeName(x.cwd) === wt,
+    (x) => x.id !== ptyId && x.status === "running" && ptyWorktreeLabel(x) === wt,
   );
   if (sameWorktree.length > 0) {
     void killPtyDirect(ptyId);
@@ -2508,7 +2591,7 @@ async function restoreAgentSession(agentSessionId: string, target?: RestoreAgent
   const json = (await res.json()) as { id: string };
   addEvent(`Restored agent session ${agentSessionId}`);
   await refreshWorktreeCache();
-  await refreshList();
+  await refreshList({ forceAgentSessions: true });
   if (mobileViewport) {
     mobileView = "session";
     saveMobileView();
@@ -3093,8 +3176,16 @@ function normalizeCwdGroupKey(cwd: string): string {
   return cwd;
 }
 
+function ptyProjectKey(pty: PtySummary): string {
+  return pty.projectRoot ?? (pty.cwd ? normalizeCwdGroupKey(pty.cwd) : "");
+}
+
+function ptyWorktreeLabel(pty: PtySummary): string | null {
+  return pty.worktree ?? worktreeName(pty.cwd);
+}
+
 function runningPtyGroupKey(pty: PtySummary): string {
-  return pty.cwd ? normalizeCwdGroupKey(pty.cwd) : "";
+  return ptyProjectKey(pty);
 }
 
 function agentSessionProjectKey(session: AgentSessionSummary): string {
@@ -3234,7 +3325,7 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
     process,
     title: title && title !== process ? title : undefined,
     secondaryText,
-    worktree: worktreeName(p.cwd),
+    worktree: ptyWorktreeLabel(p),
     cwd: p.cwd ?? undefined,
     elapsed: elapsed || undefined,
   };
@@ -3314,8 +3405,8 @@ function mobileActiveProcessLabel(process: string): string {
 
 function buildMobileTitle(pty: PtySummary, process: string, worktree?: string): string {
   const parts: string[] = [];
-  if (pty.cwd) {
-    const projectRoot = normalizeCwdGroupKey(pty.cwd);
+  const projectRoot = ptyProjectKey(pty);
+  if (projectRoot) {
     const project = pathBaseName(projectRoot);
     if (project) parts.push(project);
   }
@@ -4494,6 +4585,11 @@ document.addEventListener(
   (ev: KeyboardEvent) => {
     if (!ev.ctrlKey || !ev.shiftKey || ev.altKey || ev.metaKey) return;
     switch (ev.code) {
+      case "Backslash":
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleSidebar();
+        return;
       case "BracketRight":
         ev.preventDefault();
         ev.stopPropagation();
@@ -4540,6 +4636,7 @@ keysPopup.innerHTML = `
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>\`</kbd></td><td>New shell</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Q</kbd></td><td>Close PTY</td></tr>
     <tr><td>Select text</td><td>Copy to clipboard</td></tr>
+    <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>\\</kbd></td><td>Toggle sidebar</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>]</kbd></td><td>Next PTY</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>[</kbd></td><td>Previous PTY</td></tr>
     <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Space</kbd></td><td>Next ready PTY</td></tr>
@@ -4744,15 +4841,20 @@ void (async () => {
   }
 })();
 
-const LIST_REFRESH_ACTIVE_MS = 5000;
-const LIST_REFRESH_IDLE_MS = 15_000;
-const LIST_REFRESH_HIDDEN_MS = 30_000;
+const LIST_REFRESH_CONNECTED_ACTIVE_MS = 300_000;
+const LIST_REFRESH_CONNECTED_IDLE_MS = 300_000;
+const LIST_REFRESH_DISCONNECTED_ACTIVE_MS = 5000;
+const LIST_REFRESH_DISCONNECTED_IDLE_MS = 15_000;
+const LIST_REFRESH_HIDDEN_MS = 60_000;
 let listRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
 function listRefreshInterval(): number {
   if (document.hidden) return LIST_REFRESH_HIDDEN_MS;
   const running = ptys.some((p) => p.status === "running");
-  return running ? LIST_REFRESH_ACTIVE_MS : LIST_REFRESH_IDLE_MS;
+  if (wsConnected) {
+    return running ? LIST_REFRESH_CONNECTED_ACTIVE_MS : LIST_REFRESH_CONNECTED_IDLE_MS;
+  }
+  return running ? LIST_REFRESH_DISCONNECTED_ACTIVE_MS : LIST_REFRESH_DISCONNECTED_IDLE_MS;
 }
 
 function scheduleListRefresh(immediate = false): void {

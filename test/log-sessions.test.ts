@@ -17,6 +17,17 @@ async function writeJsonl(filePath: string, lines: unknown[]): Promise<void> {
   await fs.writeFile(filePath, body, "utf8");
 }
 
+async function waitFor<T>(fn: () => Promise<T>, predicate: (value: T) => boolean, timeoutMs = 250): Promise<T> {
+  const deadline = Date.now() + timeoutMs;
+  // Small polling loop for async background cache refreshes.
+  while (true) {
+    const value = await fn();
+    if (predicate(value)) return value;
+    if (Date.now() >= deadline) return value;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 describe("discoverInactiveLogSessions", () => {
   let tmpRoot: string | null = null;
 
@@ -148,18 +159,24 @@ describe("LogSessionDiscovery cache", () => {
       cacheMs: 1000,
     });
 
-    const at0 = discovery.list(10_000);
+    const at0 = await discovery.list(10_000);
     expect(at0.some((s) => s.id === "log:claude:one")).toBe(true);
 
     await writeJsonl(path.join(claudeDir, "projects", "a", "two.jsonl"), [
       { sessionId: "two", cwd: "/tmp/two" },
     ]);
 
-    const at500 = discovery.list(10_500);
+    const at500 = await discovery.list(10_500);
     expect(at500.some((s) => s.id === "log:claude:two")).toBe(false);
 
-    const at1501 = discovery.list(11_501);
-    expect(at1501.some((s) => s.id === "log:claude:two")).toBe(true);
+    const at1501 = await discovery.list(11_501);
+    expect(at1501.some((s) => s.id === "log:claude:two")).toBe(false);
+
+    const refreshed = await waitFor(
+      () => discovery.list(11_502),
+      (sessions) => sessions.some((s) => s.id === "log:claude:two"),
+    );
+    expect(refreshed.some((s) => s.id === "log:claude:two")).toBe(true);
   });
 });
 

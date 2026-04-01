@@ -34,6 +34,8 @@ export type PtySummary = {
   command: string;
   args: string[];
   cwd: string | null;
+  projectRoot?: string | null;
+  worktree?: string | null;
   createdAt: number;
   lastSeenAt?: number;
   status: PtyStatus;

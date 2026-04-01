@@ -10,7 +10,7 @@ export const REPO_ROOT = (() => {
     const gitCommon = execFileSync(
       "git",
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { encoding: "utf8" },
+      { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
     ).trim();
     return path.dirname(gitCommon);
   } catch {

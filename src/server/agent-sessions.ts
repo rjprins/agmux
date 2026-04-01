@@ -2,7 +2,7 @@ import path from "node:path";
 import type { AgentProvider, AgentSessionCwdSource, AgentSessionSummary, PtySummary } from "../types.js";
 import type { AgentSessionRecord, SqliteStore } from "../persist/sqlite.js";
 import type { LogSessionDiscovery } from "../logSessions.js";
-import { projectRootFromCwd, worktreeFromCwd } from "../worktree.js";
+import { projectRootFromCwdAny, worktreeFromCwdAny } from "../worktree.js";
 
 type AgentSessionServiceDeps = {
   store: SqliteStore;
@@ -40,15 +40,15 @@ export function agentSessionPublicId(provider: AgentProvider, providerSessionId:
 export type AgentSessionService = ReturnType<typeof createAgentSessionService>;
 
 export function createAgentSessionService(deps: AgentSessionServiceDeps) {
-  const { store, logSessionDiscovery, repoRoot } = deps;
+  const { store, logSessionDiscovery } = deps;
   const agentSessionRefByPty = new Map<string, { provider: AgentProvider; providerSessionId: string }>();
 
   function serverWorktreeFromCwd(cwd: string | null): string | null {
-    return worktreeFromCwd(cwd, repoRoot);
+    return worktreeFromCwdAny(cwd);
   }
 
   function serverProjectRootFromCwd(cwd: string | null): string | null {
-    return projectRootFromCwd(cwd, repoRoot);
+    return projectRootFromCwdAny(cwd);
   }
 
   function mergeAgentSessions(base: AgentSessionSummary, next: AgentSessionSummary): AgentSessionSummary {
@@ -175,11 +175,11 @@ export function createAgentSessionService(deps: AgentSessionServiceDeps) {
     });
   }
 
-  function listAgentSessions(): AgentSessionSummary[] {
+  async function listAgentSessions(): Promise<AgentSessionSummary[]> {
     const merged = new Map<string, AgentSessionSummary>();
     const dbRows = store.listAgentSessions().map(toAgentSessionFromRecord).filter((x): x is AgentSessionSummary => x != null);
     const legacyRows = store.listSessions(800).map(toAgentSessionFromLegacySessionRow).filter((x): x is AgentSessionSummary => x != null);
-    const discovered = logSessionDiscovery.list().map(toAgentSessionFromLog).filter((x): x is AgentSessionSummary => x != null);
+    const discovered = (await logSessionDiscovery.list()).map(toAgentSessionFromLog).filter((x): x is AgentSessionSummary => x != null);
 
     for (const session of [...dbRows, ...legacyRows, ...discovered]) {
       const key = `${session.provider}:${session.providerSessionId}`;
@@ -189,9 +189,9 @@ export function createAgentSessionService(deps: AgentSessionServiceDeps) {
     return [...merged.values()].sort((a, b) => b.lastSeenAt - a.lastSeenAt);
   }
 
-  function findAgentSessionSummary(provider: AgentProvider, providerSessionId: string): AgentSessionSummary | null {
+  async function findAgentSessionSummary(provider: AgentProvider, providerSessionId: string): Promise<AgentSessionSummary | null> {
     const wantedKey = `${provider}:${providerSessionId}`;
-    for (const session of listAgentSessions()) {
+    for (const session of await listAgentSessions()) {
       if (`${session.provider}:${session.providerSessionId}` === wantedKey) return session;
     }
     return null;

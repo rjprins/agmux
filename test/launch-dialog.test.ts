@@ -21,7 +21,7 @@ import path from "node:path";
 
 import { createWorktreeService } from "../src/server/worktrees.js";
 import { agentCommand, FLAG_DEFAULTS } from "../src/server/routes/ptys.js";
-import { _resetCacheForTesting } from "../src/worktree.js";
+import { _resetCacheForTesting, projectRootFromCwdAny, worktreeFromCwdAny } from "../src/worktree.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -448,6 +448,38 @@ describe("listWorktrees: main worktree should be selectable", () => {
     expect(worktrees.some((w) => w.path === repoB.repoRoot)).toBe(true);
     expect(worktrees.some((w) => w.branch === "feature-b")).toBe(true);
     expect(worktrees.some((w) => w.path === repoA.repoRoot)).toBe(false);
+  });
+});
+
+describe("generic worktree resolution", () => {
+  let cleanup: (() => Promise<void>) | undefined;
+
+  beforeEach(() => {
+    _resetCacheForTesting();
+  });
+
+  afterEach(async () => {
+    _resetCacheForTesting();
+    await cleanup?.();
+    cleanup = undefined;
+  });
+
+  test("resolves shared repo root and branch from a linked worktree cwd", async () => {
+    const repo = await createTempRepo("main");
+    cleanup = repo.cleanup;
+    const svc = makeService(repo.repoRoot);
+    const worktreePath = await svc.createWorktreeFromBase({
+      projectRoot: repo.repoRoot,
+      branch: "feature-linked",
+      baseBranch: "main",
+    });
+    const nestedDir = path.join(worktreePath, "src");
+    await fs.mkdir(nestedDir);
+
+    expect(projectRootFromCwdAny(worktreePath)).toBe(repo.repoRoot);
+    expect(projectRootFromCwdAny(nestedDir)).toBe(repo.repoRoot);
+    expect(worktreeFromCwdAny(worktreePath)).toBe("feature-linked");
+    expect(worktreeFromCwdAny(nestedDir)).toBe("feature-linked");
   });
 });
 

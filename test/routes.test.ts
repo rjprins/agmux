@@ -114,7 +114,7 @@ describe("route wiring", () => {
   it("serves /api/agent-sessions with merged list", async () => {
     const fastify = Fastify();
     const agentSessions = {
-      listAgentSessions: () => [
+      listAgentSessions: async () => [
         {
           id: "agent:claude:1",
           provider: "claude",
@@ -131,7 +131,7 @@ describe("route wiring", () => {
           lastRestoredAt: null,
         },
       ],
-      findAgentSessionSummary: () => null,
+      findAgentSessionSummary: async () => null,
       upsertAgentSessionSummary: () => {},
       persistRuntimeCwdForAgentPty: () => {},
       attachPtyToAgentSession: () => {},

@@ -928,8 +928,8 @@ button:disabled {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 16px 20px;
-  min-width: 320px;
-  max-width: 420px;
+  width: min(420px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -947,6 +947,38 @@ button:disabled {
   gap: 4px;
   font-size: 12px;
   color: var(--muted);
+}
+
+.launch-modal-agent-buttons {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.launch-modal-agent-button {
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  text-transform: capitalize;
+}
+
+.launch-modal-agent-button:hover {
+  border-color: var(--accent);
+}
+
+.launch-modal-agent-button.active {
+  background: var(--accent);
+  color: var(--bg);
+  border-color: var(--accent);
+}
+
+.launch-modal-agent-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .launch-modal-select,
@@ -983,6 +1015,7 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  min-height: 168px;
 }
 
 .launch-modal-checkbox-label {
@@ -2622,6 +2655,12 @@ button:disabled {
 
   .launch-modal-select,
   .launch-modal-input {
+    background: rgba(255, 255, 255, 0.9);
+    color: #1f1b16;
+    border-color: rgba(31, 27, 22, 0.2);
+  }
+
+  .launch-modal-agent-button {
     background: rgba(255, 255, 255, 0.9);
     color: #1f1b16;
     border-color: rgba(31, 27, 22, 0.2);

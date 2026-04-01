@@ -76,6 +76,21 @@ function readLogHead(logPath: string, byteLimit = LOG_HEAD_BYTE_LIMIT): string {
   }
 }
 
+async function readLogHeadAsync(logPath: string, byteLimit = LOG_HEAD_BYTE_LIMIT): Promise<string> {
+  let fd: fs.promises.FileHandle | null = null;
+  try {
+    fd = await fs.promises.open(logPath, "r");
+    const buffer = Buffer.alloc(byteLimit);
+    const { bytesRead } = await fd.read(buffer, 0, byteLimit, 0);
+    if (bytesRead <= 0) return "";
+    return buffer.slice(0, bytesRead).toString("utf8");
+  } catch {
+    return "";
+  } finally {
+    await fd?.close().catch(() => {});
+  }
+}
+
 function parseLogHeadEntries(
   logPath: string,
   initialLimit = LOG_HEAD_BYTE_LIMIT,
@@ -84,6 +99,39 @@ function parseLogHeadEntries(
   let byteLimit = initialLimit;
   while (byteLimit <= maxLimit) {
     const head = readLogHead(logPath, byteLimit);
+    if (!head) return [];
+
+    const lines = head.split("\n");
+    const entries: Array<Record<string, unknown>> = [];
+    let hadTruncatedLine = false;
+    for (let i = 0; i < lines.length; i += 1) {
+      const line = lines[i]?.trim() ?? "";
+      if (!line) continue;
+      const parsed = safeParseJson(line);
+      if (parsed) {
+        entries.push(parsed);
+      } else if (i === lines.length - 1 || (i === lines.length - 2 && !(lines[lines.length - 1]?.trim() ?? ""))) {
+        hadTruncatedLine = true;
+      }
+    }
+    if (entries.length > 0 && !hadTruncatedLine) return entries;
+    if (hadTruncatedLine && byteLimit < maxLimit) {
+      byteLimit = Math.min(byteLimit * 4, maxLimit);
+      continue;
+    }
+    return entries;
+  }
+  return [];
+}
+
+async function parseLogHeadEntriesAsync(
+  logPath: string,
+  initialLimit = LOG_HEAD_BYTE_LIMIT,
+  maxLimit = LOG_HEAD_MAX_LIMIT,
+): Promise<Array<Record<string, unknown>>> {
+  let byteLimit = initialLimit;
+  while (byteLimit <= maxLimit) {
+    const head = await readLogHeadAsync(logPath, byteLimit);
     if (!head) return [];
 
     const lines = head.split("\n");
@@ -301,6 +349,41 @@ function scanDirForJsonl(root: string, maxDepth: number): string[] {
   return paths;
 }
 
+async function scanDirForJsonlAsync(root: string, maxDepth: number): Promise<string[]> {
+  if (!root) return [];
+
+  const stack: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  const paths: string[] = [];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) continue;
+    const { dir, depth } = current;
+    if (depth > maxDepth) continue;
+
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Matches Agentboard behavior: skip codex subagent nested logs.
+        if (entry.name === "subagents") continue;
+        if (depth < maxDepth) stack.push({ dir: fullPath, depth: depth + 1 });
+        continue;
+      }
+      if (entry.isFile() && entry.name.endsWith(".jsonl")) {
+        paths.push(fullPath);
+      }
+    }
+  }
+  return paths;
+}
+
 function buildStableId(source: LogSource, sessionId: string, logPath: string): string {
   const trimmed = sessionId.trim();
   if (trimmed.length > 0) return `log:${source}:${trimmed}`;
@@ -381,6 +464,68 @@ export function discoverInactiveLogSessions(options: DiscoveryOptions = {}): Pty
   );
 }
 
+export async function discoverInactiveLogSessionsAsync(options: DiscoveryOptions = {}): Promise<PtySummary[]> {
+  if (options.enabled === false) return [];
+  const scanLimit = Math.max(1, Math.floor(options.scanLimit ?? 500));
+  const candidates: FileCandidate[] = [];
+
+  for (const root of getSearchRoots(options)) {
+    for (const logPath of await scanDirForJsonlAsync(root.dir, root.maxDepth)) {
+      let stats: fs.Stats;
+      try {
+        stats = await fs.promises.stat(logPath);
+      } catch {
+        continue;
+      }
+      if (!stats.isFile()) continue;
+      candidates.push({
+        source: root.source,
+        logPath,
+        mtimeMs: stats.mtimeMs,
+        birthtimeMs: stats.birthtimeMs,
+      });
+    }
+  }
+
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const limited = candidates.slice(0, scanLimit);
+  const byId = new Map<string, PtySummary>();
+
+  for (const candidate of limited) {
+    const entries = await parseLogHeadEntriesAsync(candidate.logPath);
+    if (entries.length === 0) continue;
+    if (candidate.source === "codex" && isCodexSubagent(entries)) continue;
+    if (candidate.source === "claude" && isClaudeAncillaryLog(entries)) continue;
+
+    const derivedSessionId = extractSessionId(entries) ?? path.basename(candidate.logPath, ".jsonl");
+    const projectPath = extractProjectPath(entries);
+    const fallbackName = derivedSessionId.slice(0, 8) || "session";
+    const promptName = extractFirstUserPrompt(entries);
+    const summary: PtySummary = {
+      id: buildStableId(candidate.source, derivedSessionId, candidate.logPath),
+      name: promptName ?? `${candidate.source}:${leafOrDefault(projectPath, fallbackName)}`,
+      backend: "tmux",
+      command: candidate.source,
+      args: resumeArgsForSource(candidate.source, derivedSessionId),
+      cwd: projectPath,
+      createdAt: Math.floor(candidate.birthtimeMs || candidate.mtimeMs || Date.now()),
+      lastSeenAt: Math.floor(candidate.mtimeMs || Date.now()),
+      status: "exited",
+      exitCode: null,
+      exitSignal: null,
+    };
+
+    const previous = byId.get(summary.id);
+    if (!previous || (summary.lastSeenAt ?? summary.createdAt) > (previous.lastSeenAt ?? previous.createdAt)) {
+      byId.set(summary.id, summary);
+    }
+  }
+
+  return [...byId.values()].sort(
+    (a, b) => (b.lastSeenAt ?? b.createdAt) - (a.lastSeenAt ?? a.createdAt),
+  );
+}
+
 type CacheOptions = DiscoveryOptions & {
   cacheMs?: number;
 };
@@ -390,21 +535,47 @@ export class LogSessionDiscovery {
   private readonly cacheMs: number;
   private cachedAt = 0;
   private cached: PtySummary[] = [];
+  private hasCached = false;
+  private inFlight: Promise<PtySummary[]> | null = null;
 
   constructor(options: CacheOptions = {}) {
     this.options = options;
     this.cacheMs = Math.max(250, Math.floor(options.cacheMs ?? 5000));
   }
 
-  list(nowMs = Date.now()): PtySummary[] {
+  async list(nowMs = Date.now()): Promise<PtySummary[]> {
     if (this.options.enabled === false) return [];
-    if (nowMs - this.cachedAt <= this.cacheMs && this.cached.length > 0) {
-      return this.cached.map((session) => ({ ...session, args: [...session.args] }));
+    if (this.hasCached && nowMs - this.cachedAt <= this.cacheMs) {
+      return cloneDiscoveredSessions(this.cached);
     }
-    this.cached = discoverInactiveLogSessions(this.options);
-    this.cachedAt = nowMs;
-    return this.cached.map((session) => ({ ...session, args: [...session.args] }));
+    if (this.hasCached) {
+      void this.refresh(nowMs).catch(() => {});
+      return cloneDiscoveredSessions(this.cached);
+    }
+    return this.refresh(nowMs);
   }
+
+  private async refresh(nowMs: number): Promise<PtySummary[]> {
+    if (this.inFlight) return this.inFlight;
+
+    this.inFlight = (async () => {
+      const sessions = await discoverInactiveLogSessionsAsync(this.options);
+      this.cached = sessions;
+      this.cachedAt = nowMs;
+      this.hasCached = true;
+      return cloneDiscoveredSessions(sessions);
+    })();
+
+    try {
+      return await this.inFlight;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+}
+
+function cloneDiscoveredSessions(sessions: PtySummary[]): PtySummary[] {
+  return sessions.map((session) => ({ ...session, args: [...session.args] }));
 }
 
 // ---------------------------------------------------------------------------

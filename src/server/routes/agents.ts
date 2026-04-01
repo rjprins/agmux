@@ -39,7 +39,7 @@ export function registerAgentRoutes(deps: AgentRoutesDeps): void {
   const { fastify, store, agentSessions, worktrees, runtime, repoRoot, agmuxSession } = deps;
 
   fastify.get("/api/agent-sessions", async () => {
-    return { sessions: agentSessions.listAgentSessions() };
+    return { sessions: await agentSessions.listAgentSessions() };
   });
 
   fastify.post("/api/agent-sessions/:provider/:sessionId/restore", async (req, reply) => {
@@ -55,7 +55,7 @@ export function registerAgentRoutes(deps: AgentRoutesDeps): void {
       return { error: "unsupported provider" };
     }
 
-    const session = agentSessions.findAgentSessionSummary(provider, providerSessionId);
+    const session = await agentSessions.findAgentSessionSummary(provider, providerSessionId);
     if (!session) {
       reply.code(404);
       return { error: "unknown agent session" };

@@ -9,6 +9,16 @@ export type WorktreeEntry = { path: string; branch: string };
 const worktreeCache = new Map<string, WorktreeEntry[]>();
 const worktreeCacheTime = new Map<string, number>();
 const WORKTREE_CACHE_TTL_MS = 30_000;
+const repoRootCache = new Map<string, string | null>();
+const repoRootCacheTime = new Map<string, number>();
+
+function execGitQuietSync(args: string[], cwd: string): string {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
 
 /**
  * Parse `git worktree list --porcelain` output into WorktreeEntry[].
@@ -54,10 +64,7 @@ export function resolveWorktreePath(repoRoot: string, branch: string, template: 
 export function refreshWorktreeCacheSync(repoRoot: string): void {
   const cacheKey = path.resolve(repoRoot);
   try {
-    const output = execFileSync("git", ["worktree", "list", "--porcelain"], {
-      cwd: cacheKey,
-      encoding: "utf8",
-    });
+    const output = execGitQuietSync(["worktree", "list", "--porcelain"], cacheKey);
     worktreeCache.set(cacheKey, parseWorktreeListPorcelain(output));
   } catch {
     worktreeCache.set(cacheKey, []);
@@ -75,6 +82,30 @@ export function getWorktreeCache(repoRoot: string): WorktreeEntry[] {
     refreshWorktreeCacheSync(cacheKey);
   }
   return worktreeCache.get(cacheKey) ?? [];
+}
+
+/**
+ * Resolve the shared git repo root for an arbitrary cwd, including linked worktrees.
+ * Returns null when cwd is not inside a git repository.
+ */
+export function gitRepoRootFromCwd(cwd: string | null): string | null {
+  if (!cwd) return null;
+  const cacheKey = path.resolve(cwd);
+  const updatedAt = repoRootCacheTime.get(cacheKey) ?? 0;
+  if (Date.now() - updatedAt <= WORKTREE_CACHE_TTL_MS && repoRootCache.has(cacheKey)) {
+    return repoRootCache.get(cacheKey) ?? null;
+  }
+  try {
+    const gitCommon = execGitQuietSync(["rev-parse", "--path-format=absolute", "--git-common-dir"], cacheKey).trim();
+    const repoRoot = path.dirname(gitCommon);
+    repoRootCache.set(cacheKey, repoRoot);
+    repoRootCacheTime.set(cacheKey, Date.now());
+    return repoRoot;
+  } catch {
+    repoRootCache.set(cacheKey, null);
+    repoRootCacheTime.set(cacheKey, Date.now());
+    return null;
+  }
 }
 
 /**
@@ -111,6 +142,26 @@ export function projectRootFromCwd(cwd: string | null, repoRoot: string): string
 }
 
 /**
+ * Given a cwd, return the shared git repo root when inside any git repo/worktree.
+ * For non-git directories, return cwd itself.
+ */
+export function projectRootFromCwdAny(cwd: string | null): string | null {
+  if (!cwd) return null;
+  return gitRepoRootFromCwd(cwd) ?? cwd;
+}
+
+/**
+ * Extract worktree branch/name from a cwd by resolving its repo root automatically.
+ * Returns null for main worktrees, unrelated paths, or non-git directories.
+ */
+export function worktreeFromCwdAny(cwd: string | null): string | null {
+  if (!cwd) return null;
+  const repoRoot = gitRepoRootFromCwd(cwd);
+  if (!repoRoot) return null;
+  return worktreeFromCwd(cwd, repoRoot);
+}
+
+/**
  * Check if a path matches any known worktree (excluding the main one).
  */
 export function isKnownWorktree(checkPath: string, repoRoot: string): boolean {
@@ -129,6 +180,8 @@ export function isKnownWorktree(checkPath: string, repoRoot: string): boolean {
 export function _resetCacheForTesting(): void {
   worktreeCache.clear();
   worktreeCacheTime.clear();
+  repoRootCache.clear();
+  repoRootCacheTime.clear();
 }
 
 /**

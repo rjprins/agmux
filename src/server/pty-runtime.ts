@@ -7,6 +7,7 @@ import { TriggerLoader } from "../triggers/loader.js";
 import { WsHub } from "../ws/hub.js";
 import type { AgentProvider, PtySummary, ServerToClientMessage } from "../types.js";
 import type { SqliteStore } from "../persist/sqlite.js";
+import { projectRootFromCwdAny, worktreeFromCwdAny } from "../worktree.js";
 import {
   tmuxCreateLinkedSession,
   tmuxCreateWindow,
@@ -118,8 +119,12 @@ export function createRuntime(deps: RuntimeDeps) {
     return base.map((summary) => {
       const assignment = bySessionId.get(summary.id);
       const agentRef = agentSessions.attachedAgentSessionForPty(summary.id);
+      const projectRoot = projectRootFromCwdAny(summary.cwd ?? null);
+      const worktree = worktreeFromCwdAny(summary.cwd ?? null);
       const next = {
         ...summary,
+        projectRoot,
+        worktree,
         ...(agentRef
           ? {
               agentProvider: agentRef.provider,
