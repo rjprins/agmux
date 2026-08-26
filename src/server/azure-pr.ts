@@ -330,7 +330,7 @@ type RawPr = {
   pullRequestId: number;
   title: string;
   sourceRefName: string;
-  reviewers?: { uniqueName?: string; displayName?: string; vote?: number }[];
+  reviewers?: { uniqueName?: string; displayName?: string; isContainer?: boolean; vote?: number }[];
 };
 
 export type AzurePr = {
@@ -355,10 +355,12 @@ export async function listMyActivePRs(ref: AzureRepoRef, creator: string): Promi
     id: pr.pullRequestId,
     title: pr.title,
     sourceBranch: pr.sourceRefName.replace(/^refs\/heads\//, ""),
-    votes: (pr.reviewers ?? []).map((r) => ({
-      by: r.uniqueName || r.displayName || "?",
-      vote: VOTE_MAP[r.vote ?? 0] ?? "noVote",
-    })),
+    votes: (pr.reviewers ?? [])
+      .filter((reviewer) => reviewer.isContainer !== true)
+      .map((reviewer) => ({
+        by: reviewer.uniqueName || reviewer.displayName || "?",
+        vote: VOTE_MAP[reviewer.vote ?? 0] ?? "noVote",
+      })),
   }));
 }
 
