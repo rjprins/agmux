@@ -6,7 +6,7 @@ import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from ".
 import type { PtyManager } from "../pty/manager.js";
 import type { ReadinessEngine } from "../readiness/engine.js";
 import type { WsHub } from "../ws/hub.js";
-import { tmuxCapturePaneVisible, tmuxScrollHistory } from "../tmux.js";
+import { tmuxCapturePaneVisible, tmuxWheelScroll } from "../tmux.js";
 import { scrollTmuxToHistoryEntry, type InputAnchorStore } from "./history-scroll.js";
 import { AUTH_ENABLED } from "./config.js";
 import { isRecord } from "./utils.js";
@@ -217,7 +217,7 @@ export function registerWs(deps: WsDeps): void {
       if (msg.type === "tmux_control") {
         const summary = ptys.getSummary(msg.ptyId);
         if (!summary || !summary.tmuxSession) return;
-        void tmuxScrollHistory(summary.tmuxSession, msg.direction, msg.lines, summary.tmuxServer).catch(() => {
+        void tmuxWheelScroll(summary.tmuxSession, msg.direction, msg.lines, summary.tmuxServer).catch(() => {
           // ignore best-effort tmux history control
         });
         return;

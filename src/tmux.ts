@@ -289,8 +289,8 @@ export async function tmuxCheckSessionConfig(
   if (mouse && mouse !== "off") {
     warnings.push("tmux mouse is enabled; wheel behavior can conflict with browser scrolling.");
   }
-  if (alternateScreen && alternateScreen !== "off") {
-    warnings.push("tmux alternate-screen is enabled; full-screen apps may hide expected scrollback.");
+  if (alternateScreen && alternateScreen !== "on") {
+    warnings.push("tmux alternate-screen is off; wheel events cannot be routed to full-screen apps.");
   }
   if (historyLimitNum != null && historyLimitNum < 5000) {
     warnings.push(`tmux history-limit is low (${historyLimitNum}); old output may disappear quickly.`);
@@ -421,8 +421,10 @@ export async function tmuxApplySessionUiOptions(
     // ignore
   }
   try {
-    // Prevent full-screen apps from switching to alternate buffer; keep xterm.js scrollback usable.
-    await tmuxByServer(server, ["set-option", "-w", "-t", name, "alternate-screen", "off"]);
+    // Keep the pane's alternate screen so #{alternate_on} tells us when a
+    // full-screen app owns the wheel. The outer xterm.js never switches
+    // buffers: the server-level smcup@/rmcup@ override above takes care of that.
+    await tmuxByServer(server, ["set-option", "-w", "-t", name, "alternate-screen", "on"]);
   } catch {
     // ignore
   }
@@ -475,7 +477,57 @@ export async function tmuxPruneDetachedLinkedSessions(
   }
 }
 
-export async function tmuxScrollHistory(
+export type WheelTarget = {
+  alternateOn: boolean;
+  command: string;
+  mouseAny: boolean;
+};
+
+export type WheelPlan =
+  | { kind: "history" }
+  | { kind: "literal"; data: string }
+  | { kind: "keys"; key: "Up" | "Down"; count: number };
+
+const SGR_WHEEL_UP = "\u001b[<64;1;1M";
+const SGR_WHEEL_DOWN = "\u001b[<65;1;1M";
+
+/**
+ * Decide where a wheel event goes. Normal panes scroll tmux history. A pane in
+ * the alternate screen belongs to a full-screen app, which gets the event as
+ * input instead: SGR mouse events when it reads them, arrow keys otherwise
+ * (the same trick xterm's alternateScroll uses).
+ */
+export function planWheelInput(
+  target: WheelTarget,
+  direction: "up" | "down",
+  lines: number,
+): WheelPlan {
+  const n = Math.max(1, Math.min(200, Math.floor(lines)));
+  if (!target.alternateOn) return { kind: "history" };
+  // Claude Code never enables mouse tracking inside tmux, yet parses SGR wheel
+  // events fine. Arrows won't do: at its prompt Up recalls history.
+  if (target.mouseAny || target.command === "claude") {
+    return { kind: "literal", data: (direction === "up" ? SGR_WHEEL_UP : SGR_WHEEL_DOWN).repeat(n) };
+  }
+  return { kind: "keys", key: direction === "up" ? "Up" : "Down", count: n };
+}
+
+async function tmuxWheelTarget(name: string, server: TmuxServer): Promise<WheelTarget | null> {
+  try {
+    const fmt = "#{alternate_on}\t#{pane_current_command}\t#{mouse_any_flag}";
+    const { stdout } = await tmuxExec(server, ["display-message", "-p", "-t", name, fmt]);
+    const [alt, command, mouse] = stdout.trim().split("\t");
+    return {
+      alternateOn: (alt ?? "").trim() === "1",
+      command: (command ?? "").trim(),
+      mouseAny: (mouse ?? "").trim() === "1",
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function tmuxWheelScroll(
   name: string,
   direction: "up" | "down",
   lines: number,
@@ -483,8 +535,19 @@ export async function tmuxScrollHistory(
 ): Promise<void> {
   const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
   if (!server) return;
-  const n = Math.max(1, Math.min(200, Math.floor(lines)));
+  const target = (await tmuxWheelTarget(name, server)) ?? { alternateOn: false, command: "", mouseAny: false };
+  const plan = planWheelInput(target, direction, lines);
 
+  if (plan.kind === "literal") {
+    await tmuxByServer(server, ["send-keys", "-t", name, "-l", plan.data]);
+    return;
+  }
+  if (plan.kind === "keys") {
+    await tmuxByServer(server, ["send-keys", "-t", name, "-N", String(plan.count), plan.key]);
+    return;
+  }
+
+  const n = Math.max(1, Math.min(200, Math.floor(lines)));
   if (direction === "up") {
     await tmuxByServer(server, ["copy-mode", "-e", "-t", name]);
   }

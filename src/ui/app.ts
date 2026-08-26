@@ -1197,7 +1197,8 @@ function createTermState(ptyId: string): TermState {
     opened = true;
   }
 
-  // Intercept wheel events and scroll tmux history instead.
+  // Intercept wheel events; the server scrolls tmux history or, for a
+  // full-screen app, feeds them to the pane as input.
   container.addEventListener(
     "wheel",
     (ev) => {
