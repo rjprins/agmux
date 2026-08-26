@@ -181,7 +181,11 @@ export function normalizeActivePrRecords(ref: AzureRepoRef, value: unknown): Azu
     const reviewerVotes = Array.isArray(raw.reviewers)
       ? raw.reviewers.flatMap((candidate) => {
         const reviewer = objectRecord(candidate);
-        return typeof reviewer?.vote === "number" && REVIEWER_VOTES.has(reviewer.vote) ? [reviewer.vote] : [];
+        // Azure rolls member votes up into team reviewers, but teams cannot vote directly.
+        // https://learn.microsoft.com/rest/api/azure/devops/git/pull-request-reviewers/list?view=azure-devops-rest-7.1
+        return reviewer?.isContainer !== true && typeof reviewer?.vote === "number" && REVIEWER_VOTES.has(reviewer.vote)
+          ? [reviewer.vote]
+          : [];
       })
       : [];
     prs.push({

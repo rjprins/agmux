@@ -91,6 +91,17 @@ describe("normalizeActivePrRecords", () => {
     expect(pr?.mergeStatus).toBe("unknown");
     expect(pr?.reviewerVotes).toEqual([-5]);
   });
+
+  it("does not count a team vote rolled up from an individual reviewer", () => {
+    const [pr] = normalizeActivePrRecords(ref, [rawPr({
+      reviewers: [
+        { displayName: "Flex Optimization Team", isContainer: true, vote: 10 },
+        { displayName: "Rutger Prins", isContainer: false, vote: 10 },
+      ],
+    })]);
+
+    expect(pr?.reviewerVotes).toEqual([10]);
+  });
 });
 
 describe("summarizePolicyEvaluations", () => {
