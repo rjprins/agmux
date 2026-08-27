@@ -3,10 +3,9 @@ import { promisify } from "node:util";
 
 import type { AzurePrMenuReview, PrCheckStatus, PrMergeReadiness } from "../shared/protocol.js";
 import type { PrReviewCommentThread, PrReviewVote, PrSummary } from "../types.js";
+import { runAzureCli } from "./azure-cli.js";
 
 const execFileAsync = promisify(execFile);
-const AZ_MAX_BUFFER = 16 * 1024 * 1024;
-const AZ_TIMEOUT_MS = 30_000;
 
 export type AzureRepoRef = { orgUrl: string; project: string; repo: string };
 
@@ -309,7 +308,7 @@ export function calculatePrMergeReadiness(input: PrMergeReadinessInput): PrMerge
 }
 
 async function azJson<T>(args: string[]): Promise<T> {
-  const { stdout } = await execFileAsync("az", args, { maxBuffer: AZ_MAX_BUFFER, timeout: AZ_TIMEOUT_MS });
+  const { stdout } = await runAzureCli(args);
   return JSON.parse(stdout) as T;
 }
 
@@ -318,9 +317,7 @@ let cachedUser: { value: string; at: number } | null = null;
 /** The signed-in az user (email/uniqueName), cached for 5 minutes. */
 export async function getCurrentUser(): Promise<string> {
   if (cachedUser && Date.now() - cachedUser.at < 5 * 60_000) return cachedUser.value;
-  const { stdout } = await execFileAsync("az", ["account", "show", "--query", "user.name", "-o", "tsv"], {
-    timeout: AZ_TIMEOUT_MS,
-  });
+  const { stdout } = await runAzureCli(["account", "show", "--query", "user.name", "-o", "tsv"]);
   const value = stdout.trim();
   cachedUser = { value, at: Date.now() };
   return value;
