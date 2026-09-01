@@ -317,12 +317,22 @@ test("New button opens the launch modal with searchable pickers", async ({ page 
 test("session row plus opens the launch modal on that worktree", async ({ page }) => {
   const token = await readSessionToken(page);
   const projectRoot = path.resolve(".");
+  const launchPayloads: Array<Record<string, unknown>> = [];
+  let activePtyId = "";
+  await page.route((url) => url.pathname === "/api/ptys/launch", async (route) => {
+    launchPayloads.push(route.request().postDataJSON() as Record<string, unknown>);
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({ id: activePtyId }),
+    });
+  });
   await page.goto("/?nosup=1");
   await newShellSession(page);
 
   const row = page.locator(".pty-item.active");
   await expect(row).toHaveCount(1);
   const ptyId = await row.getAttribute("data-pty-id");
+  activePtyId = ptyId ?? "";
 
   try {
     await row.getByRole("button", { name: /Launch agent in this worktree for / }).click();
@@ -333,6 +343,15 @@ test("session row plus opens the launch modal on that worktree", async ({ page }
     await expect(modal.getByRole("combobox", { name: "Worktree" })).toHaveValue(
       `Current (${path.basename(projectRoot)})`,
     );
+    await modal.getByRole("button", { name: "Launch Review" }).click();
+
+    await expect.poll(() => launchPayloads.length).toBe(1);
+    expect(launchPayloads[0]).toMatchObject({
+      projectRoot,
+      worktree: projectRoot,
+      refreshRemoteBase: false,
+      initialInput: "/review",
+    });
   } finally {
     if (ptyId) await killPty(page, token, ptyId).catch(() => {});
   }

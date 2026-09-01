@@ -2339,6 +2339,7 @@ type LaunchModalState = {
   savedFlags: Record<string, Record<string, string | boolean>>;
   worktreeOptions: WorktreeOption[];
   prContext: LaunchPrContext | null;
+  reviewInitialInput: string | null;
 };
 
 const launchModalRoot = document.createElement("div");
@@ -2507,7 +2508,7 @@ function renderLaunchModalState(): void {
           createsWorktree: state.prContext.pr.worktree === null,
         }
         : undefined,
-      showReviewAction: state.prContext !== null,
+      showReviewAction: state.reviewInitialInput !== null,
     }
     : null;
 
@@ -2593,7 +2594,7 @@ function renderLaunchModalState(): void {
           projectRoot: effectiveProjectRoot || undefined,
           refreshRemoteBase: stateNow.prContext !== null && stateNow.selectedWorktree === "__new__",
           name: stateNow.prContext ? `PR #${stateNow.prContext.pr.id}: ${stateNow.prContext.pr.title}` : undefined,
-          initialInput: review && stateNow.prContext ? `/review-pr ${stateNow.prContext.pr.id}` : undefined,
+          initialInput: review ? stateNow.reviewInitialInput ?? undefined : undefined,
         }),
       })
         .then(async (res) => {
@@ -2681,7 +2682,12 @@ function refreshLaunchModalForDirectory(dir: string): void {
     });
 }
 
-function openLaunchModal(groupCwd: string, preselectedWorktree?: string, prContext: LaunchPrContext | null = null): void {
+function openLaunchModal(
+  groupCwd: string,
+  preselectedWorktree?: string,
+  prContext: LaunchPrContext | null = null,
+  reviewInitialInput: string | null = null,
+): void {
   const seq = ++launchModalSeq;
   const dirOptions = buildDirectoryOptions();
 
@@ -2701,6 +2707,7 @@ function openLaunchModal(groupCwd: string, preselectedWorktree?: string, prConte
     savedFlags: {},
     worktreeOptions: buildWorktreeOptions(groupCwd),
     prContext,
+    reviewInitialInput: prContext ? `/review-pr ${prContext.pr.id}` : reviewInitialInput,
   };
   renderLaunchModalState();
 
@@ -5681,7 +5688,7 @@ function renderList(): void {
     onOpenWorktrees: (groupKey) => openWorktreesPanel(groupKey),
     onOpenPrMenu: (groupKey) => openPrMenu(groupKey),
     onOpenLaunch: (groupKey) => openLaunchModal(groupKey),
-    onOpenLaunchInWorktree: (groupKey, worktreePath) => openLaunchModal(groupKey, worktreePath),
+    onOpenLaunchInWorktree: (groupKey, worktreePath) => openLaunchModal(groupKey, worktreePath, null, "/review"),
     onSelectPty: (ptyId) => setActive(ptyId),
     onReorderPty: (sourcePtyId, targetPtyId, placement) => {
       reorderSidebarPty(sourcePtyId, targetPtyId, placement);
