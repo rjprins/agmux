@@ -314,6 +314,30 @@ test("New button opens the launch modal with searchable pickers", async ({ page 
   await expect(page.getByRole("combobox", { name: "Worktree" })).toBeVisible();
 });
 
+test("session row plus opens the launch modal on that worktree", async ({ page }) => {
+  const token = await readSessionToken(page);
+  const projectRoot = path.resolve(".");
+  await page.goto("/?nosup=1");
+  await newShellSession(page);
+
+  const row = page.locator(".pty-item.active");
+  await expect(row).toHaveCount(1);
+  const ptyId = await row.getAttribute("data-pty-id");
+
+  try {
+    await row.getByRole("button", { name: /Launch agent in this worktree for / }).click();
+
+    const modal = page.getByRole("dialog", { name: /Launch agent/ });
+    await expect(modal).toBeVisible();
+    await expect(modal.getByRole("combobox", { name: "Project directory" })).toHaveValue(projectRoot);
+    await expect(modal.getByRole("combobox", { name: "Worktree" })).toHaveValue(
+      `Current (${path.basename(projectRoot)})`,
+    );
+  } finally {
+    if (ptyId) await killPty(page, token, ptyId).catch(() => {});
+  }
+});
+
 test("launch modal and searchable dropdowns stay inside a short viewport", async ({ page }) => {
   for (const viewport of [{ width: 900, height: 500 }, { width: 320, height: 480 }]) {
     await page.setViewportSize(viewport);

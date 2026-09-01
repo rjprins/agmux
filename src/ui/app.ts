@@ -4696,6 +4696,7 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const prApprovalCount = p.pr?.votes.filter((v) => v.vote === "approved" || v.vote === "approvedWithSuggestions").length ?? 0;
   const wtInfo = p.worktreeInfo ?? null;
   const worktreeLanded = wtInfo?.state === "merged" && wtInfo?.reapClass === "reap-safe";
+  const worktreePath = wtInfo?.path ?? findContainingWorktree(p.cwd, knownWorktrees)?.path ?? p.cwd ?? undefined;
 
   return {
     id: p.id,
@@ -4718,6 +4719,7 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
     worktree,
     worktreeState: wtInfo?.state,
     worktreeLanded: worktreeLanded || undefined,
+    worktreePath,
     cwd: p.cwd ?? undefined,
     elapsed: elapsed || undefined,
   };

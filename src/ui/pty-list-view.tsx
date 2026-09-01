@@ -40,6 +40,7 @@ export type RunningPtyItem = {
   worktreeState?: WorktreeState;
   /** Merged and reap-safe: the pill gets a "landed" affordance. */
   worktreeLanded?: boolean;
+  worktreePath?: string;
   cwd?: string;
   elapsed?: string;
 };
@@ -458,19 +459,34 @@ function PtyItemRow(
             </div>
           ) : null}
         </div>
-        <button
-          type="button"
-          className="pty-close"
-          title="Close session"
-          aria-label={`Close PTY ${item.name}`}
-          onClick={(ev) => {
-            ev.preventDefault();
-            ev.stopPropagation();
-            handlers.onKillPty(item.id);
-          }}
-        >
-          {"\u23f9"}
-        </button>
+        <div className="pty-row-actions">
+          <button
+            type="button"
+            className="pty-launch"
+            title="Launch agent in this worktree"
+            aria-label={`Launch agent in this worktree for ${item.name}`}
+            onClick={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              handlers.onOpenLaunchInWorktree(groupKey, item.worktreePath ?? item.cwd ?? groupKey);
+            }}
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="pty-close"
+            title="Close session"
+            aria-label={`Close PTY ${item.name}`}
+            onClick={(ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              handlers.onKillPty(item.id);
+            }}
+          >
+            {"\u23f9"}
+          </button>
+        </div>
       </div>
       <span
         className={`ready-dot compact ${item.readyIndicator}`}

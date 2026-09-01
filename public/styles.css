@@ -805,6 +805,14 @@ button:disabled {
   background: var(--surface);
 }
 
+.pty-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.pty-launch,
 .pty-close {
   border-radius: 6px;
   padding: 4px 6px;
@@ -815,11 +823,18 @@ button:disabled {
   flex: 0 0 auto;
 }
 
+.pty-launch {
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.pty-item:hover .pty-launch,
 .pty-item:hover .pty-close {
   border-color: var(--button-hover);
   color: var(--text);
 }
 
+.pty-launch:hover,
 .pty-close:hover {
   border-color: var(--button-hover);
 }
