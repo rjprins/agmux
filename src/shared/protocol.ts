@@ -30,6 +30,9 @@ export type PrSummary = {
   id: number;
   url: string; // deep link to the PR Files tab
   title: string;
+  author: string;
+  /** The signed-in az user created this PR. Other people's PRs stay out of the sidebar. */
+  mine: boolean;
   sourceBranch: string; // short branch name (no refs/heads/ prefix)
   resolvedCount: number;
   unresolvedCount: number;

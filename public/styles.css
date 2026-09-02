@@ -1116,6 +1116,15 @@ button:disabled {
   text-decoration: underline;
 }
 
+.pr-author {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+
 .pr-title {
   flex: 1 1 auto;
   min-width: 0;

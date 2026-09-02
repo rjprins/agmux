@@ -10,7 +10,8 @@ import {
   getCurrentUser,
   getPrById,
   getPrThreadsSummary,
-  listMyActivePRs,
+  listActivePRsWithVotes,
+  prAuthoredBy,
   type AzureRepoRef,
   type PrComment,
 } from "./azure-pr.js";
@@ -113,6 +114,19 @@ export function createAzurePrPoller(deps: AzurePrPollerDeps) {
   const branchKey = (repoRoot: string, branch: string) => `${repoRoot}\n${branch}`;
   const readMap = (key: string) => store.getPreference<Record<string, number>>(key) ?? {};
 
+  /** Branches a running session in this repo sits on (checkout, worktree, or active edits). */
+  function branchesWithSessions(sessions: PtySummary[], repoRoot: string): Set<string> {
+    const branches = new Set<string>();
+    for (const session of sessions) {
+      if (session.projectRoot !== repoRoot) continue;
+      const candidates = [branchAtCwd(session.cwd ?? null) ?? session.worktree, deps.getActiveEditBranch(session.id)];
+      for (const branch of candidates) {
+        if (branch) branches.add(branch);
+      }
+    }
+    return branches;
+  }
+
   function formatCommentPrompt(prId: number, title: string, unresolved: number, comments: PrComment[], url: string): string {
     const lines = comments
       .map((c) => {
@@ -161,18 +175,24 @@ export function createAzurePrPoller(deps: AzurePrPollerDeps) {
         const ref = await azureRepoRefForRoot(repoRoot);
         if (!ref) continue;
 
-        let prs;
+        let allPrs;
         try {
-          prs = await listMyActivePRs(ref, me);
+          allPrs = await listActivePRsWithVotes(ref);
         } catch (err) {
           logger.debug({ err: String(err), repoRoot }, "azure-pr: pr list failed");
           continue;
         }
         polledRepos.add(repoRoot);
 
+        // Someone else's PR is only interesting when a session sits on its branch:
+        // it gets the status bar in the session view, nothing more.
+        const sessionBranches = branchesWithSessions(sessions, repoRoot);
+        const prs = allPrs.filter((pr) => prAuthoredBy(pr, me) || sessionBranches.has(pr.sourceBranch));
+
         const worktrees = getWorktreeCache(repoRoot);
         for (const pr of prs) {
-          activeNow.set(pr.id, { repoRoot, branch: pr.sourceBranch, title: pr.title });
+          const mine = prAuthoredBy(pr, me);
+          if (mine) activeNow.set(pr.id, { repoRoot, branch: pr.sourceBranch, title: pr.title });
           let threads;
           try {
             threads = await getPrThreadsSummary(ref, pr.id, me);
@@ -181,12 +201,15 @@ export function createAzurePrPoller(deps: AzurePrPollerDeps) {
             continue;
           }
 
-          const hasNewComments = threads.latestOtherCommentAt > (viewed[pr.id] ?? 0);
-          const summary = buildPrSummary(ref, pr, threads, hasNewComments);
+          const hasNewComments = mine && threads.latestOtherCommentAt > (viewed[pr.id] ?? 0);
+          const summary = buildPrSummary(ref, pr, threads, hasNewComments, mine);
 
           // Decorate any running session(s) on this branch.
           deps.setPrStateForBranch(repoRoot, pr.sourceBranch, summary);
           seenKeys.add(branchKey(repoRoot, pr.sourceBranch));
+
+          // Only my own PRs hand review comments to an agent.
+          if (!mine) continue;
 
           // Dispatch new comments once (until a newer comment arrives).
           const deliveryPreferenceKey = prDeliveryPreferenceKey(ref, pr.id);

@@ -327,30 +327,35 @@ type RawPr = {
   pullRequestId: number;
   title: string;
   sourceRefName: string;
+  createdBy?: { uniqueName?: string; displayName?: string };
   reviewers?: { uniqueName?: string; displayName?: string; isContainer?: boolean; vote?: number }[];
 };
 
 export type AzurePr = {
   id: number;
   title: string;
+  author: string;
+  authorUniqueName: string | null;
   sourceBranch: string;
   votes: { by: string; vote: PrReviewVote }[];
 };
 
-/** List the signed-in user's active PRs in a repo. */
-export async function listMyActivePRs(ref: AzureRepoRef, creator: string): Promise<AzurePr[]> {
+/** Active PRs in a repo, with reviewer votes. Not filtered by author. */
+export async function listActivePRsWithVotes(ref: AzureRepoRef): Promise<AzurePr[]> {
   const raw = await azJson<RawPr[]>([
     "repos", "pr", "list",
     "--org", ref.orgUrl,
     "--project", ref.project,
     "--repository", ref.repo,
     "--status", "active",
-    "--creator", creator,
+    "--top", "1000",
     "-o", "json",
   ]);
   return raw.map((pr) => ({
     id: pr.pullRequestId,
     title: pr.title,
+    author: pr.createdBy?.displayName || pr.createdBy?.uniqueName || "Unknown",
+    authorUniqueName: pr.createdBy?.uniqueName?.trim() || null,
     sourceBranch: pr.sourceRefName.replace(/^refs\/heads\//, ""),
     votes: (pr.reviewers ?? [])
       .filter((reviewer) => reviewer.isContainer !== true)
@@ -359,6 +364,12 @@ export async function listMyActivePRs(ref: AzureRepoRef, creator: string): Promi
         vote: VOTE_MAP[reviewer.vote ?? 0] ?? "noVote",
       })),
   }));
+}
+
+/** Does `me` (the signed-in az user) own this PR? */
+export function prAuthoredBy(pr: AzurePr, me: string): boolean {
+  const user = me.trim().toLowerCase();
+  return user.length > 0 && pr.authorUniqueName?.toLowerCase() === user;
 }
 
 /** List every active PR in a repo, including draft PRs. */
@@ -584,11 +595,14 @@ export function buildPrSummary(
   pr: AzurePr,
   threads: PrThreadsSummary,
   hasNewComments: boolean,
+  mine: boolean,
 ): PrSummary {
   return {
     id: pr.id,
     url: prFilesUrl(ref, pr.id),
     title: pr.title,
+    author: pr.author,
+    mine,
     sourceBranch: pr.sourceBranch,
     resolvedCount: threads.resolvedCount,
     unresolvedCount: threads.unresolvedCount,

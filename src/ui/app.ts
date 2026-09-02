@@ -3601,6 +3601,12 @@ function renderPrContextBar(): void {
   title.textContent = pr.title;
   title.title = pr.title;
 
+  // Someone else's PR gets no sidebar pill, so name the author here instead.
+  const author = document.createElement("span");
+  author.className = "pr-author";
+  author.textContent = `by ${pr.author}`;
+  author.title = `Pull request created by ${pr.author}`;
+
   const unresolved = document.createElement("span");
   unresolved.className = `pr-count unresolved${pr.unresolvedCount > 0 ? " has" : ""}`;
   unresolved.textContent = `● ${pr.unresolvedCount} unresolved`;
@@ -3609,7 +3615,7 @@ function renderPrContextBar(): void {
   resolved.className = "pr-count resolved";
   resolved.textContent = `✓ ${pr.resolvedCount} resolved`;
 
-  row.append(chevron, link, title, unresolved, resolved);
+  row.append(chevron, link, ...(pr.mine ? [] : [author]), title, unresolved, resolved);
 
   const approvals = pr.votes.filter((v) => v.vote === "approved" || v.vote === "approvedWithSuggestions").length;
   const rejections = pr.votes.filter((v) => v.vote === "rejected" || v.vote === "waitingForAuthor").length;
@@ -4700,7 +4706,9 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
   const changedAt = ptyStateChangedAt.get(p.id);
   const elapsed = changedAt && readyInfo.state !== "unknown" ? formatElapsedTime(changedAt) : "";
   const secondaryText = inputPreview ? `> ${inputPreview}` : "";
-  const prApprovalCount = p.pr?.votes.filter((v) => v.vote === "approved" || v.vote === "approvedWithSuggestions").length ?? 0;
+  // The sidebar pill tracks my own PRs; someone else's PR only shows in the session view.
+  const ownPr = p.pr?.mine ? p.pr : null;
+  const prApprovalCount = ownPr?.votes.filter((v) => v.vote === "approved" || v.vote === "approvedWithSuggestions").length ?? 0;
   const wtInfo = p.worktreeInfo ?? null;
   const worktreeLanded = wtInfo?.state === "merged" && wtInfo?.reapClass === "reap-safe";
   const worktreePath = wtInfo?.path ?? findContainingWorktree(p.cwd, knownWorktrees)?.path ?? p.cwd ?? undefined;
@@ -4710,12 +4718,12 @@ function buildRunningPtyItem(p: PtySummary): RunningPtyItem {
     color: wtColor ?? ptyColor(p.id),
     active: p.id === activePtyId,
     readyUnviewed: unviewedReadyPtys.has(p.id) && p.id !== activePtyId,
-    prMarker: p.pr ? (p.pr.hasNewComments && p.id !== activePtyId ? "new" : "seen") : undefined,
-    prUnresolved: p.pr?.unresolvedCount,
-    prApproved: prApprovalCount >= REQUIRED_PR_APPROVALS,
+    prMarker: ownPr ? (ownPr.hasNewComments && p.id !== activePtyId ? "new" : "seen") : undefined,
+    prUnresolved: ownPr?.unresolvedCount,
+    prApproved: Boolean(ownPr) && prApprovalCount >= REQUIRED_PR_APPROVALS,
     prApprovalCount,
     prRequiredApprovals: REQUIRED_PR_APPROVALS,
-    prWaitingForReview: p.pr ? prWaitingForReviewPtys.has(p.id) : undefined,
+    prWaitingForReview: ownPr ? prWaitingForReviewPtys.has(p.id) : undefined,
     readyState: readyInfo.state,
     readyIndicator: readyInfo.indicator,
     readyReason: readyInfo.reason,
