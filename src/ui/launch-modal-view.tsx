@@ -182,6 +182,7 @@ export function renderLaunchModal(
                 placeholder={model.branchPlaceholder}
                 onInput={(ev) => handlers.onBranchChange((ev.currentTarget as HTMLInputElement).value)}
               />
+              <span className="launch-modal-hint">Worktree name will be based on the branch name.</span>
             </label>
 
             <div className={`launch-modal-label launch-modal-branch${showBranchInput ? "" : " hidden"}`}>

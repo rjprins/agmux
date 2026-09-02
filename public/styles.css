@@ -1641,6 +1641,12 @@ button:disabled {
   display: none;
 }
 
+.launch-modal-hint {
+  font-size: 11px;
+  color: var(--muted);
+  opacity: 0.85;
+}
+
 .launch-modal-buttons {
   display: flex;
   justify-content: flex-end;
