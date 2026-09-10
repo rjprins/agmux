@@ -20,12 +20,14 @@ const CWD_SOURCE_PRIORITY: Record<AgentSessionCwdSource, number> = {
 export function normalizeAgentProvider(value: string | null | undefined): AgentProvider | null {
   if (!value) return null;
   const v = value.trim().toLowerCase();
-  if (v === "claude" || v === "codex" || v === "pi") return v;
+  if (v === "claude" || v === "codex" || v === "pi" || v === "gemini") return v;
   return null;
 }
 
 export function resumeArgsForProvider(provider: AgentProvider, providerSessionId: string): string[] {
-  return provider === "claude" ? ["--resume", providerSessionId] : ["resume", providerSessionId];
+  if (provider === "claude") return ["--resume", providerSessionId];
+  if (provider === "gemini") return ["--session-file", providerSessionId];
+  return ["resume", providerSessionId];
 }
 
 export function defaultAgentSessionName(provider: AgentProvider, providerSessionId: string, cwd: string | null): string {

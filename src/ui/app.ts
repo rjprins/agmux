@@ -2300,7 +2300,7 @@ function cleanupCopiedTerminalText(text: string): string {
     .trimEnd();
 }
 
-const AGENT_CHOICES = ["claude", "codex", "shell"];
+const AGENT_CHOICES = ["claude", "codex", "gemini", "shell"];
 
 type OptionDef =
   | { type: "select"; flag: string; label: string; choices: { value: string; label: string }[]; defaultValue: string }
@@ -2343,6 +2343,19 @@ const AGENT_OPTIONS: Record<string, OptionDef[]> = {
     },
     { type: "checkbox", flag: "--full-auto", label: "--full-auto", defaultChecked: true },
     { type: "checkbox", flag: "--dangerously-bypass-approvals-and-sandbox", label: "--dangerously-bypass-approvals-and-sandbox", defaultChecked: false },
+  ],
+  gemini: [
+    {
+      type: "select", flag: "--approval-mode", label: "Approval mode",
+      defaultValue: "default",
+      choices: [
+        { value: "default", label: "default" },
+        { value: "auto_edit", label: "auto_edit" },
+        { value: "yolo", label: "yolo" },
+        { value: "plan", label: "plan" },
+      ],
+    },
+    { type: "checkbox", flag: "--yolo", label: "--yolo", defaultChecked: false },
   ],
 };
 
@@ -3350,10 +3363,11 @@ function isGenericRuntimeProcess(s: string): boolean {
   return runtimeProcessNames.has(normalizeProcessName(s));
 }
 
-function inferAgentFromRecentInput(ptyId: string): "codex" | "claude" | null {
+function inferAgentFromRecentInput(ptyId: string): "codex" | "claude" | "gemini" | null {
   const recent = (ptyLastInput.get(ptyId) ?? "").toLowerCase();
   if (/\bcodex\b/.test(recent)) return "codex";
   if (/\bclaude\b/.test(recent)) return "claude";
+  if (/\bgemini\b/.test(recent)) return "gemini";
   return null;
 }
 
@@ -4816,6 +4830,7 @@ function buildInactiveAgentSessionItem(session: AgentSessionSummary): InactivePt
 const AGENT_PROCESS_NAMES = [
   "claude",
   "codex",
+  "gemini",
   "aider",
   "goose",
   "opencode",

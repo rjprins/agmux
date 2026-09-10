@@ -60,6 +60,7 @@ type PtyRoutesDeps = {
 export const FLAG_DEFAULTS: Record<string, Record<string, string>> = {
   claude: { "--permission-mode": "default" },
   codex: { "--ask-for-approval": "untrusted", "--sandbox": "read-only" },
+  gemini: { "--approval-mode": "default" },
 };
 
 export function agentCommand(agent: string, flags: Record<string, string | boolean>): string {

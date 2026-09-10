@@ -64,8 +64,8 @@ export const BOT_NAMES = [
 ] as const;
 
 const GENERIC_NAME_PATTERNS = [
-  /^(?:claude|codex|pi)$/i,
-  /^(?:claude|codex|pi):/i,
+  /^(?:claude|codex|pi|gemini)$/i,
+  /^(?:claude|codex|pi|gemini):/i,
   /^shell:/i,
   /^tmux:/i,
 ];

@@ -220,7 +220,7 @@ server.registerTool("spawn_shell", {
 
 server.registerTool("launch_agent", {
   title: "Launch agent",
-  description: "Launch a shell, Codex, Claude, or another CLI agent in an existing or new worktree.",
+  description: "Launch a shell, Codex, Claude, Gemini, or another CLI agent in an existing or new worktree.",
   inputSchema: {
     agent: z.string().min(1).describe("Agent command, for example shell, codex, or claude."),
     worktree: z.string().min(1).describe("Existing worktree path, or __new__ to create one."),

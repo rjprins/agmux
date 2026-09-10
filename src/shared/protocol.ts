@@ -189,7 +189,7 @@ export type ServerToClientMessage =
       error: string;
     };
 
-export type AgentProvider = "claude" | "codex" | "pi";
+export type AgentProvider = "claude" | "codex" | "pi" | "gemini";
 export type AgentSessionCwdSource = "runtime" | "db" | "log" | "user";
 
 export type AgentSessionSummary = {

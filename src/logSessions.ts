@@ -6,7 +6,10 @@ import type { PtySummary } from "./types.js";
 const LOG_HEAD_BYTE_LIMIT = 64 * 1024;
 const LOG_HEAD_MAX_LIMIT = 1024 * 1024; // 1 MB
 
-type LogSource = "claude" | "codex" | "pi";
+// "gemini" has no registered search root yet (see getSearchRoots below), so
+// log-based session discovery/resume is not available for it — it is listed
+// here only so functions typed on LogSource accept the wider AgentProvider.
+type LogSource = "claude" | "codex" | "pi" | "gemini";
 
 type DiscoveryOptions = {
   enabled?: boolean;

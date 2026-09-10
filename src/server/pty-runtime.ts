@@ -200,6 +200,8 @@ export function createRuntime(deps: RuntimeDeps) {
   // started by hand inside a shell and re-links attachments lost to a server
   // restart. Idle sessions attach on their next interaction, when their log
   // mtime bumps.
+  // "gemini" is a supported AgentProvider but has no log-based session
+  // discovery yet, so it is excluded from auto-attach matching.
   const AGENT_PROCESSES = new Set<AgentProvider>(["claude", "codex", "pi"]);
   const autoAttachIntervalMs = Math.max(
     2_000,

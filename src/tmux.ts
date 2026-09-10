@@ -802,9 +802,9 @@ function isRuntimeWrapperCommand(cmd: string): boolean {
 
 export function inferAgentFromProcessArgs(args: string): string | null {
   const text = args.toLowerCase();
-  const direct = text.match(/(?:^|\s)(codex|claude|aider|goose|opencode|cursor-agent)(?=\s|$)/);
+  const direct = text.match(/(?:^|\s)(codex|claude|gemini|aider|goose|opencode|cursor-agent)(?=\s|$)/);
   if (direct) return direct[1];
-  const pathLike = text.match(/(?:\/|\\)(codex|claude|aider|goose|opencode|cursor-agent)(?:[\\/._ -]|$)/);
+  const pathLike = text.match(/(?:\/|\\)(codex|claude|gemini|aider|goose|opencode|cursor-agent)(?:[\\/._ -]|$)/);
   if (pathLike) return pathLike[1];
   return null;
 }
