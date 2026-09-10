@@ -82,6 +82,38 @@
         }
       }
     },
+    "/api/azure-pr/menu/auto-review": {
+      "post": {
+        "summary": "Enable or disable auto-launching a review agent for newly published PRs",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "projectRoot": {
+                    "type": "string"
+                  },
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                },
+                "required": ["projectRoot", "enabled"]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Auto-launch setting stored"
+          },
+          "400": {
+            "description": "Invalid project root or enabled flag"
+          }
+        }
+      }
+    },
     "/api/azure-pr/threads": {
       "get": {
         "summary": "Fetch the review comment threads for the PR shown on a session",

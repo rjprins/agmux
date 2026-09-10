@@ -20,6 +20,9 @@ Expose every active Azure DevOps pull request for a project from a compact proje
 - Refresh PR data once per minute. The first successful load establishes an attention baseline.
 - Show attention dots for newly discovered PRs and for known PRs that transition from draft to published.
 - Keep attention state across server restarts. A successfully rendered popover acknowledges the events it displayed, while keeping those row markers visible until that popover closes.
+- Offer an `Auto-launch reviews` checkbox in the popover header, remembered per project.
+- While it is on, a PR that becomes newly visible as published and is authored by someone else starts a review agent by itself, with the same destination and `/review-pr <id>` input as the row's `Launch Review`.
+- Fire that launch only on the attention transition itself, never on a marker that is merely still unacknowledged, and never on the first load of a project.
 
 ## External contract
 
@@ -56,10 +59,13 @@ type AzurePrMenuResponse =
         worktree: { name: string; path: string; dirty: boolean } | null;
         attention: "new" | "published" | null;
       }>;
+      autoLaunchReviews: boolean;
     };
 ```
 
 `POST /api/azure-pr/menu/viewed` accepts the project root and the exact `{ id, attention }` markers displayed by the client. A marker is cleared only if it still matches, so acknowledging an older `new` marker cannot clear a newer `published` event.
+
+`POST /api/azure-pr/menu/auto-review` accepts `{ projectRoot, enabled }` and stores the auto-launch setting for that repository root.
 
 External ADO responses are validated and normalized before entering the internal contract. Invalid records are ignored rather than rendered or used to create worktrees.
 
@@ -112,6 +118,7 @@ Prefer small pure transition functions for attention state. Keep data fetching a
 
 - Always: reuse dirty matching worktrees, preserve external data as escaped text, validate route input, and keep the ordinary launch behavior unchanged.
 - Always: hide PR controls for unsupported or failed repository detection.
+- Always: skip auto-launching a review when the signed-in ADO user is unknown, so "not mine" stays decidable.
 - Ask first: adding dependencies, changing ADO authentication, or posting PR comments or votes.
 - Never: automatically submit comments, change PR state, delete worktrees outside the agmux reap funnel, or show `Launch Review` without explicit PR context.
 
@@ -124,6 +131,7 @@ Prefer small pure transition functions for attention state. Keep data fetching a
 - `Launch Review` exists only in PR context and sends exactly `/review-pr <id>` as initial input.
 - New PR and draft-to-published transitions produce persistent attention dots without flagging the initial baseline.
 - Opening a loaded menu acknowledges only the markers it displayed.
+- With auto-launch on, each newly published PR from someone else produces exactly one review session; drafts, my own PRs, and the baseline load produce none.
 - Unit, integration, build, and browser verification pass with no new console errors or accessibility regressions.
 
 ## Implementation plan

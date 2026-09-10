@@ -1497,6 +1497,7 @@ async function authFetch(input: RequestInfo | URL, init?: RequestInit): Promise<
 type PrMenuProjectState = {
   supported: boolean;
   prs: AzurePrMenuItem[];
+  autoLaunchReviews: boolean;
   lastAttemptAt: number;
 };
 
@@ -1540,7 +1541,11 @@ function isPrMenuResponse(value: unknown): value is AzurePrMenuResponse {
 
 function closePrMenu(): void {
   prMenuOpenState = null;
-  renderPrMenu(prMenuRoot, null, { onClose: () => {}, onLaunch: () => {} });
+  renderPrMenu(prMenuRoot, null, {
+    onClose: () => {},
+    onLaunch: () => {},
+    onAutoLaunchReviewsChange: () => {},
+  });
 }
 
 function clearAcknowledgedPrAttention(
@@ -1566,7 +1571,40 @@ function renderPrMenuState(): void {
       closePrMenu();
       openLaunchModal(projectRoot, pr.worktree?.path, { pr });
     },
+    onAutoLaunchReviewsChange: (enabled) => {
+      const open = prMenuOpenState;
+      if (!open) return;
+      setPrMenuAutoLaunchReviews(open.projectRoot, enabled);
+    },
   });
+}
+
+/** Optimistic: the toggle flips now, the server call only reports failure. */
+function setPrMenuAutoLaunchReviews(projectRoot: string, enabled: boolean): void {
+  const state = prMenuProjects.get(projectRoot);
+  const previous = state?.autoLaunchReviews ?? false;
+  if (state) state.autoLaunchReviews = enabled;
+  if (prMenuOpenState?.projectRoot === projectRoot) {
+    prMenuOpenState.model = { ...prMenuOpenState.model, autoLaunchReviews: enabled };
+    renderPrMenuState();
+  }
+  void authFetch("/api/azure-pr/menu/auto-review", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ projectRoot, enabled }),
+  })
+    .then((response) => {
+      if (response.ok) return;
+      throw new Error("auto-review toggle failed");
+    })
+    .catch(() => {
+      const current = prMenuProjects.get(projectRoot);
+      if (current) current.autoLaunchReviews = previous;
+      if (prMenuOpenState?.projectRoot === projectRoot) {
+        prMenuOpenState.model = { ...prMenuOpenState.model, autoLaunchReviews: previous };
+        renderPrMenuState();
+      }
+    });
 }
 
 function openPrMenu(projectRoot: string): void {
@@ -1577,7 +1615,7 @@ function openPrMenu(projectRoot: string): void {
   const prs = state.prs.map((pr) => ({ ...pr, worktree: pr.worktree ? { ...pr.worktree } : null }));
   prMenuOpenState = {
     projectRoot,
-    model: { projectName, prs },
+    model: { projectName, prs, autoLaunchReviews: state.autoLaunchReviews },
   };
   renderPrMenuState();
 
@@ -1614,7 +1652,7 @@ function refreshPrMenuForProject(projectRoot: string, force = false): Promise<vo
   const now = Date.now();
   if (!force && previous && now - previous.lastAttemptAt < PR_MENU_REFRESH_MS) return Promise.resolve();
   if (previous) previous.lastAttemptAt = now;
-  else prMenuProjects.set(projectRoot, { supported: false, prs: [], lastAttemptAt: now });
+  else prMenuProjects.set(projectRoot, { supported: false, prs: [], autoLaunchReviews: false, lastAttemptAt: now });
 
   const request = authFetch(`/api/azure-pr/menu?projectRoot=${encodeURIComponent(projectRoot)}`)
     .then(async (response) => {
@@ -1624,6 +1662,7 @@ function refreshPrMenuForProject(projectRoot: string, force = false): Promise<vo
       prMenuProjects.set(projectRoot, {
         supported: data.supported,
         prs: data.supported ? data.prs : [],
+        autoLaunchReviews: data.supported && data.autoLaunchReviews === true,
         lastAttemptAt: Date.now(),
       });
       renderList();

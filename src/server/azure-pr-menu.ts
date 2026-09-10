@@ -25,6 +25,7 @@ type PreferenceStore = {
 export type AzurePrMenuService = {
   list: (projectRoot: string) => Promise<AzurePrMenuResponse>;
   acknowledge: (projectRoot: string, markers: Array<{ id: number; attention: PrAttention }>) => Promise<void>;
+  setAutoLaunchReviews: (projectRoot: string, enabled: boolean) => Promise<void>;
 };
 
 type AzurePrMenuServiceDeps = {
@@ -39,9 +40,12 @@ type AzurePrMenuServiceDeps = {
   reviewDetails: (ref: AzureRepoRef, pr: AzureActivePr, currentUser: string) => Promise<AzurePrMenuReview>;
   listWorktrees: (repoRoot: string) => WorktreeSummary[];
   worktreeStatus: (path: string) => Promise<{ dirty: boolean }>;
+  /** Starts the review agent for a PR. Without it, auto-launch stays off. */
+  launchReview?: (input: { projectRoot: string; pr: AzurePrMenuItem }) => Promise<void>;
 };
 
 const PR_MENU_STATE_PREF = "azurePrMenuState";
+const AUTO_REVIEW_PREF = "azurePrAutoReview";
 const PR_DETAIL_CONCURRENCY = 4;
 
 async function mapConcurrent<T, R>(
@@ -93,6 +97,22 @@ export function acknowledgePrAttention(
   return { known: state.known, attention };
 }
 
+/**
+ * Ids whose attention marker just changed. Those are the transitions worth
+ * acting on; a marker that merely lingers unacknowledged is not one.
+ */
+export function changedPrAttention(
+  previous: PersistedPrMenuRepoState | undefined,
+  next: PersistedPrMenuRepoState,
+): Set<number> {
+  const before = previous?.attention ?? {};
+  const changed = new Set<number>();
+  for (const [key, marker] of Object.entries(next.attention)) {
+    if (before[key] !== marker) changed.add(Number(key));
+  }
+  return changed;
+}
+
 export function matchPrWorktree(sourceBranch: string, worktrees: WorktreeSummary[]): WorktreeSummary | null {
   return worktrees.find((worktree) => worktree.branch === sourceBranch) ?? null;
 }
@@ -122,6 +142,16 @@ function readAllState(store: PreferenceStore): Record<string, PersistedPrMenuRep
   return result;
 }
 
+function readAutoReviewFlags(store: PreferenceStore): Record<string, boolean> {
+  const value = store.getPreference<unknown>(AUTO_REVIEW_PREF);
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const flags: Record<string, boolean> = {};
+  for (const [repoRoot, enabled] of Object.entries(value)) {
+    if (typeof enabled === "boolean") flags[repoRoot] = enabled;
+  }
+  return flags;
+}
+
 export function createAzurePrMenuService(deps: AzurePrMenuServiceDeps): AzurePrMenuService {
   const cache = new Map<string, { at: number; result: AzurePrMenuResponse }>();
   const inflight = new Map<string, Promise<AzurePrMenuResponse>>();
@@ -137,9 +167,13 @@ export function createAzurePrMenuService(deps: AzurePrMenuServiceDeps): AzurePrM
     const currentUser = rawCurrentUser.trim().toLowerCase();
     const worktrees = deps.listWorktrees(repoRoot);
     const stateByRepo = readAllState(deps.store);
-    const repoState = reconcilePrMenuState(stateByRepo[repoRoot], activePrs);
+    const previousState = stateByRepo[repoRoot];
+    const repoState = reconcilePrMenuState(previousState, activePrs);
     stateByRepo[repoRoot] = repoState;
+    // Persist before launching anything: a marker must never fire twice.
     deps.store.setPreference(PR_MENU_STATE_PREF, stateByRepo);
+    const justFlagged = changedPrAttention(previousState, repoState);
+    const autoLaunchReviews = readAutoReviewFlags(deps.store)[repoRoot] === true;
 
     const prs = await mapConcurrent(activePrs, PR_DETAIL_CONCURRENCY, async (pr): Promise<AzurePrMenuItem> => {
       const matched = matchPrWorktree(pr.sourceBranch, worktrees);
@@ -171,7 +205,26 @@ export function createAzurePrMenuService(deps: AzurePrMenuServiceDeps): AzurePrM
       };
     });
     prs.sort((a, b) => b.updatedAt - a.updatedAt || b.id - a.id);
-    return { supported: true, projectRoot: repoRoot, fetchedAt: deps.now(), prs };
+
+    // Someone else just published a PR: hand it to a review agent. Needs a known
+    // signed-in user, otherwise "not mine" cannot be told apart from "mine".
+    if (autoLaunchReviews && deps.launchReview && currentUser) {
+      const toReview = prs.filter((pr) => justFlagged.has(pr.id) && !pr.isDraft && !pr.isOwnAuthor);
+      if (toReview.length > 0) void launchReviewsInOrder(repoRoot, toReview);
+    }
+
+    return { supported: true, projectRoot: repoRoot, fetchedAt: deps.now(), prs, autoLaunchReviews };
+  }
+
+  /** One at a time: each launch may create a worktree in the same repo. */
+  async function launchReviewsInOrder(projectRoot: string, prs: AzurePrMenuItem[]): Promise<void> {
+    for (const pr of prs) {
+      try {
+        await deps.launchReview?.({ projectRoot, pr });
+      } catch {
+        // A failed launch is not worth retrying: the marker has already fired.
+      }
+    }
   }
 
   async function list(projectRoot: string): Promise<AzurePrMenuResponse> {
@@ -213,5 +266,15 @@ export function createAzurePrMenuService(deps: AzurePrMenuServiceDeps): AzurePrM
     };
   }
 
-  return { list, acknowledge };
+  async function setAutoLaunchReviews(projectRoot: string, enabled: boolean): Promise<void> {
+    const repoRoot = deps.repoRootFromCwd(projectRoot) ?? projectRoot;
+    const flags = readAutoReviewFlags(deps.store);
+    flags[repoRoot] = enabled;
+    deps.store.setPreference(AUTO_REVIEW_PREF, flags);
+
+    const cached = cache.get(repoRoot);
+    if (cached?.result.supported) cached.result = { ...cached.result, autoLaunchReviews: enabled };
+  }
+
+  return { list, acknowledge, setAutoLaunchReviews };
 }

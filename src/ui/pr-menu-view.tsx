@@ -4,11 +4,13 @@ import type { AzurePrMenuItem } from "../shared/protocol.js";
 export type PrMenuViewModel = {
   projectName: string;
   prs: AzurePrMenuItem[];
+  autoLaunchReviews: boolean;
 };
 
 export type PrMenuHandlers = {
   onClose: () => void;
   onLaunch: (pr: AzurePrMenuItem) => void;
+  onAutoLaunchReviewsChange: (enabled: boolean) => void;
 };
 
 function formatRelativeTime(timestamp: number): string {
@@ -93,9 +95,22 @@ export function renderPrMenu(
             <h3 id={titleId}>Pull requests for {model.projectName}</h3>
             <span>{model.prs.length} active</span>
           </div>
-          <button type="button" className="pr-menu-close" aria-label="Close pull requests" onClick={handlers.onClose}>
-            ×
-          </button>
+          <div className="pr-menu-header-actions">
+            <label
+              className="pr-menu-auto-review"
+              title="Newly published pull requests from other people get a review agent"
+            >
+              <input
+                type="checkbox"
+                checked={model.autoLaunchReviews}
+                onChange={(event) => handlers.onAutoLaunchReviewsChange((event.target as HTMLInputElement).checked)}
+              />
+              <span>Auto-launch reviews</span>
+            </label>
+            <button type="button" className="pr-menu-close" aria-label="Close pull requests" onClick={handlers.onClose}>
+              ×
+            </button>
+          </div>
         </header>
 
         {model.prs.length === 0

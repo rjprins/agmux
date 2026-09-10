@@ -62,6 +62,21 @@ export function registerAzurePrRoutes(deps: AzurePrRoutesDeps): void {
     return { ok: true };
   });
 
+  fastify.post("/api/azure-pr/menu/auto-review", async (req, reply) => {
+    const body = parseJsonBody(req.body);
+    const projectRoot = await resolveProjectRoot(body.projectRoot);
+    if (!projectRoot) {
+      reply.code(400);
+      return { error: "projectRoot must be an existing git repository" };
+    }
+    if (typeof body.enabled !== "boolean") {
+      reply.code(400);
+      return { error: "enabled must be a boolean" };
+    }
+    await prMenu.setAutoLaunchReviews(projectRoot, body.enabled);
+    return { ok: true };
+  });
+
   // Mark the PR shown on a session as viewed, clearing its new-comment flag.
   fastify.post("/api/azure-pr/viewed", async (req, reply) => {
     const body = parseJsonBody(req.body);

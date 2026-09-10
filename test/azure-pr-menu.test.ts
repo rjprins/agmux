@@ -9,6 +9,7 @@ import {
 } from "../src/server/azure-pr.js";
 import {
   acknowledgePrAttention,
+  changedPrAttention,
   createAzurePrMenuService,
   matchPrWorktree,
   reconcilePrMenuState,
@@ -268,6 +269,29 @@ describe("acknowledgePrAttention", () => {
   });
 });
 
+describe("changedPrAttention", () => {
+  const previous: PersistedPrMenuRepoState = {
+    known: { "10": { isDraft: true }, "11": { isDraft: false } },
+    attention: { "11": "new" },
+  };
+
+  it("reports markers that were just set or upgraded, not ones left standing", () => {
+    const next = reconcilePrMenuState(previous, [
+      { id: 10, isDraft: false },
+      { id: 11, isDraft: false },
+      { id: 12, isDraft: false },
+    ]);
+
+    expect(changedPrAttention(previous, next)).toEqual(new Set([10, 12]));
+  });
+
+  it("reports nothing for a first load", () => {
+    expect(changedPrAttention(undefined, reconcilePrMenuState(undefined, [
+      { id: 10, isDraft: false },
+    ]))).toEqual(new Set());
+  });
+});
+
 describe("matchPrWorktree", () => {
   it("matches only the exact source branch", () => {
     const match = matchPrWorktree("feature/launch-flow", [
@@ -303,14 +327,15 @@ function activePr(id: number, isDraft: boolean, createdAt: number, authorUniqueN
   };
 }
 
-function memoryStore(initial: unknown = undefined) {
-  let value = initial;
+function memoryStore(initial: unknown = undefined, prefs: Record<string, unknown> = {}) {
+  const values: Record<string, unknown> = { ...prefs, azurePrMenuState: initial };
   return {
-    getPreference: (key: string) => key === "azurePrMenuState" ? value : undefined,
+    getPreference: (key: string) => values[key],
     setPreference: (key: string, next: unknown) => {
-      if (key === "azurePrMenuState") value = next;
+      values[key] = next;
     },
-    read: () => value,
+    read: () => values.azurePrMenuState,
+    readPreference: (key: string) => values[key],
   };
 }
 
@@ -319,6 +344,85 @@ const reviewDetails = async () => ({
   approvals: 1,
   readiness: "ready" as const,
   ciStatus: "passing" as const,
+});
+
+function autoReviewSetup(options: { enabled?: boolean; prs: ReturnType<typeof activePr>[] }) {
+  const launched: Array<{ id: number; worktree: string | null }> = [];
+  const store = memoryStore(undefined, { azurePrAutoReview: { "/repo": options.enabled ?? true } });
+  const service = createAzurePrMenuService({
+    store,
+    cacheTtlMs: 0,
+    now: () => 1_000_000,
+    repoRootFromCwd: () => "/repo",
+    repoRefForRoot: async () => ref,
+    currentUser: async () => "me@example.com",
+    listActivePrs: async () => options.prs,
+    latestUpdateAt: async (_ref, pr) => pr.createdAt,
+    reviewDetails,
+    listWorktrees: () => [],
+    worktreeStatus: async () => ({ dirty: false }),
+    launchReview: async ({ pr }) => {
+      launched.push({ id: pr.id, worktree: pr.worktree?.path ?? null });
+    },
+  });
+  return { service, store, launched, setPrs: (prs: ReturnType<typeof activePr>[]) => { options.prs = prs; } };
+}
+
+describe("createAzurePrMenuService auto-launched reviews", () => {
+  it("launches once when someone else's PR turns published", async () => {
+    const { service, launched, setPrs } = autoReviewSetup({ prs: [activePr(10, true, 100)] });
+
+    await service.list("/repo");
+    expect(launched).toEqual([]);
+
+    setPrs([activePr(10, false, 100)]);
+    await service.list("/repo");
+    await service.list("/repo");
+
+    expect(launched).toEqual([{ id: 10, worktree: null }]);
+  });
+
+  it("skips my own PRs, drafts, and the first-load baseline", async () => {
+    const { service, launched, setPrs } = autoReviewSetup({
+      prs: [activePr(10, false, 100), activePr(11, false, 100, "me@example.com")],
+    });
+
+    await service.list("/repo");
+    setPrs([
+      activePr(10, false, 100),
+      activePr(11, false, 100, "me@example.com"),
+      activePr(12, false, 200, "me@example.com"),
+      activePr(13, true, 300),
+    ]);
+    await service.list("/repo");
+
+    expect(launched).toEqual([]);
+  });
+
+  it("stays quiet while the setting is off", async () => {
+    const { service, launched, setPrs } = autoReviewSetup({ enabled: false, prs: [activePr(10, true, 100)] });
+
+    await service.list("/repo");
+    setPrs([activePr(10, false, 100)]);
+    const result = await service.list("/repo");
+
+    expect(result.supported && result.autoLaunchReviews).toBe(false);
+    expect(launched).toEqual([]);
+  });
+
+  it("persists the toggle and reports it on the next list", async () => {
+    const { service, store, launched, setPrs } = autoReviewSetup({ enabled: false, prs: [activePr(10, true, 100)] });
+
+    await service.list("/repo");
+    await service.setAutoLaunchReviews("/repo-linked", true);
+    expect(store.readPreference("azurePrAutoReview")).toEqual({ "/repo": true });
+
+    setPrs([activePr(10, false, 100)]);
+    const result = await service.list("/repo");
+
+    expect(result.supported && result.autoLaunchReviews).toBe(true);
+    expect(launched).toEqual([{ id: 10, worktree: null }]);
+  });
 });
 
 describe("createAzurePrMenuService", () => {
@@ -402,6 +506,7 @@ describe("createAzurePrMenuService", () => {
       supported: true,
       projectRoot: "/repo",
       fetchedAt: 1_000_000,
+      autoLaunchReviews: false,
       prs: [
         expect.objectContaining({ id: 10, updatedAt: 500, worktree: {
           name: "feature-10",

@@ -136,6 +136,31 @@ const reaper = createReapService({
   resolveDefaultBranch: (root) => worktrees.defaultBranch(root),
 });
 
+type LaunchRequest = {
+  agent: string;
+  worktree: string;
+  name: string;
+  initialInput: string;
+  projectRoot?: string;
+  branch?: string;
+  baseBranch?: string;
+  refreshRemoteBase?: boolean;
+};
+
+// Launch over the loopback API so agmux-started sessions take the exact same
+// path as ones started from the UI.
+async function launchSessionViaApi(opts: LaunchRequest): Promise<void> {
+  const res = await fetch(`http://127.0.0.1:${PORT}/api/ptys/launch`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(AUTH_ENABLED ? { "x-agmux-token": AUTH_TOKEN } : {}),
+    },
+    body: JSON.stringify(opts),
+  });
+  if (!res.ok) throw new Error(`launch failed: HTTP ${res.status}`);
+}
+
 const prMenu = createAzurePrMenuService({
   store,
   // Leave a small phase margin so a client polling every interval receives
@@ -150,6 +175,25 @@ const prMenu = createAzurePrMenuService({
   reviewDetails: getPrMenuReviewDetails,
   listWorktrees: (repoRoot) => worktrees.listWorktrees(repoRoot).worktrees,
   worktreeStatus: (worktreePath) => worktrees.worktreeStatus(worktreePath),
+  // Same destination and prompt as the menu's own "Launch Review" action.
+  launchReview: async ({ projectRoot, pr }) => {
+    const existing = pr.worktree?.path;
+    try {
+      await launchSessionViaApi({
+        agent: "claude",
+        worktree: existing ?? "__new__",
+        projectRoot,
+        branch: existing ? undefined : pr.sourceBranch,
+        baseBranch: existing ? undefined : `origin/${pr.sourceBranch}`,
+        refreshRemoteBase: !existing,
+        name: `PR #${pr.id}: ${pr.title}`,
+        initialInput: `/review-pr ${pr.id}`,
+      });
+      fastify.log.info({ prId: pr.id, branch: pr.sourceBranch }, "azure-pr: auto-launched review agent");
+    } catch (err) {
+      fastify.log.warn({ err: String(err), prId: pr.id }, "azure-pr: auto review launch failed");
+    }
+  },
 });
 
 registerWorktreeRoutes({ fastify, worktrees, scanner, reaper, store });
@@ -229,17 +273,7 @@ if (AZURE_PR_ENABLED) {
     setPrStateForBranch: runtime.setPrStateForBranch,
     getActiveEditBranch: runtime.getActiveEditBranch,
     broadcastPtyList: runtime.broadcastPtyList,
-    launchSession: async (opts) => {
-      const res = await fetch(`http://127.0.0.1:${PORT}/api/ptys/launch`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(AUTH_ENABLED ? { "x-agmux-token": AUTH_TOKEN } : {}),
-        },
-        body: JSON.stringify(opts),
-      });
-      if (!res.ok) throw new Error(`launch failed: HTTP ${res.status}`);
-    },
+    launchSession: launchSessionViaApi,
     pollIntervalMs: AZURE_PR_POLL_INTERVAL_MS,
     autoSubmit: AZURE_PR_AUTO_SUBMIT,
     onPrResolved: (info) => scanner.notifyPrResolved(info),

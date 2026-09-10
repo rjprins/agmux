@@ -2376,6 +2376,31 @@ button:disabled {
   font-size: 11px;
 }
 
+.pr-menu-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.pr-menu-auto-review {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.pr-menu-auto-review:hover {
+  color: var(--text);
+}
+
+.pr-menu-auto-review input {
+  margin: 0;
+}
+
 .pr-menu-close {
   flex: 0 0 auto;
   padding: 0 4px;

@@ -88,7 +88,14 @@ export type AzurePrMenuItem = {
 
 export type AzurePrMenuResponse =
   | { supported: false; projectRoot: string }
-  | { supported: true; projectRoot: string; fetchedAt: number; prs: AzurePrMenuItem[] };
+  | {
+    supported: true;
+    projectRoot: string;
+    fetchedAt: number;
+    prs: AzurePrMenuItem[];
+    /** Launch a review agent when someone else's PR shows up published. */
+    autoLaunchReviews: boolean;
+  };
 
 /**
  * Lifecycle annotation for the worktree a session lives in, taken from the
