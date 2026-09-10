@@ -1,6 +1,7 @@
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import {
   THEMES,
   DEFAULT_THEME_KEY,
@@ -224,6 +225,9 @@ let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
 let mobileTerminalSnapshotSeq = 0;
 let mobileTerminalSnapshotPendingRequestId: string | null = null;
 let desktopHydrationPending: { requestId: string; ptyId: string } | null = null;
+// PTYs whose local buffer was dropped on unsubscribe: they must repaint from a
+// tmux capture on switch-back, even if a live frame lands there first.
+const needsHydration = new Set<string>();
 let mobileSnapshotRestorePtyId: string | null = loadSavedMobileSnapshotPtyId();
 let mobilePreviewSeq = 0;
 let mobileTermMountEl: HTMLElement | null = null;
@@ -1101,6 +1105,8 @@ type TermState = {
   term: Terminal;
   fit: FitAddon;
   opened: boolean;
+  webgl: boolean;
+  webglAddon: WebglAddon | null;
   lastResize: { cols: number; rows: number } | null;
 };
 
@@ -1318,7 +1324,37 @@ function createTermState(ptyId: string): TermState {
     renderList();
   });
 
-  return { ptyId, container, term, fit, opened, lastResize: null };
+  return { ptyId, container, term, fit, opened, webgl: false, webglAddon: null, lastResize: null };
+}
+
+// Agent TUIs repaint the whole screen ~30x/s; the DOM renderer cannot keep up
+// with that and starves keystroke echo. Loaded lazily, once the pane is
+// visible and fitted, because WebGL needs real dimensions.
+function enableWebglRenderer(st: TermState): void {
+  if (st.webgl || !st.opened) return;
+  st.webgl = true;
+  try {
+    const addon = new WebglAddon();
+    // Browsers cap live WebGL contexts and drop the oldest. Falling back to the
+    // DOM renderer is fine; clearing the flag lets the pane pick WebGL up again
+    // the next time it is fitted.
+    addon.onContextLoss(() => {
+      if (st.webglAddon === addon) {
+        st.webglAddon = null;
+        st.webgl = false;
+      }
+      try {
+        addon.dispose();
+      } catch {
+        // ignore: xterm can throw while tearing down a lost context
+      }
+    });
+    st.term.loadAddon(addon);
+    st.webglAddon = addon;
+    refreshTermViewport(st);
+  } catch {
+    // No WebGL context available; xterm keeps its DOM renderer.
+  }
 }
 
 function ensureTerm(ptyId: string): TermState {
@@ -1406,6 +1442,7 @@ function removeTerm(ptyId: string): void {
   ptyStateChangedAt.delete(ptyId);
   unviewedReadyPtys.delete(ptyId);
   subscribed.delete(ptyId);
+  needsHydration.delete(ptyId);
   pendingResizeByPtyId.delete(ptyId);
   if (desktopHydrationPending?.ptyId === ptyId) {
     desktopHydrationPending = null;
@@ -1885,11 +1922,13 @@ function onServerMsg(msg: ServerMsg): void {
     return;
   }
   if (msg.type === "pty_output") {
+    // A frame can still be in flight when we unsubscribe; writing it would
+    // leave a half-painted buffer that blocks the tmux re-hydration.
+    if (!subscribed.has(msg.ptyId)) return;
     const st = ensureTerm(msg.ptyId);
     st.term.write(msg.data, () => {
       if (msg.ptyId === activePtyId) {
         updateFollowButtonVisibility();
-        scheduleReflow();
       }
       if (mobileViewport) scheduleMobileRender();
     });
@@ -1967,12 +2006,16 @@ function onServerMsg(msg: ServerMsg): void {
     if (desktopHydrationPending && msg.requestId === desktopHydrationPending.requestId) {
       const pendingPtyId = desktopHydrationPending.ptyId;
       desktopHydrationPending = null;
+      const stale = needsHydration.delete(msg.ptyId);
       if (!msg.ok) return;
       const st = terms.get(msg.ptyId);
       if (!st) return;
       if (msg.ptyId !== pendingPtyId) return;
-      if (termBufferHasRenderableText(st)) return;
+      if (!stale && termBufferHasRenderableText(st)) return;
       if (!msg.text) return;
+      // Live frames may have landed while the capture was running; the capture
+      // is a full pane repaint, so start from a clean buffer.
+      if (stale) st.term.reset();
       st.term.write(msg.text, () => {
         if (msg.ptyId === activePtyId) {
           updateFollowButtonVisibility();
@@ -5779,6 +5822,7 @@ function setActive(ptyId: string): void {
   pendingActivePtyId = null;
 
   activePtyId = ptyId;
+  releaseInactiveSubscriptions();
   unviewedReadyPtys.delete(ptyId);
   // Viewing a session clears its PR new-comment marker (optimistic + durable).
   if (summary.pr?.hasNewComments) {
@@ -5976,6 +6020,34 @@ function subscribeIfNeeded(ptyId: string): void {
   sendWsMessage({ type: "subscribe", ptyId });
 }
 
+// Only the visible pane stays subscribed. A busy agent pushes hundreds of KB
+// per second, and parsing that for panes nobody is looking at is what makes
+// typing lag. Switching back repaints the pane from a tmux capture.
+let activePaneRecoveryTimer = 0;
+function scheduleActivePaneRecovery(): void {
+  if (activePaneRecoveryTimer) return;
+  activePaneRecoveryTimer = window.setTimeout(() => {
+    activePaneRecoveryTimer = 0;
+    if (!activePtyId || subscribed.has(activePtyId)) return;
+    fitAndResizeActive();
+  }, 250);
+}
+
+function releaseInactiveSubscriptions(): void {
+  // Mobile keeps its subscriptions: its live pane has no re-hydration path.
+  if (mobileViewport) return;
+  for (const ptyId of [...subscribed]) {
+    if (ptyId === activePtyId) continue;
+    subscribed.delete(ptyId);
+    sendWsMessage({ type: "unsubscribe", ptyId });
+    if (desktopHydrationPending?.ptyId === ptyId) desktopHydrationPending = null;
+    // Keep the old frame on screen: it is stale, not wrong, and the tmux
+    // capture replaces it on switch-back. Blanking here means a blank pane
+    // whenever that capture does not land.
+    if (terms.has(ptyId)) needsHydration.add(ptyId);
+  }
+}
+
 function termIsScrolledUp(term: Terminal): boolean {
   const b = term.buffer.active as unknown as { baseY?: unknown; viewportY?: unknown; length: number };
   const baseY = typeof b.baseY === "number" ? b.baseY : Math.max(0, b.length - term.rows);
@@ -6047,9 +6119,8 @@ function reflowActiveTerm(): void {
   refreshTermViewport(st);
 }
 
-// Debounced reflow: coalesces multiple writes within a single frame into one
-// reflow.  Called after pty_output writes so that snapshots arriving after
-// reconnect (which land after the initial setActive reflow) still get reflowed.
+// Debounced reflow, for the tmux hydration snapshot. Live output does not get
+// one: a full-viewport refresh per frame defeats xterm's dirty-row rendering.
 let reflowRafPending = false;
 function scheduleReflow(): void {
   if (reflowRafPending) return;
@@ -6090,7 +6161,13 @@ function fitAndResizeActive(): void {
 
   const cols = st.term.cols;
   const rows = st.term.rows;
-  if (cols <= 0 || rows <= 0) return;
+  // A hidden or zero-size container fits to nothing; retry on the next frame
+  // instead of subscribing at a bogus size.
+  if (cols <= 0 || rows <= 0) {
+    scheduleActivePaneRecovery();
+    return;
+  }
+  enableWebglRenderer(st);
   const sizeChanged = !st.lastResize || st.lastResize.cols !== cols || st.lastResize.rows !== rows;
   if (sizeChanged) {
     st.lastResize = { cols, rows };
@@ -6109,7 +6186,7 @@ function maybeHydrateActiveDesktopTerm(): void {
   if (!summary || summary.status !== "running" || summary.backend !== "tmux") return;
   const st = terms.get(activePtyId);
   if (!st) return;
-  if (termBufferHasRenderableText(st)) return;
+  if (!needsHydration.has(activePtyId) && termBufferHasRenderableText(st)) return;
   if (desktopHydrationPending?.ptyId === activePtyId) return;
 
   const requestId = `desktop-hydration-${Date.now()}-${activePtyId}`;
@@ -6810,6 +6887,7 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
 
 (window as any).__agmux = {
   activePtyId: () => activePtyId,
+  subscribedPtys: () => [...subscribed],
   // The "New" button now opens the launch modal; e2e spawns plain shells through this.
   newShell: () => newShell(),
   cleanupCopiedTerminalText,

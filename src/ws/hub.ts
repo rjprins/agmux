@@ -44,6 +44,18 @@ export class WsHub {
     this.onSubscriberChange?.();
   }
 
+  markUnsubscribed(client: Client, ptyId: PtyId): void {
+    if (!client.subscribed.delete(ptyId)) return;
+    // Drop anything still queued for this pty so a stale frame cannot land
+    // after the client stopped watching.
+    const queued = client.outByPty.get(ptyId);
+    if (queued) {
+      client.queuedBytes -= Buffer.byteLength(queued, "utf8");
+      client.outByPty.delete(ptyId);
+    }
+    this.onSubscriberChange?.();
+  }
+
   subscriberCounts(): Record<PtyId, number> {
     const counts: Record<PtyId, number> = {};
     for (const c of this.clients) {

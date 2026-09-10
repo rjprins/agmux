@@ -77,6 +77,10 @@ function parseWsMessage(raw: unknown): ClientToServerMessage | null {
     if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
     return { type: "subscribe", ptyId: parsed.ptyId };
   }
+  if (parsed.type === "unsubscribe") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    return { type: "unsubscribe", ptyId: parsed.ptyId };
+  }
   if (parsed.type === "input") {
     if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
     if (typeof parsed.data !== "string") return null;
@@ -182,6 +186,10 @@ export function registerWs(deps: WsDeps): void {
 
       if (msg.type === "subscribe") {
         hub.markSubscribed(client, msg.ptyId);
+        return;
+      }
+      if (msg.type === "unsubscribe") {
+        hub.markUnsubscribed(client, msg.ptyId);
         return;
       }
       if (msg.type === "kick_other_subscribers") {

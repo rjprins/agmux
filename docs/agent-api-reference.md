@@ -545,6 +545,16 @@ Maximum inbound WS message size is 256 KiB.
 { "type": "subscribe", "ptyId": "pty_..." }
 ```
 
+Stop the stream again when you no longer render the PTY. A busy agent can push
+hundreds of KiB per second, so leaving subscriptions open costs real work:
+
+```json
+{ "type": "unsubscribe", "ptyId": "pty_..." }
+```
+
+Anything still queued for that PTY is dropped, so the last frames before an
+unsubscribe may never arrive.
+
 2) Send raw terminal input:
 
 ```json

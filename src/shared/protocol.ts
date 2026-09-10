@@ -137,6 +137,7 @@ export type PtySummary = {
 
 export type ClientToServerMessage =
   | { type: "subscribe"; ptyId: PtyId }
+  | { type: "unsubscribe"; ptyId: PtyId }
   | { type: "input"; ptyId: PtyId; data: string }
   | { type: "resize"; ptyId: PtyId; cols: number; rows: number }
   | { type: "tmux_control"; ptyId: PtyId; direction: "up" | "down"; lines: number }

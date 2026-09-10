@@ -2568,3 +2568,61 @@ test("session preview modal shows loading state and handles empty conversation",
   await page.locator(".launch-modal-overlay").click({ position: { x: 5, y: 5 } });
   await expect(previewModal).not.toBeVisible({ timeout: 3_000 });
 });
+
+test("switching sessions releases the background output stream and repaints from tmux", async ({ page }) => {
+  const token = await readSessionToken(page);
+  let firstPtyId: string | null = null;
+  let secondPtyId: string | null = null;
+
+  try {
+    await page.goto("/?nosup=1");
+
+    await newShellSession(page);
+    await expect(page.locator(".pty-item.active")).toHaveCount(1);
+    firstPtyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    if (!firstPtyId) throw new Error("missing first PTY id");
+
+    const ptys = await page.request
+      .get(`/api/ptys?token=${encodeURIComponent(token)}`)
+      .then(async (res) => ((await res.json()) as { ptys?: Array<Record<string, unknown>> }).ptys ?? []);
+    const first = ptys.find((p) => p.id === firstPtyId);
+    test.skip(first?.backend !== "tmux", "requires tmux backend");
+    const tmuxSession = String(first?.tmuxSession ?? "");
+    const tmuxSocket = process.env.E2E_TMUX_SOCKET ?? "agmux";
+
+    const xterm = page.locator(".term-pane:not(.hidden) .xterm");
+    await xterm.click();
+    await page.keyboard.type("echo FIRST_MARKER");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__agmux?.dumpActive?.() ?? ""), { timeout: 30_000 })
+      .toContain("FIRST_MARKER");
+
+    await newShellSession(page);
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__agmux?.activePtyId?.() ?? ""), { timeout: 10_000 })
+      .not.toBe(firstPtyId);
+    secondPtyId = await page.evaluate(() => (window as any).__agmux.activePtyId());
+    if (!secondPtyId) throw new Error("missing second PTY id");
+
+    // Only the visible session stays subscribed.
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__agmux?.subscribedPtys?.() ?? []), { timeout: 10_000 })
+      .toEqual([secondPtyId]);
+
+    // Output produced while the first session is unsubscribed never reaches the browser.
+    await execFileAsync("tmux", ["-L", tmuxSocket, "-f", "/dev/null", "send-keys", "-t", tmuxSession, "echo WHILE_AWAY", "Enter"]);
+    await page.waitForTimeout(1_000);
+
+    // Switching back repaints it from the tmux capture instead.
+    await page.locator(`.pty-item[data-pty-id="${firstPtyId}"]`).first().click();
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__agmux?.dumpActive?.() ?? ""), { timeout: 15_000 })
+      .toContain("WHILE_AWAY");
+    expect(await page.evaluate(() => (window as any).__agmux.dumpActive())).toContain("FIRST_MARKER");
+    expect(await page.evaluate(() => (window as any).__agmux.subscribedPtys())).toEqual([firstPtyId]);
+  } finally {
+    if (firstPtyId) await killPty(page, token, firstPtyId).catch(() => {});
+    if (secondPtyId) await killPty(page, token, secondPtyId).catch(() => {});
+  }
+});
