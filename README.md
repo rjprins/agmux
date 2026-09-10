@@ -29,7 +29,7 @@ Built for managing [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
 - **Live terminal dashboard** — stream tmux-backed PTYs over WebSockets, switch sessions quickly, rename/kill sessions, and keep shells alive across server restarts.
 - **Agent launch workflows** — start shells, Codex, Claude, or custom CLI agents in an existing worktree, a new worktree, or the current project, with saved flags and launch preferences.
 - **Worktree-aware sidebar** — group projects, sort sessions by worktree, pin or archive projects, and keep same-worktree sessions visually tied together by their left rail color.
-- **Readiness detection** — mark Claude/Codex sessions ready through callbacks, with tmux pane inference as a fallback for prompts, permission requests, and idle shells.
+- **Readiness detection** — track Claude/Codex sessions through explicit launch, input, callback, and exit events, with tmux pane inference reserved for idle shells.
 - **Inactive session discovery and restore** — discover recent Claude, Codex, and Pi sessions from provider logs, preview conversations, and restore them into the same cwd, an existing worktree, or a new worktree.
 - **PR review context** — poll Azure DevOps PR state for active sessions, surface unresolved/new comment markers, and expand review threads from the PR bar.
 - **Task context** — configure project task providers, list/update Beads tasks, and attach task references to launched or running sessions.
@@ -97,18 +97,20 @@ Use the current UI API surface directly for agents:
 
 ## Claude / Codex readiness
 
-Claude and Codex callbacks are the preferred readiness signal. If those callbacks are not configured or do not fire, agmux falls back to the original tmux pane-based readiness inference.
+Claude and Codex readiness is event-driven. agmux does not infer agent readiness from pane contents, because a static pane does not reliably distinguish an idle agent from a running one.
 
 A PTY becomes `ready` immediately when:
 
 - Claude Code fires a `Notification` hook such as `idle_prompt` or `permission_prompt`
 - Codex runs its `notify` callback after a turn completes
 
-Without an explicit callback, agmux still infers readiness from visible tmux pane state:
+For Claude and Codex sessions:
 
-- changing pane content keeps the PTY `busy`
-- a stable prompt long enough marks the PTY `ready`
-- visible permission prompts also count as `ready`
+- launching the agent or submitting input marks the PTY `busy`
+- an explicit provider callback marks the PTY `ready`
+- a missing callback leaves the last explicit state unchanged
+
+Non-agent shell PTYs may still use visible tmux pane state as a best-effort readiness signal.
 
 Every agmux-created shell exports these variables:
 

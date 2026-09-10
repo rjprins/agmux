@@ -71,7 +71,7 @@ Response:
 
 Explicitly marks a PTY `ready` or `busy` from a Claude hook or Codex notify callback.
 
-This signal overrides the heuristic tmux pane readiness fallback until the next submitted command or explicit busy report.
+Claude and Codex readiness is event-driven. The callback marks the PTY ready until the next submitted command or explicit busy report. tmux pane contents are not used to infer readiness for a registered agent.
 
 Body:
 
