@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   claudePresetCommands,
   isClaudeHarness,
+  moveClaudePresetIndex,
   nextClaudePresetIndex,
   parseClaudeModelPresets,
   validateClaudeModelPresets,
@@ -63,5 +64,12 @@ describe("Claude model presets", () => {
     expect(nextClaudePresetIndex(0, 3)).toBe(1);
     expect(nextClaudePresetIndex(2, 3)).toBe(0);
     expect(nextClaudePresetIndex(0, 0)).toBe(-1);
+  });
+
+  it("moves preset indices in both directions with wraparound", () => {
+    expect(moveClaudePresetIndex(0, 3, -1)).toBe(2);
+    expect(moveClaudePresetIndex(2, 3, 1)).toBe(0);
+    expect(moveClaudePresetIndex(1, 3, -1)).toBe(0);
+    expect(moveClaudePresetIndex(0, 0, -1)).toBe(-1);
   });
 });

@@ -28,7 +28,7 @@ import type {
 import {
   claudePresetCommands,
   isClaudeHarness,
-  nextClaudePresetIndex,
+  moveClaudePresetIndex,
   parseClaudeModelPresets,
   type ClaudeEffortLevel,
   type ClaudeModelPreset,
@@ -6328,11 +6328,12 @@ function closeClaudeModelPresetOverlay(): void {
   focusActiveTerm();
 }
 
-function cycleClaudeModelPresetOverlay(): void {
+function moveClaudeModelPresetSelection(step: number): void {
   if (!claudeModelPresetOverlayState) return;
-  claudeModelPresetOverlayState.selectedIndex = nextClaudePresetIndex(
+  claudeModelPresetOverlayState.selectedIndex = moveClaudePresetIndex(
     claudeModelPresetOverlayState.selectedIndex,
     claudeModelPresets.length,
+    step,
   );
   renderClaudeModelPresetOverlayState();
 }
@@ -6417,7 +6418,13 @@ document.addEventListener(
       event.stopImmediatePropagation();
       if (keybindingMatches(resolvedKeybindings.claudeModelPreset, event)) {
         event.preventDefault();
-        cycleClaudeModelPresetOverlay();
+        moveClaudeModelPresetSelection(1);
+      } else if (event.key === "ArrowDown") {
+        event.preventDefault();
+        moveClaudeModelPresetSelection(1);
+      } else if (event.key === "ArrowUp") {
+        event.preventDefault();
+        moveClaudeModelPresetSelection(-1);
       } else if (event.key === "Enter" && !event.ctrlKey && !event.metaKey) {
         event.preventDefault();
         submitSelectedClaudeModelPreset();

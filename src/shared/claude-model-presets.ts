@@ -87,7 +87,11 @@ export function isClaudeHarness(
   return /(?:^|[\\/])claude(?:\.exe)?$/i.test((activeProcess ?? "").trim());
 }
 
-export function nextClaudePresetIndex(currentIndex: number, presetCount: number): number {
+export function moveClaudePresetIndex(currentIndex: number, presetCount: number, step: number): number {
   if (presetCount < 1) return -1;
-  return (currentIndex + 1 + presetCount) % presetCount;
+  return (((currentIndex + step) % presetCount) + presetCount) % presetCount;
+}
+
+export function nextClaudePresetIndex(currentIndex: number, presetCount: number): number {
+  return moveClaudePresetIndex(currentIndex, presetCount, 1);
 }

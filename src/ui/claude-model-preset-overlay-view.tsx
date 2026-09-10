@@ -53,6 +53,9 @@ export function renderClaudeModelPresetOverlay(
                 className={`claude-preset-option${selected ? " selected" : ""}`}
                 role="option"
                 aria-selected={selected ? "true" : "false"}
+                ref={(element) => {
+                  if (element && selected) element.scrollIntoView({ block: "nearest" });
+                }}
               >
                 <span className="claude-preset-name">{preset.name}</span>
                 <span className="claude-preset-config">
@@ -63,6 +66,7 @@ export function renderClaudeModelPresetOverlay(
           })}
         </ul>
         <div className="claude-preset-hints" aria-label="Actions">
+          <span><kbd>↑</kbd><kbd>↓</kbd> Select</span>
           <span><kbd>Enter</kbd> Apply</span>
           <span><kbd>Esc</kbd> Cancel</span>
         </div>
