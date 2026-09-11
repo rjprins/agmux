@@ -596,7 +596,18 @@ Constraints:
 - `direction`: `up | down`
 - `lines`: integer `1..200`
 
-6) Snapshot request:
+6) Repaint a pane:
+
+```json
+{ "type": "tmux_repaint", "ptyId": "pty_..." }
+```
+
+Asks tmux to redraw the pane for its attached clients. The redraw arrives as
+ordinary `pty_output`, so it carries the pane's real width and cursor
+positioning. Use it to restore a pane after resubscribing, in preference to
+rebuilding the screen from a capture.
+
+7) Snapshot request:
 
 ```json
 { "type": "mobile_snapshot_request", "requestId": "r1", "ptyId": "pty_...", "lines": 200 }

@@ -224,7 +224,6 @@ let mobilePreviewState: MobileInactivePreview | null = null;
 let mobileTerminalSnapshot: MobileTerminalSnapshot | null = null;
 let mobileTerminalSnapshotSeq = 0;
 let mobileTerminalSnapshotPendingRequestId: string | null = null;
-let desktopHydrationPending: { requestId: string; ptyId: string } | null = null;
 // PTYs whose local buffer was dropped on unsubscribe: they must repaint from a
 // tmux capture on switch-back, even if a live frame lands there first.
 const needsHydration = new Set<string>();
@@ -1117,7 +1116,6 @@ let authToken = "";
 let ws: WebSocket | null = null;
 const TERMINAL_SCROLLBACK_LINES = 0;
 const MOBILE_TMUX_SNAPSHOT_LINES = 4_000;
-const DESKTOP_TMUX_HYDRATION_LINES = 4_000;
 let tmuxSessions: TmuxSessionInfo[] = [];
 let selectedTmuxSessionKey = "";
 
@@ -1444,9 +1442,6 @@ function removeTerm(ptyId: string): void {
   subscribed.delete(ptyId);
   needsHydration.delete(ptyId);
   pendingResizeByPtyId.delete(ptyId);
-  if (desktopHydrationPending?.ptyId === ptyId) {
-    desktopHydrationPending = null;
-  }
 }
 
 function wsUrl(): string {
@@ -1708,7 +1703,6 @@ function connectWs(): void {
   ws = new WebSocket(wsUrl());
 
   ws.addEventListener("open", () => {
-    desktopHydrationPending = null;
     wsReconnectDelay = 0;
     addEvent(`WS connected`);
     wsConnected = true;
@@ -1741,7 +1735,6 @@ function connectWs(): void {
   });
 
   ws.addEventListener("close", () => {
-    desktopHydrationPending = null;
     addEvent(`WS disconnected`);
     wsConnected = false;
     scheduleMobileRender();
@@ -2039,30 +2032,6 @@ function onServerMsg(msg: ServerMsg): void {
         error: null,
       };
       renderMobileViewState();
-      return;
-    }
-
-    if (desktopHydrationPending && msg.requestId === desktopHydrationPending.requestId) {
-      const pendingPtyId = desktopHydrationPending.ptyId;
-      desktopHydrationPending = null;
-      const stale = needsHydration.delete(msg.ptyId);
-      if (!msg.ok) return;
-      const st = terms.get(msg.ptyId);
-      if (!st) return;
-      if (msg.ptyId !== pendingPtyId) return;
-      if (!stale && termBufferHasRenderableText(st)) return;
-      if (!msg.text) return;
-      // Live frames may have landed while the capture was running; the capture
-      // is a full pane repaint, so start from a clean buffer.
-      if (stale) st.term.reset();
-      st.term.write(msg.text, () => {
-        if (msg.ptyId === activePtyId) {
-          updateFollowButtonVisibility();
-          scheduleReflow();
-          requestAnimationFrame(() => refreshTermViewport(st));
-        }
-        if (mobileViewport) scheduleMobileRender();
-      });
     }
     return;
   }
@@ -6094,7 +6063,6 @@ function releaseInactiveSubscriptions(): void {
     if (ptyId === activePtyId) continue;
     subscribed.delete(ptyId);
     sendWsMessage({ type: "unsubscribe", ptyId });
-    if (desktopHydrationPending?.ptyId === ptyId) desktopHydrationPending = null;
     // Keep the old frame on screen: it is stale, not wrong, and the tmux
     // capture replaces it on switch-back. Blanking here means a blank pane
     // whenever that capture does not land.
@@ -6173,18 +6141,6 @@ function reflowActiveTerm(): void {
   refreshTermViewport(st);
 }
 
-// Debounced reflow, for the tmux hydration snapshot. Live output does not get
-// one: a full-viewport refresh per frame defeats xterm's dirty-row rendering.
-let reflowRafPending = false;
-function scheduleReflow(): void {
-  if (reflowRafPending) return;
-  reflowRafPending = true;
-  requestAnimationFrame(() => {
-    reflowRafPending = false;
-    reflowActiveTerm();
-  });
-}
-
 function updateTerminalVisibility(): void {
   const hasActive = Boolean(activePtyId);
   placeholderEl.classList.toggle("hidden", hasActive);
@@ -6230,27 +6186,23 @@ function fitAndResizeActive(): void {
   // First subscribe only after we have a concrete fitted size. This avoids
   // tmux snapshot/output replay being wrapped to stale/default dimensions.
   subscribeIfNeeded(activePtyId);
-  maybeHydrateActiveDesktopTerm();
+  repaintActiveDesktopTerm();
 }
 
-function maybeHydrateActiveDesktopTerm(): void {
+// Ask tmux to repaint the pane instead of rebuilding it from capture-pane.
+// A capture joins wrapped lines and drops blank rows, so a full-screen agent
+// comes back with its columns shifted; a redraw arrives through the normal
+// output stream with the pane's real width and cursor positioning.
+function repaintActiveDesktopTerm(): void {
   if (mobileViewport || !activePtyId) return;
   if (!ws || ws.readyState !== WebSocket.OPEN) return;
   const summary = ptys.find((p) => p.id === activePtyId);
   if (!summary || summary.status !== "running" || summary.backend !== "tmux") return;
   const st = terms.get(activePtyId);
   if (!st) return;
-  if (!needsHydration.has(activePtyId) && termBufferHasRenderableText(st)) return;
-  if (desktopHydrationPending?.ptyId === activePtyId) return;
-
-  const requestId = `desktop-hydration-${Date.now()}-${activePtyId}`;
-  desktopHydrationPending = { requestId, ptyId: activePtyId };
-  sendWsMessage({
-    type: "mobile_snapshot_request",
-    requestId,
-    ptyId: activePtyId,
-    lines: DESKTOP_TMUX_HYDRATION_LINES,
-  });
+  const stale = needsHydration.delete(activePtyId);
+  if (!stale && termBufferHasRenderableText(st)) return;
+  sendWsMessage({ type: "tmux_repaint", ptyId: activePtyId });
 }
 
 const ro = new ResizeObserver(() => {

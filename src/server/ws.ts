@@ -6,7 +6,7 @@ import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from ".
 import type { PtyManager } from "../pty/manager.js";
 import type { ReadinessEngine } from "../readiness/engine.js";
 import type { WsHub } from "../ws/hub.js";
-import { tmuxCapturePaneVisible, tmuxWheelScroll } from "../tmux.js";
+import { tmuxCapturePaneVisible, tmuxRepaintClients, tmuxWheelScroll } from "../tmux.js";
 import { scrollTmuxToHistoryEntry, type InputAnchorStore } from "./history-scroll.js";
 import { AUTH_ENABLED } from "./config.js";
 import { isRecord } from "./utils.js";
@@ -111,6 +111,10 @@ function parseWsMessage(raw: unknown): ClientToServerMessage | null {
     if (typeof lines !== "number" || !Number.isInteger(lines)) return null;
     if (lines < 1 || lines > 200) return null;
     return { type: "tmux_control", ptyId: parsed.ptyId, direction, lines };
+  }
+  if (parsed.type === "tmux_repaint") {
+    if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
+    return { type: "tmux_repaint", ptyId: parsed.ptyId };
   }
   if (parsed.type === "history_scroll_to") {
     if (typeof parsed.ptyId !== "string" || parsed.ptyId.length === 0) return null;
@@ -227,6 +231,16 @@ export function registerWs(deps: WsDeps): void {
         if (!summary || !summary.tmuxSession) return;
         void tmuxWheelScroll(summary.tmuxSession, msg.direction, msg.lines, summary.tmuxServer).catch(() => {
           // ignore best-effort tmux history control
+        });
+        return;
+      }
+      if (msg.type === "tmux_repaint") {
+        const summary = ptys.getSummary(msg.ptyId);
+        if (!summary) return;
+        const capture = tmuxCaptureTarget(summary);
+        if (!capture) return;
+        void tmuxRepaintClients(capture.target, capture.server).catch(() => {
+          // ignore best-effort repaints
         });
         return;
       }

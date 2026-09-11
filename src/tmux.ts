@@ -968,3 +968,27 @@ export async function tmuxPaneActiveProcessFromInspection(
   });
   return inferred ?? fg.comm;
 }
+
+/**
+ * Force tmux to repaint a pane for the clients attached to its session.
+ *
+ * This is how a pane is restored after the browser stops streaming it: the
+ * redraw arrives through the normal output stream, so it carries the pane's
+ * real width, cursor positioning and alternate-screen state. Rebuilding the
+ * screen from `capture-pane` instead loses all three.
+ */
+export async function tmuxRepaintClients(target: string, serverHint?: TmuxServer | null): Promise<void> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(target);
+  if (!server) return;
+  const session = tmuxTargetSession(target);
+  try {
+    const out = server === "default"
+      ? await tmuxDefaultOut(["list-clients", "-t", session, "-F", "#{client_name}"])
+      : await tmuxAgentOut(["list-clients", "-t", session, "-F", "#{client_name}"]);
+    for (const client of out.split("\n").map((s) => s.trim()).filter(Boolean)) {
+      await tmuxByServer(server, ["refresh-client", "-t", client]);
+    }
+  } catch {
+    // Best-effort: a pane with no attached client has nothing to repaint.
+  }
+}

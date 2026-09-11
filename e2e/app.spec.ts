@@ -2626,3 +2626,66 @@ test("switching sessions releases the background output stream and repaints from
     if (secondPtyId) await killPty(page, token, secondPtyId).catch(() => {});
   }
 });
+
+test("a restored pane wraps exactly like the tmux pane", async ({ page }) => {
+  const token = await readSessionToken(page);
+  let firstPtyId: string | null = null;
+  let secondPtyId: string | null = null;
+
+  try {
+    await page.goto("/?nosup=1");
+    await newShellSession(page);
+    await expect(page.locator(".pty-item.active")).toHaveCount(1);
+    firstPtyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+    if (!firstPtyId) throw new Error("missing first PTY id");
+
+    const ptys = await page.request
+      .get(`/api/ptys?token=${encodeURIComponent(token)}`)
+      .then(async (res) => ((await res.json()) as { ptys?: Array<Record<string, unknown>> }).ptys ?? []);
+    const first = ptys.find((p) => p.id === firstPtyId);
+    test.skip(first?.backend !== "tmux", "requires tmux backend");
+    const tmuxSession = String(first?.tmuxSession ?? "");
+    const tmuxSocket = process.env.E2E_TMUX_SOCKET ?? "agmux";
+
+    const xterm = page.locator(".term-pane:not(.hidden) .xterm");
+    await xterm.click();
+    // Blank rows above the content catch a restore that shifts everything up,
+    // and a line far wider than the pane catches a disagreement about wrapping.
+    await page.keyboard.type("clear; printf '\\n\\n'; printf 'W%.0s' $(seq 1 400); echo ' END_OF_WIDE_LINE'");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__agmux?.dumpActive?.() ?? ""), { timeout: 30_000 })
+      .toContain("END_OF_WIDE_LINE");
+
+    await newShellSession(page);
+    await expect
+      .poll(async () => page.evaluate(() => (window as any).__agmux?.activePtyId?.() ?? ""), { timeout: 10_000 })
+      .not.toBe(firstPtyId);
+    secondPtyId = await page.evaluate(() => (window as any).__agmux.activePtyId());
+
+    await page.locator(`.pty-item[data-pty-id="${firstPtyId}"]`).first().click();
+
+    // capture-pane without -J returns one line per pane row, which is what the
+    // client's buffer rows must look like once the pane is repainted.
+    const paneRows = async (): Promise<string[]> => {
+      const { stdout } = await execFileAsync("tmux", [
+        "-L", tmuxSocket, "-f", "/dev/null", "capture-pane", "-p", "-t", tmuxSession,
+      ]);
+      return stdout.split("\n").map((l) => l.replace(/\s+$/, "")).slice(0, 8);
+    };
+    const clientRows = async (): Promise<string[]> =>
+      page.evaluate(() =>
+        String((window as any).__agmux?.dumpViewport?.() ?? "")
+          .split("\n")
+          .map((l: string) => l.replace(/\s+$/, ""))
+          .slice(0, 8),
+      );
+
+    await expect
+      .poll(async () => (await clientRows()).join("\n"), { timeout: 15_000 })
+      .toBe((await paneRows()).join("\n"));
+  } finally {
+    if (firstPtyId) await killPty(page, token, firstPtyId).catch(() => {});
+    if (secondPtyId) await killPty(page, token, secondPtyId).catch(() => {});
+  }
+});
