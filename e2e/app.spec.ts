@@ -747,6 +747,45 @@ test("xterm viewport scrolls with mouse wheel", async ({ page }) => {
   }
 });
 
+test("mouse wheel is not typed into the pane as arrow keys", async ({ page }) => {
+  await page.addInitScript(() => {
+    const sent: unknown[] = [];
+    (window as any).__agmuxSentWs = sent;
+    const originalSend = WebSocket.prototype.send;
+    WebSocket.prototype.send = function (data: string | ArrayBufferLike | Blob | ArrayBufferView) {
+      try {
+        sent.push(typeof data === "string" ? JSON.parse(data) : String(data));
+      } catch {
+        sent.push(String(data));
+      }
+      return originalSend.call(this, data);
+    };
+  });
+  await page.goto("/?nosup=1");
+
+  await newShellSession(page);
+  await expect(page.locator(".pty-item.active")).toHaveCount(1);
+  await expect(page.locator(".term-pane:not(.hidden) .xterm")).toBeVisible();
+
+  await page.evaluate(() => ((window as any).__agmuxSentWs as unknown[]).splice(0));
+  await page.locator(".term-pane:not(.hidden) .xterm").hover();
+  for (let i = 0; i < 4; i += 1) {
+    await page.mouse.wheel(0, -200);
+    await page.mouse.wheel(0, 200);
+  }
+
+  const sent = async () =>
+    page.evaluate(() => ((window as any).__agmuxSentWs ?? []) as Array<{ type?: unknown; data?: unknown }>);
+  await expect.poll(async () => (await sent()).filter((m) => m.type === "tmux_control").length).toBeGreaterThan(0);
+  expect((await sent()).filter((m) => m.type === "input")).toEqual([]);
+
+  const ptyId = await page.locator(".pty-item.active").evaluate((el) => el.getAttribute("data-pty-id"));
+  if (ptyId) {
+    const token = await readSessionToken(page);
+    await page.request.post(`/api/ptys/${encodeURIComponent(ptyId)}/kill?token=${encodeURIComponent(token)}`);
+  }
+});
+
 test("scroll up after cat reveals the cat command", async ({ page }) => {
   await page.goto("/?nosup=1");
 

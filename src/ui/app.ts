@@ -1220,6 +1220,9 @@ function createTermState(ptyId: string): TermState {
     },
     { passive: false, capture: true },
   );
+  // With no scrollback, xterm.js turns the wheel into arrow keys, which would
+  // recall prompt history on top of the scroll handled above.
+  term.attachCustomWheelEventHandler(() => false);
 
   term.onData((data) => {
     if (activePtyId !== ptyId) return;
