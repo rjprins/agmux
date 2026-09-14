@@ -2,6 +2,7 @@ import type { FastifyBaseLogger } from "fastify";
 
 import type { PtySummary } from "../types.js";
 import type { SqliteStore } from "../persist/sqlite.js";
+import { bracketedPaste } from "../shared/bracketed-paste.js";
 import { branchAtCwd, getWorktreeCache } from "../worktree.js";
 import {
   buildPrSummary,
@@ -28,11 +29,6 @@ export type MergeProof = {
   /** epoch ms of the PR's closedDate. */
   completedAt: number | null;
 };
-
-// Bracketed-paste wrappers so multi-line text lands in the agent's input box as a
-// paste (visible, not submitted) rather than being interpreted line-by-line.
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
 
 const DELIVERED_PREF = "azurePrDelivered";
 const VIEWED_PREF = "azurePrViewed"; // prId -> ts the user last viewed (set by the UI)
@@ -229,7 +225,8 @@ export function createAzurePrPoller(deps: AzurePrPollerDeps) {
 
           if (branchSessions.length > 0) {
             const target = branchSessions[0];
-            deps.writeToPty(target.id, PASTE_START + prompt + PASTE_END + (deps.autoSubmit ? "\r" : ""));
+            // A paste lands in the input box as one draft instead of being read line by line.
+            deps.writeToPty(target.id, bracketedPaste(prompt) + (deps.autoSubmit ? "\r" : ""));
             logger.info({ prId: pr.id, ptyId: target.id }, "azure-pr: delivered comments to live session");
             delivered[deliveryPreferenceKey] = recordPrCommentsDelivered(previousDelivery, threads.newComments, threads.latestOtherCommentAt);
             deliveredChanged = true;

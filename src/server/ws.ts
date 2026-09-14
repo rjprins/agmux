@@ -6,6 +6,7 @@ import type { ClientToServerMessage, PtySummary, ServerToClientMessage } from ".
 import type { PtyManager } from "../pty/manager.js";
 import type { ReadinessEngine } from "../readiness/engine.js";
 import type { WsHub } from "../ws/hub.js";
+import { bracketedPaste } from "../shared/bracketed-paste.js";
 import { tmuxCapturePaneVisible, tmuxRepaintClients, tmuxWheelScroll } from "../tmux.js";
 import { scrollTmuxToHistoryEntry, type InputAnchorStore } from "./history-scroll.js";
 import { AUTH_ENABLED } from "./config.js";
@@ -27,8 +28,6 @@ const MOBILE_SUBMIT_MAX_BODY_BYTES = 64 * 1024;
 // Codex's crossterm reads typed keys 1024 bytes per wakeup and leaves the rest unread
 // until more input arrives, so a longer body swallows the Enter. A paste is read whole.
 const MOBILE_SUBMIT_PASTE_MIN_BYTES = 512;
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
 
 function send(ws: WebSocket, msg: ServerToClientMessage): void {
   ws.send(JSON.stringify(msg));
@@ -142,8 +141,7 @@ function parseWsMessage(raw: unknown): ClientToServerMessage | null {
 export function mobileSubmitBodyInput(body: string): string {
   // Typed line breaks would submit line by line, so multi-line bodies always go as a paste.
   if (!body.includes("\n") && Buffer.byteLength(body, "utf8") <= MOBILE_SUBMIT_PASTE_MIN_BYTES) return body;
-  // An ESC inside the paste could end it early and type the rest as keys.
-  return `${PASTE_START}${body.replace(/\x1b/g, "")}${PASTE_END}`;
+  return bracketedPaste(body);
 }
 
 async function waitForMobileSubmitGate(
