@@ -1,3 +1,5 @@
+import { bracketedPaste } from "../shared/bracketed-paste.js";
+
 export type ReviewCommentEvaluation = {
   prId: number;
   prTitle: string;
@@ -8,8 +10,6 @@ export type ReviewCommentEvaluation = {
   url: string;
 };
 
-const PASTE_START = "\x1b[200~";
-const PASTE_END = "\x1b[201~";
 const MAX_COMMENT_LENGTH = 12_000;
 
 export function buildReviewCommentEvaluationPrompt(comment: ReviewCommentEvaluation): string {
@@ -34,5 +34,5 @@ export function buildReviewCommentEvaluationPrompt(comment: ReviewCommentEvaluat
 }
 
 export function buildReviewCommentEvaluationInput(comment: ReviewCommentEvaluation): string {
-  return `${PASTE_START}${buildReviewCommentEvaluationPrompt(comment)}${PASTE_END}\r`;
+  return `${bracketedPaste(buildReviewCommentEvaluationPrompt(comment))}\r`;
 }

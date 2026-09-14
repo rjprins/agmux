@@ -574,6 +574,7 @@ Constraints:
 Constraints:
 
 - `body` max 64 KiB
+- A body over 512 bytes, or with line breaks, is written as one bracketed paste, so TUIs read it whole and keep the line breaks. Enter follows as a separate write.
 
 4) Resize:
 
