@@ -24,6 +24,11 @@ type WsDeps = {
 const MOBILE_SNAPSHOT_MAX_LINES = 20_000;
 const MOBILE_SUBMIT_GATE_TIMEOUT_MS = 800;
 const MOBILE_SUBMIT_MAX_BODY_BYTES = 64 * 1024;
+// Codex's crossterm reads typed keys 1024 bytes per wakeup and leaves the rest unread
+// until more input arrives, so a longer body swallows the Enter. A paste is read whole.
+const MOBILE_SUBMIT_PASTE_MIN_BYTES = 512;
+const PASTE_START = "\x1b[200~";
+const PASTE_END = "\x1b[201~";
 
 function send(ws: WebSocket, msg: ServerToClientMessage): void {
   ws.send(JSON.stringify(msg));
@@ -134,6 +139,12 @@ function parseWsMessage(raw: unknown): ClientToServerMessage | null {
   return null;
 }
 
+export function mobileSubmitBodyInput(body: string): string {
+  if (Buffer.byteLength(body, "utf8") <= MOBILE_SUBMIT_PASTE_MIN_BYTES) return body;
+  // An ESC inside the paste could end it early and type the rest as keys.
+  return `${PASTE_START}${body.replace(/\x1b/g, "")}${PASTE_END}`;
+}
+
 async function waitForMobileSubmitGate(
   ptys: PtyManager,
   ptyId: string,
@@ -209,7 +220,7 @@ export function registerWs(deps: WsDeps): void {
         const body = msg.body.replace(/\r\n?/g, "\n").replace(/[\r\n]+/g, "");
         if (body.length > 0) {
           readinessEngine.markInput(msg.ptyId, body);
-          ptys.write(msg.ptyId, body);
+          ptys.write(msg.ptyId, mobileSubmitBodyInput(body));
           void waitForMobileSubmitGate(ptys, msg.ptyId, body)
             .catch(() => {})
             .finally(() => {

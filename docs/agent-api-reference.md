@@ -574,6 +574,7 @@ Constraints:
 Constraints:
 
 - `body` max 64 KiB
+- A body over 512 bytes is written as one bracketed paste, so TUIs read it whole. Enter follows as a separate write.
 
 4) Resize:
 
