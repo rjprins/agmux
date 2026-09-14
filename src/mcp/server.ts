@@ -7,6 +7,7 @@ import WebSocket from "ws";
 import * as z from "zod/v4";
 
 import type { WorktreeAnnotated, WorktreeOverlays, WorktreesFullResponse } from "../shared/worktrees.js";
+import { sendInputMessage } from "./send-input.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -195,14 +196,9 @@ server.registerTool("send_input", {
   inputSchema: {
     ptyId: z.string().min(1).describe("Target agmux PTY ID, for example pty_abc123."),
     data: z.string().max(64 * 1024).describe("Raw terminal input to write."),
-    appendEnter: z.boolean().default(true).describe("Append carriage return if data does not already end with Enter."),
+    appendEnter: z.boolean().default(true).describe("Submit with Enter unless data already ends with a carriage return. A trailing newline is not Enter."),
   },
-}, async ({ ptyId, data, appendEnter }) => {
-  if (appendEnter && !/[\r\n]$/.test(data)) {
-    return asJsonToolResult(await sendWsMessage({ type: "mobile_submit", ptyId, body: data }));
-  }
-  return asJsonToolResult(await sendWsMessage({ type: "input", ptyId, data }));
-});
+}, async ({ ptyId, data, appendEnter }) => asJsonToolResult(await sendWsMessage(sendInputMessage(ptyId, data, appendEnter))));
 
 server.registerTool("snapshot", {
   title: "Capture PTY snapshot",
