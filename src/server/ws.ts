@@ -140,7 +140,8 @@ function parseWsMessage(raw: unknown): ClientToServerMessage | null {
 }
 
 export function mobileSubmitBodyInput(body: string): string {
-  if (Buffer.byteLength(body, "utf8") <= MOBILE_SUBMIT_PASTE_MIN_BYTES) return body;
+  // Typed line breaks would submit line by line, so multi-line bodies always go as a paste.
+  if (!body.includes("\n") && Buffer.byteLength(body, "utf8") <= MOBILE_SUBMIT_PASTE_MIN_BYTES) return body;
   // An ESC inside the paste could end it early and type the rest as keys.
   return `${PASTE_START}${body.replace(/\x1b/g, "")}${PASTE_END}`;
 }
@@ -217,9 +218,9 @@ export function registerWs(deps: WsDeps): void {
         return;
       }
       if (msg.type === "mobile_submit") {
-        const body = msg.body.replace(/\r\n?/g, "\n").replace(/[\r\n]+/g, "");
+        const body = msg.body.replace(/\r\n?/g, "\n").replace(/^\n+|\n+$/g, "");
         if (body.length > 0) {
-          readinessEngine.markInput(msg.ptyId, body);
+          readinessEngine.markInput(msg.ptyId, body.replace(/\n/g, " "));
           ptys.write(msg.ptyId, mobileSubmitBodyInput(body));
           void waitForMobileSubmitGate(ptys, msg.ptyId, body)
             .catch(() => {})

@@ -19,6 +19,10 @@ describe("mobileSubmitBodyInput", () => {
     expect(mobileSubmitBodyInput(body)).toBe(`${PASTE_START}${body}${PASTE_END}`);
   });
 
+  it("sends multi-line bodies as a paste so each line does not submit", () => {
+    expect(mobileSubmitBodyInput("one\ntwo")).toBe(`${PASTE_START}one\ntwo${PASTE_END}`);
+  });
+
   it("measures the limit in bytes", () => {
     const body = "é".repeat(300);
     expect(mobileSubmitBodyInput(body)).toBe(`${PASTE_START}${body}${PASTE_END}`);
@@ -81,6 +85,14 @@ describe("mobile_submit over ws", () => {
 
   it("writes a short body and then Enter", async () => {
     expect(await submit("echo hi")).toEqual(["echo hi", "\r"]);
+  });
+
+  it("drops outer line breaks from a single-line body", async () => {
+    expect(await submit("echo hi\n")).toEqual(["echo hi", "\r"]);
+  });
+
+  it("keeps inner line breaks inside the paste", async () => {
+    expect(await submit("\nline one\r\nline two\r\n")).toEqual([`${PASTE_START}line one\nline two${PASTE_END}`, "\r"]);
   });
 
   it("writes a long body as a paste and Enter as its own write", async () => {
