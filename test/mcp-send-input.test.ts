@@ -11,11 +11,13 @@ describe("send_input message", () => {
     expect(sendInputMessage("pty-1", "\n", true)).toEqual({ type: "mobile_submit", ptyId: "pty-1", body: "\n" });
   });
 
-  it("writes data that already ends with a carriage return as is", () => {
-    expect(sendInputMessage("pty-1", "y\r", true)).toEqual({ type: "input", ptyId: "pty-1", data: "y\r" });
+  it("submits data that already ends with a carriage return through mobile_submit", () => {
+    expect(sendInputMessage("pty-1", "y\r", true)).toEqual({ type: "mobile_submit", ptyId: "pty-1", body: "y\r" });
+    expect(sendInputMessage("pty-1", "\r", true)).toEqual({ type: "mobile_submit", ptyId: "pty-1", body: "\r" });
   });
 
   it("writes raw data when appendEnter is off", () => {
     expect(sendInputMessage("pty-1", "hello\n", false)).toEqual({ type: "input", ptyId: "pty-1", data: "hello\n" });
+    expect(sendInputMessage("pty-1", "y\r", false)).toEqual({ type: "input", ptyId: "pty-1", data: "y\r" });
   });
 });

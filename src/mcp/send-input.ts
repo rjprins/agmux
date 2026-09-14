@@ -3,9 +3,8 @@ export type SendInputMessage =
   | { type: "input"; ptyId: string; data: string };
 
 export function sendInputMessage(ptyId: string, data: string, appendEnter: boolean): SendInputMessage {
-  // Only CR is Enter. Claude and Codex insert a newline for LF instead of submitting.
-  if (appendEnter && !data.endsWith("\r")) {
-    return { type: "mobile_submit", ptyId, body: data };
-  }
+  // A trailing Enter written with the text lands inside Codex's paste burst as a newline,
+  // so submits always go through the gated flow, which drops trailing line breaks.
+  if (appendEnter) return { type: "mobile_submit", ptyId, body: data };
   return { type: "input", ptyId, data };
 }

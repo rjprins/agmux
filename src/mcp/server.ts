@@ -196,7 +196,7 @@ server.registerTool("send_input", {
   inputSchema: {
     ptyId: z.string().min(1).describe("Target agmux PTY ID, for example pty_abc123."),
     data: z.string().max(64 * 1024).describe("Raw terminal input to write."),
-    appendEnter: z.boolean().default(true).describe("Submit with Enter unless data already ends with a carriage return. A trailing newline is not Enter."),
+    appendEnter: z.boolean().default(true).describe("Submit data with Enter, dropping any trailing line breaks. Set false to write data exactly as given."),
   },
 }, async ({ ptyId, data, appendEnter }) => asJsonToolResult(await sendWsMessage(sendInputMessage(ptyId, data, appendEnter))));
 

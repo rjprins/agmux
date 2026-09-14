@@ -91,6 +91,10 @@ describe("mobile_submit over ws", () => {
     expect(await submit("echo hi\n")).toEqual(["echo hi", "\r"]);
   });
 
+  it("drops a trailing carriage return so Enter is only sent after the gate", async () => {
+    expect(await submit("echo hi\r")).toEqual(["echo hi", "\r"]);
+  });
+
   it("keeps inner line breaks inside the paste", async () => {
     expect(await submit("\nline one\r\nline two\r\n")).toEqual([`${PASTE_START}line one\nline two${PASTE_END}`, "\r"]);
   });
