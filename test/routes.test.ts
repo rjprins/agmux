@@ -1,4 +1,7 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import Fastify from "fastify";
 import WebSocket from "ws";
 import { describe, expect, it } from "vitest";
@@ -191,6 +194,85 @@ describe("route wiring", () => {
     expect(magitRes.json()).toEqual({ ok: true, path: "/repo/wt" });
     expect(magits).toEqual(["/repo/wt/src"]);
     await fastify.close();
+  });
+
+  it("resolves and opens terminal file links relative to the PTY cwd", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "agmux-open-file-"));
+    const nested = path.join(root, "src");
+    fs.mkdirSync(nested);
+    fs.writeFileSync(path.join(nested, "a.ts"), "");
+    const opened: Array<{ path: string; line?: number | null; column?: number | null }> = [];
+    const fastify = Fastify();
+    const runtime = {
+      ptys: {
+        spawn: () => {},
+        list: () => [],
+        getSummary: (id: string) => (
+          id === "pty-1"
+            ? { id: "pty-1", status: "running", backend: "tmux", command: "tmux", args: [], cwd: nested, createdAt: 0 }
+            : null
+        ),
+        kill: () => {},
+        write: () => {},
+        resize: () => {},
+        updateName: () => null,
+      },
+      readinessEngine: { registerAgent: () => {}, markBusy: () => {}, markExited: () => {}, markReady: () => {} },
+      listPtys: async () => [],
+      broadcastPtyList: async () => {},
+      trackLinkedSession: () => {},
+      getReadinessTrace: () => [],
+    } as any;
+
+    registerPtyRoutes({
+      fastify,
+      store: {} as any,
+      agentSessions: {} as any,
+      runtime,
+      worktrees: {} as any,
+      defaultBaseBranch: "main",
+      agmuxSession: "agmux",
+      gitRootOf: async () => root,
+      openFile: async (filePath, location) => {
+        opened.push({ path: filePath, ...location });
+        return { path: filePath };
+      },
+    });
+
+    try {
+      const resolveRes = await fastify.inject({
+        method: "POST",
+        url: "/api/ptys/pty-1/resolve-files",
+        payload: { paths: ["a.ts", "src/a.ts", "nope.ts"] },
+      });
+      expect(resolveRes.statusCode).toBe(200);
+      expect(resolveRes.json()).toEqual({
+        files: {
+          "a.ts": path.join(nested, "a.ts"),
+          "src/a.ts": path.join(nested, "a.ts"),
+          "nope.ts": null,
+        },
+      });
+
+      const openRes = await fastify.inject({
+        method: "POST",
+        url: "/api/ptys/pty-1/open-file",
+        payload: { path: "src/a.ts", line: 7, column: "x" },
+      });
+      expect(openRes.statusCode).toBe(200);
+      expect(opened).toEqual([{ path: path.join(nested, "a.ts"), line: 7, column: null }]);
+
+      const missingRes = await fastify.inject({
+        method: "POST",
+        url: "/api/ptys/pty-1/open-file",
+        payload: { path: "nope.ts" },
+      });
+      expect(missingRes.statusCode).toBe(404);
+      expect(opened).toHaveLength(1);
+    } finally {
+      await fastify.close();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("forwards live Claude/Codex renames to the attached PTY", async () => {

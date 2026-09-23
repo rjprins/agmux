@@ -517,6 +517,81 @@
         }
       }
     },
+    "/api/ptys/{id}/resolve-files": {
+      "post": {
+        "summary": "Resolve file paths seen in PTY output to existing files",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ptyId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["paths"],
+                "properties": {
+                  "paths": { "type": "array", "items": { "type": "string" } }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Map of each requested path to an absolute file path, or null"
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "404": {
+            "description": "Running PTY not found"
+          }
+        }
+      }
+    },
+    "/api/ptys/{id}/open-file": {
+      "post": {
+        "summary": "Open a file from PTY output in Emacs",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/ptyId"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["path"],
+                "properties": {
+                  "path": { "type": "string" },
+                  "line": { "type": "integer", "minimum": 1 },
+                  "column": { "type": "integer", "minimum": 1 }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Opened"
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "404": {
+            "description": "Running PTY or file not found"
+          },
+          "500": {
+            "description": "Emacs open failed"
+          }
+        }
+      }
+    },
     "/api/ptys/{id}/resume": {
       "post": {
         "summary": "Legacy runtime resume endpoint",

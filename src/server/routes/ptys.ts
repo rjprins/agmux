@@ -25,7 +25,14 @@ import {
   resumeArgsForProvider,
   type AgentSessionService,
 } from "../agent-sessions.js";
-import { openBranchReviewInEmacs, openMagitInEmacs } from "../emacs.js";
+import {
+  openBranchReviewInEmacs,
+  openFileInEmacs,
+  openMagitInEmacs,
+  resolveGitWorktreeRoot,
+  type FileLocation,
+} from "../emacs.js";
+import { resolveTerminalFilePath } from "../file-links.js";
 import { expandHomePath } from "../utils.js";
 
 type PtyRoutesDeps = {
@@ -55,6 +62,8 @@ type PtyRoutesDeps = {
   agmuxSession: string;
   openBranchReview?: (cwd: string) => Promise<{ path: string }>;
   openMagit?: (cwd: string) => Promise<{ path: string }>;
+  openFile?: (filePath: string, location: FileLocation) => Promise<{ path: string }>;
+  gitRootOf?: (cwd: string) => Promise<string>;
 };
 
 export const FLAG_DEFAULTS: Record<string, Record<string, string>> = {
@@ -105,6 +114,8 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     agmuxSession,
     openBranchReview = openBranchReviewInEmacs,
     openMagit = openMagitInEmacs,
+    openFile = openFileInEmacs,
+    gitRootOf = resolveGitWorktreeRoot,
   } = deps;
   const CODEX_ATTACH_POLL_MS = 750;
   const CODEX_ATTACH_TIMEOUT_MS = 30_000;
@@ -247,6 +258,72 @@ export function registerPtyRoutes(deps: PtyRoutesDeps): void {
     }
     try {
       const result = await openMagit(summary.cwd);
+      return { ok: true, path: result.path };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      reply.code(500);
+      return { error: message };
+    }
+  });
+
+  // Link hovers ask for this on every new line; a directory's git root rarely changes.
+  const GIT_ROOT_CACHE_MS = 60_000;
+  const gitRootCache = new Map<string, { at: number; root: string }>();
+
+  async function fileLinkBaseDirs(cwd: string): Promise<string[]> {
+    const now = Date.now();
+    let cached = gitRootCache.get(cwd);
+    if (!cached || now - cached.at > GIT_ROOT_CACHE_MS) {
+      cached = { at: now, root: await gitRootOf(cwd) };
+      gitRootCache.set(cwd, cached);
+    }
+    return cached.root === cwd ? [cwd] : [cwd, cached.root];
+  }
+
+  function runningPtyCwd(id: string): { cwd: string } | { status: number; error: string } {
+    const summary = runtime.ptys.getSummary(id) as PtySummary | null;
+    if (!summary || summary.status !== "running") return { status: 404, error: "running PTY not found" };
+    if (!summary.cwd) return { status: 400, error: "PTY has no working directory" };
+    return { cwd: summary.cwd };
+  }
+
+  fastify.post("/api/ptys/:id/resolve-files", async (req, reply) => {
+    const id = (req.params as any).id as string;
+    const target = runningPtyCwd(id);
+    if ("error" in target) {
+      reply.code(target.status);
+      return { error: target.error };
+    }
+    const body = parseJsonBody(req.body);
+    const paths = Array.isArray(body.paths)
+      ? body.paths.filter((p): p is string => typeof p === "string").slice(0, 100)
+      : [];
+    const baseDirs = await fileLinkBaseDirs(target.cwd);
+    const resolved = await Promise.all(paths.map((p) => resolveTerminalFilePath(p, baseDirs)));
+    const files: Record<string, string | null> = {};
+    paths.forEach((p, i) => {
+      files[p] = resolved[i];
+    });
+    return { files };
+  });
+
+  fastify.post("/api/ptys/:id/open-file", async (req, reply) => {
+    const id = (req.params as any).id as string;
+    const target = runningPtyCwd(id);
+    if ("error" in target) {
+      reply.code(target.status);
+      return { error: target.error };
+    }
+    const body = parseJsonBody(req.body);
+    const rawPath = typeof body.path === "string" ? body.path : "";
+    const filePath = rawPath ? await resolveTerminalFilePath(rawPath, await fileLinkBaseDirs(target.cwd)) : null;
+    if (!filePath) {
+      reply.code(404);
+      return { error: "file not found" };
+    }
+    const toPositiveInt = (v: unknown) => (typeof v === "number" && Number.isSafeInteger(v) && v > 0 ? v : null);
+    try {
+      const result = await openFile(filePath, { line: toPositiveInt(body.line), column: toPositiveInt(body.column) });
       return { ok: true, path: result.path };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
