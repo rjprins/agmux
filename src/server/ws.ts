@@ -7,7 +7,7 @@ import type { PtyManager } from "../pty/manager.js";
 import type { ReadinessEngine } from "../readiness/engine.js";
 import type { WsHub } from "../ws/hub.js";
 import { bracketedPaste } from "../shared/bracketed-paste.js";
-import { tmuxCapturePaneVisible, tmuxRepaintClients, tmuxWheelScroll } from "../tmux.js";
+import { tmuxCapturePaneVisible, tmuxExitCopyMode, tmuxRepaintClients, tmuxWheelScroll } from "../tmux.js";
 import { scrollTmuxToHistoryEntry, type InputAnchorStore } from "./history-scroll.js";
 import { AUTH_ENABLED } from "./config.js";
 import { isRecord } from "./utils.js";
@@ -181,6 +181,34 @@ async function waitForMobileSubmitGate(
 export function registerWs(deps: WsDeps): void {
   const { fastify, hub, ptys, readinessEngine, listPtys, inputAnchors } = deps;
   const wss = new WebSocketServer({ noServer: true });
+  const ptyInteractions = new Map<string, Promise<void>>();
+  const ptysInHistory = new Set<string>();
+
+  function enqueuePtyInteraction(ptyId: string, interaction: () => Promise<void>): Promise<void> {
+    const previous = ptyInteractions.get(ptyId) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(interaction);
+    ptyInteractions.set(ptyId, next);
+    void next.finally(() => {
+      if (ptyInteractions.get(ptyId) === next) ptyInteractions.delete(ptyId);
+    }).catch(() => {});
+    return next;
+  }
+
+  async function returnToLivePaneBeforeInput(ptyId: string): Promise<void> {
+    if (!ptysInHistory.delete(ptyId)) return;
+    const summary = ptys.getSummary(ptyId);
+    if (!summary?.tmuxSession) return;
+    try {
+      await tmuxExitCopyMode(summary.tmuxSession, summary.tmuxServer);
+    } catch {
+      // The pane may already have left copy mode by scrolling to the bottom.
+    }
+  }
+
+  ptys.on("exit", (ptyId: string) => {
+    ptysInHistory.delete(ptyId);
+    ptyInteractions.delete(ptyId);
+  });
 
   hub.onSubscriberChange = () => {
     hub.broadcast({ type: "viewer_counts", counts: hub.subscriberCounts() });
@@ -211,8 +239,18 @@ export function registerWs(deps: WsDeps): void {
         return;
       }
       if (msg.type === "input") {
-        readinessEngine.markInput(msg.ptyId, msg.data);
-        ptys.write(msg.ptyId, msg.data);
+        const writeInput = () => {
+          readinessEngine.markInput(msg.ptyId, msg.data);
+          ptys.write(msg.ptyId, msg.data);
+        };
+        if (!ptysInHistory.has(msg.ptyId) && !ptyInteractions.has(msg.ptyId)) {
+          writeInput();
+          return;
+        }
+        void enqueuePtyInteraction(msg.ptyId, async () => {
+          await returnToLivePaneBeforeInput(msg.ptyId);
+          writeInput();
+        }).catch(() => {});
         return;
       }
       if (msg.type === "mobile_submit") {
@@ -239,7 +277,14 @@ export function registerWs(deps: WsDeps): void {
       if (msg.type === "tmux_control") {
         const summary = ptys.getSummary(msg.ptyId);
         if (!summary || !summary.tmuxSession) return;
-        void tmuxWheelScroll(summary.tmuxSession, msg.direction, msg.lines, summary.tmuxServer).catch(() => {
+        const tmuxSession = summary.tmuxSession;
+        void enqueuePtyInteraction(msg.ptyId, async () => {
+          // If tmux fails after entering copy mode, keep this conservative
+          // marker so the next keystroke still attempts to return to live mode.
+          ptysInHistory.add(msg.ptyId);
+          const kind = await tmuxWheelScroll(tmuxSession, msg.direction, msg.lines, summary.tmuxServer);
+          if (kind !== "history") ptysInHistory.delete(msg.ptyId);
+        }).catch(() => {
           // ignore best-effort tmux history control
         });
         return;
@@ -257,12 +302,16 @@ export function registerWs(deps: WsDeps): void {
       if (msg.type === "history_scroll_to") {
         const summary = ptys.getSummary(msg.ptyId);
         if (!summary || !summary.tmuxSession) return;
+        const tmuxSession = summary.tmuxSession;
         const anchor = msg.ts != null ? inputAnchors.closestTo(msg.ptyId, msg.ts) : null;
-        void scrollTmuxToHistoryEntry({
-          tmuxSession: summary.tmuxSession,
-          tmuxServer: summary.tmuxServer,
-          text: msg.text,
-          anchor,
+        void enqueuePtyInteraction(msg.ptyId, async () => {
+          ptysInHistory.add(msg.ptyId);
+          await scrollTmuxToHistoryEntry({
+            tmuxSession,
+            tmuxServer: summary.tmuxServer,
+            text: msg.text,
+            anchor,
+          });
         }).catch(() => {
           // ignore best-effort history scrolling
         });

@@ -532,19 +532,19 @@ export async function tmuxWheelScroll(
   direction: "up" | "down",
   lines: number,
   serverHint?: TmuxServer | null,
-): Promise<void> {
+): Promise<WheelPlan["kind"] | null> {
   const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
-  if (!server) return;
+  if (!server) return null;
   const target = (await tmuxWheelTarget(name, server)) ?? { alternateOn: false, command: "", mouseAny: false };
   const plan = planWheelInput(target, direction, lines);
 
   if (plan.kind === "literal") {
     await tmuxByServer(server, ["send-keys", "-t", name, "-l", plan.data]);
-    return;
+    return plan.kind;
   }
   if (plan.kind === "keys") {
     await tmuxByServer(server, ["send-keys", "-t", name, "-N", String(plan.count), plan.key]);
-    return;
+    return plan.kind;
   }
 
   const n = Math.max(1, Math.min(200, Math.floor(lines)));
@@ -560,6 +560,16 @@ export async function tmuxWheelScroll(
     String(n),
     direction === "up" ? "scroll-up" : "scroll-down",
   ]);
+  return plan.kind;
+}
+
+export async function tmuxExitCopyMode(
+  name: string,
+  serverHint?: TmuxServer | null,
+): Promise<void> {
+  const server = normalizeServerHint(serverHint) ?? await tmuxLocateSession(name);
+  if (!server) return;
+  await tmuxByServer(server, ["send-keys", "-t", name, "-X", "cancel"]);
 }
 
 export type TmuxPanePosition = {

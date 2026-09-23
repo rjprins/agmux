@@ -843,6 +843,75 @@ test("scroll up after cat reveals the cat command", async ({ page }) => {
   }
 });
 
+test("typing after scrolling returns to the live pane", async ({ page }) => {
+  await page.goto("/?nosup=1");
+  await page.addStyleTag({
+    content: `
+      .terminal-wrap { height: 260px !important; }
+      #terminal { height: 240px !important; min-height: 240px !important; }
+    `,
+  });
+
+  await newShellSession(page);
+  const ptyId = await page.locator(".pty-item.active").getAttribute("data-pty-id");
+  if (!ptyId) throw new Error("missing PTY id");
+
+  const token = await readSessionToken(page);
+  const ptys = await page.request
+    .get(`/api/ptys?token=${encodeURIComponent(token)}`)
+    .then(async (res) => ((await res.json()) as { ptys?: Array<Record<string, unknown>> }).ptys ?? []);
+  const summary = ptys.find((pty) => pty.id === ptyId);
+  const tmuxSession = String(summary?.tmuxSession ?? "");
+  const tmuxSocket = process.env.E2E_TMUX_SOCKET ?? "agmux";
+  test.skip(!tmuxSession, "requires tmux backend");
+
+  const dumpActive = () => page.evaluate(() => String((window as any).__agmux?.dumpActive?.() ?? ""));
+  const marker = "__typed_after_scrolling__";
+
+  try {
+    await page.evaluate(
+      (cmd) => (window as any).__agmux?.sendInput?.(`${cmd}\r`),
+      "for i in $(seq 1 80); do echo line-$i; done",
+    );
+    await expect.poll(dumpActive, { timeout: 30_000 }).toMatch(/\bline-80\b/);
+
+    const xterm = page.locator(".term-pane:not(.hidden) .xterm");
+    await xterm.hover();
+    await page.mouse.wheel(0, -8000);
+    await expect
+      .poll(async () => page.evaluate(() => String((window as any).__agmux?.dumpViewport?.() ?? "")), {
+        timeout: 10_000,
+      })
+      .toContain("line-1");
+
+    await xterm.click();
+    await page.keyboard.type(`clear; printf 'W%.0s' $(seq 1 400); echo; echo ${marker}`);
+    await page.keyboard.press("Enter");
+
+    await expect.poll(dumpActive, { timeout: 10_000 }).toContain(marker);
+
+    await expect
+      .poll(async () => {
+        const clientRows = await page.evaluate(() =>
+          String((window as any).__agmux?.dumpViewport?.() ?? "")
+            .split("\n")
+            .map((line: string) => line.replace(/\s+$/, "")),
+        );
+        const { stdout } = await execFileAsync("tmux", [
+          "-L", tmuxSocket, "-f", "/dev/null", "capture-pane", "-p", "-t", tmuxSession,
+        ]);
+        const paneRows = stdout
+          .split("\n")
+          .map((line) => line.replace(/\s+$/, ""))
+          .slice(0, clientRows.length);
+        return clientRows.join("\n") === paneRows.join("\n");
+      }, { timeout: 10_000 })
+      .toBe(true);
+  } finally {
+    await killPty(page, token, ptyId);
+  }
+});
+
 test("clicking a history entry scrolls the terminal to that command", async ({ page }) => {
   await page.goto("/?nosup=1");
 
