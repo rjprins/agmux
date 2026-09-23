@@ -1,3 +1,4 @@
+import { EventEmitter } from "node:events";
 import Fastify from "fastify";
 import WebSocket from "ws";
 import { describe, expect, it } from "vitest";
@@ -466,12 +467,12 @@ describe("ws wiring", () => {
       createdAt: 0,
       status: "running",
     };
-    const ptys = {
+    const ptys = Object.assign(new EventEmitter(), {
       list: () => [sample],
       getSummary: (id: string) => (id === "pty-1" ? sample : null),
       write: () => {},
       resize: () => {},
-    } as any;
+    }) as any;
     const readinessEngine = { markInput: () => {} } as any;
     registerWs({
       fastify,
