@@ -140,6 +140,7 @@ import {
 } from "./mobile-view";
 import { BOT_NAMES, displaySessionName } from "../session-names.js";
 import { buildReviewCommentEvaluationInput } from "./pr-comment-actions.js";
+import { createFileLinkProvider } from "./file-links.js";
 
 type ServerMsg = ServerToClientMessage;
 
@@ -1195,6 +1196,10 @@ function createTermState(ptyId: string): TermState {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.loadAddon(new WebLinksAddon());
+  term.registerLinkProvider(createFileLinkProvider(term, {
+    resolve: (paths) => resolveTerminalFiles(ptyId, paths),
+    open: (target) => void openTerminalFileInEmacs(ptyId, target),
+  }));
   let opened = false;
   if (!mobileViewport) {
     term.open(container);
@@ -6012,6 +6017,38 @@ async function openActiveEmacsWorktreeAction(action: EmacsWorktreeAction): Promi
   }
 }
 
+async function resolveTerminalFiles(ptyId: string, paths: string[]): Promise<Record<string, string | null>> {
+  const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/resolve-files`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  if (!res.ok) return {};
+  const json = (await res.json()) as { files?: Record<string, string | null> };
+  return json.files ?? {};
+}
+
+async function openTerminalFileInEmacs(
+  ptyId: string,
+  target: { path: string; line?: number; column?: number },
+): Promise<void> {
+  try {
+    const res = await authFetch(`/api/ptys/${encodeURIComponent(ptyId)}/open-file`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(target),
+    });
+    if (!res.ok) {
+      addEvent(`Failed to open ${target.path}: ${await readApiError(res)}`);
+      return;
+    }
+    const json = (await res.json()) as { path?: string };
+    addEvent(`Opened ${json.path ?? target.path}${target.line ? `:${target.line}` : ""} in Emacs`);
+  } catch (err) {
+    addEvent(`Failed to open ${target.path}: ${errorMessage(err)}`);
+  }
+}
+
 btnBranchReview.addEventListener("click", (ev) => {
   ev.preventDefault();
   ev.stopPropagation();
@@ -6914,9 +6951,9 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
     return dumpBuffer(st);
   },
   bufferActiveInfo: () => {
-    if (!activePtyId) return { baseY: 0, viewportY: 0, length: 0, rows: 0 };
+    if (!activePtyId) return { baseY: 0, viewportY: 0, length: 0, rows: 0, cols: 0 };
     const st = terms.get(activePtyId);
-    if (!st) return { baseY: 0, viewportY: 0, length: 0, rows: 0 };
+    if (!st) return { baseY: 0, viewportY: 0, length: 0, rows: 0, cols: 0 };
     const b = st.term.buffer.active;
     const rawBaseY = (b as unknown as { baseY?: unknown }).baseY;
     const rawViewportY = (b as unknown as { viewportY?: unknown }).viewportY;
@@ -6927,6 +6964,7 @@ function dumpBuffer(st: TermState, maxLines = 120): string {
       viewportY,
       length: b.length,
       rows: st.term.rows,
+      cols: st.term.cols,
     };
   },
   dumpViewport: () => {

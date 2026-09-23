@@ -912,6 +912,54 @@ test("typing after scrolling returns to the live pane", async ({ page }) => {
   }
 });
 
+test("clicking a file path in the terminal opens it in Emacs at that line", async ({ page }) => {
+  const emacsLog = process.env.E2E_EMACS_LOG;
+  test.skip(!emacsLog, "requires the fake emacsclient from playwright.config.ts");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agmux-e2e-file-link-"));
+  const filePath = path.join(dir, "notes.txt");
+  fs.writeFileSync(filePath, "one\ntwo\nthree\n");
+
+  await page.goto("/?nosup=1");
+  await newShellSession(page);
+  const ptyId = await page.locator(".pty-item.active").getAttribute("data-pty-id");
+  if (!ptyId) throw new Error("missing PTY id");
+  const token = await readSessionToken(page);
+  const target = `${filePath}:3:2`;
+
+  try {
+    await page.evaluate((cmd) => (window as any).__agmux?.sendInput?.(`${cmd}\r`), `echo "see ${target}"`);
+    const viewportHas = async () => String(await page.evaluate(() => (window as any).__agmux?.dumpViewport?.() ?? ""));
+    await expect.poll(viewportHas, { timeout: 15_000 }).toContain(`see ${target}`);
+
+    // Find the echoed line (not the typed command) and point at the middle of the path.
+    const rows = (await viewportHas()).split("\n");
+    const row = rows.findIndex((line) => line.startsWith(`see ${target}`));
+    expect(row).toBeGreaterThanOrEqual(0);
+    const col = `see `.length + Math.floor(target.length / 2);
+    const info = await page.evaluate(() => (window as any).__agmux.bufferActiveInfo());
+    const screen = page.locator(".term-pane:not(.hidden) .xterm-screen");
+    const box = await screen.boundingBox();
+    if (!box) throw new Error("missing terminal screen");
+    const x = box.x + ((col + 0.5) * box.width) / info.cols;
+    const y = box.y + ((row + 0.5) * box.height) / info.rows;
+
+    await page.mouse.move(x, y - 4);
+    await page.mouse.move(x, y);
+    await expect(screen).toHaveClass(/xterm-cursor-pointer/, { timeout: 5_000 });
+    await page.mouse.click(x, y);
+
+    await expect
+      .poll(() => (fs.existsSync(emacsLog!) ? fs.readFileSync(emacsLog!, "utf8") : ""), { timeout: 10_000 })
+      .toContain(`(find-file ${JSON.stringify(filePath)})`);
+    const log = fs.readFileSync(emacsLog!, "utf8");
+    expect(log).toContain("(forward-line 2)");
+    expect(log).toContain("(move-to-column 1)");
+  } finally {
+    await killPty(page, token, ptyId);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("clicking a history entry scrolls the terminal to that command", async ({ page }) => {
   await page.goto("/?nosup=1");
 

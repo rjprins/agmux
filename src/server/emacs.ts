@@ -83,6 +83,28 @@ export function buildMagitStatusEval(worktreePath: string): string {
   ].join("\n");
 }
 
+export type FileLocation = { line?: number | null; column?: number | null };
+
+export function buildOpenFileEval(filePath: string, location: FileLocation = {}): string {
+  const line = location.line && location.line > 0 ? Math.floor(location.line) : null;
+  const column = location.column && location.column > 0 ? Math.floor(location.column) : null;
+  const moveLines = line
+    ? [
+        "    (goto-char (point-min))",
+        `    (forward-line ${line - 1})`,
+        ...(column ? [`    (move-to-column ${column - 1})`] : []),
+      ]
+    : [];
+  return [
+    "(progn",
+    ...withRaisedFrameEval([
+      `    (find-file ${elispString(path.resolve(filePath))})`,
+      ...moveLines,
+    ]),
+    "  )",
+  ].join("\n");
+}
+
 export async function resolveGitWorktreeRoot(cwd: string, execFileText: ExecFileText = execFile): Promise<string> {
   const resolvedCwd = path.resolve(cwd);
   try {
@@ -228,6 +250,19 @@ export async function openBranchReviewInEmacs(
     env: resolveEmacsGraphicalEnv(),
   });
   return { path: worktreePath };
+}
+
+export async function openFileInEmacs(
+  filePath: string,
+  location: FileLocation = {},
+  execFileText: ExecFileText = execFile,
+): Promise<{ path: string }> {
+  const emacsclient = process.env.AGMUX_EMACSCLIENT?.trim() || "emacsclient";
+  await execFileText(emacsclient, emacsclientEvalArgs(buildOpenFileEval(filePath, location)), {
+    timeout: EMACS_EVAL_TIMEOUT_MS,
+    env: resolveEmacsGraphicalEnv(),
+  });
+  return { path: filePath };
 }
 
 export async function openMagitInEmacs(
